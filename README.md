@@ -18,7 +18,7 @@ As in Chen et al. (2012), many (tens of thousands) of model spectra are generate
   * the option exists to model a distribution of metallicities, but that option is not utilized or implemented
 * dust extinction, modelled as two components `tau_V` and `mu`. `mu` expresses the fractional amount of `tau_V` that affects stellar populations older than 10 Myr
   * `tau_V` is normally-distributed over the range 0 - 6, with a peak at 1.2, and 68% of the total probability-mass less than 2
-  * `mu` is normally-distributed with a peak at 0.3 and 68% of the probability-mass between .1 and 0
+  * `mu` is normally-distributed with a peak at 0.3 and 68% of the probability-mass between .1 and 1
 * velocity dispersion, `sigma`, uniformly-distributed in the range 50 - 400 km/s
 
 Also computed and stored are:
