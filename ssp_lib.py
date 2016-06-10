@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 from astropy.cosmology import WMAP9
 from astropy import units as u, constants as c, table as t
 
+import fsps
+
 zsol_padova = .019
 zs_padova = t.Table(
     data=[range(23),
@@ -24,6 +26,7 @@ zs_padova = t.Table(
            -.98, -.89, -.79, -.69, -.59, -.49, -.39, -.3, -.2, -.1, 0.,
            .1, .2]],
     names=['zmet', 'Z', 'logZ_Zsol'])
+# logs are base-10
 
 class FSPS_SFHBuilder(object):
     '''
@@ -112,7 +115,7 @@ class FSPS_SFHBuilder(object):
         now = datetime.now().strftime('%Y%m%d-%H%M%S')
         self.fname = '-'.join(['sfh', now])
 
-    def calc_sfh(self, plot=False, saveplot=False):
+    def calc_sfh(self, plot=False, saveplot=False, mformed_compare=False):
         '''
         return an array of times (rel to BB) and SFRs (Msol/yr)
         '''
@@ -143,6 +146,11 @@ class FSPS_SFHBuilder(object):
 
         sfrs = self.sfrs
         ts = self.ts
+
+        if mformed_compare:
+            print 'Total mass formed'
+            print '\tintegral:', self.mformed_tot
+            print '\tsummation:', self.sfrs.sum() * (ts[1] - ts[0])
 
         if plot:
             self.plot_sfh(ts=ts, sfrs=sfrs, save=saveplot)
@@ -176,8 +184,26 @@ class FSPS_SFHBuilder(object):
         with open('.'.join([self.fname, 'sfh']), 'wb') as f:
             pickle.dump(self, f)
 
-    def write_sfh(self, mtot_formed_force=1.0e6):
-        pass
+    def write_sfh(self, mformed_tot_force=1.0e6):
+        '''
+        translate computed SFH into array of constant SFHs
+        '''
+
+        # load star formation rate, and turn it into Msol/yr,
+        # assuming total mass formed of 1.0e6 Msol
+        sfrs = self.sfrs / 1.0e9 * (mformed_tot_force / self.mformed_tot)
+        ts = self.ts
+        # star formation starts at self.FSPS_params['time_start']
+        # and effectively ends when the SFR drops below .01 Msol/yr
+        sf_start = self.FSPS_args['time_start']
+        sf_end = ts[sfrs < .01][0]
+
+        #inject bursts articificially
+        burst_start = self.FSPS_args['time_burst']
+        burst_end = self.FSPS_args['dt_burst']
+        burst_points = np.column_stack(burst_start, burst_end).flatten()
+
+
 
     @property
     def all_sf_v(self):
@@ -362,6 +388,29 @@ class FSPS_SFHBuilder(object):
         burst = (mtot_cont * A / dt_burst).dot(in_burst)
 
         return continuous + burst
+
+    @staticmethod
+    def run_fsps_continuous(eftu, time0, tau_V, mu, zmet, sigma, time_start):
+        '''
+        models underlying continuous SFH. DO NOT USE FOR BURSTS
+        '''
+        sp = fsps.StellarPopulation(
+            compute_vega_mags=False, vactoair=False, smooth_velocity=True,
+            add_stellar_remnants=True, imf_type=2, # Kroupa IMF
+            tau=eftu, const=0, tage=time0, fburst=0., tburst=999., # no burst
+            dust1=tau_V, dust2=tau_V*mu, zcontinuous=1,
+            logzsol=np.log10(zmet), sf_start=time_start, sf_trunc=0.,
+            sf_slope=0., masscut=150., sfh=1, # five-parameter SFH
+            sigma_smooth=sigma)
+        return sp
+
+    @staticmethod
+    def run_fsps_burst():
+        '''
+        models single SF burst only
+        '''
+
+
 
     #=====
     # utility methods
