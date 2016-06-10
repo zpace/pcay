@@ -6,6 +6,9 @@ tools for working with FSPS stellar population synthesis library
 import numpy as np
 from scipy import stats, integrate
 
+from datetime import datetime
+import pickle
+
 import matplotlib.pyplot as plt
 
 from astropy.cosmology import WMAP9
@@ -92,6 +95,7 @@ class FSPS_SFHBuilder(object):
                 override=(self.FSPS_args['time_burst'], \
                           self.FSPS_args['dt_burst'], \
                           self.FSPS_args['A']))
+        self.nburst = len(self.FSPS_args['time_burst'])
 
         self.FSPS_args['tau_V'] = self.tau_V_gen(
             override=self.FSPS_args['tau_V'])
@@ -105,7 +109,10 @@ class FSPS_SFHBuilder(object):
         self.FSPS_args['sigma'] = self.sigma_gen(
             override=self.FSPS_args['sigma'])
 
-    def calc_sfh(self):
+        now = datetime.now().strftime('%Y%m%d-%H%M%S')
+        self.fname = '-'.join(['sfh', now])
+
+    def calc_sfh(self, plot=False, saveplot=False):
         '''
         return an array of times (rel to BB) and SFRs (Msol/yr)
         '''
@@ -115,44 +122,77 @@ class FSPS_SFHBuilder(object):
             FSPS_args['time_form'], self.time0, FSPS_args['eftu'],
             FSPS_args['time_cut'], FSPS_args['eftc'])
 
-        ts = np.linspace(0., self.time0, 1000)
-
         # calculate the total mass formed in bursts
         mtot_burst = FSPS_args['A'].sum() * mtot_cont
         mtot = mtot_burst + mtot_cont
 
-        all_sf_v = np.vectorize(
-            self.all_sf,
-            excluded=set(FSPS_args.keys() + ['time0',]),
-            cache=False)
+        self.mformed_tot = mtot
+        self.mformed_cont = mtot_cont
+        self.mformed_burst = mtot_burst
+
+        burst_ends = FSPS_args['time_burst'] + FSPS_args['dt_burst']
+        discont = np.append(FSPS_args['time_burst'], burst_ends)
 
         mtot_integration = integrate.quad(
             self.all_sf, 0., self.time0, args=(
                 FSPS_args['time_form'], FSPS_args['eftu'],
                 FSPS_args['time_cut'], FSPS_args['eftc'],
                 FSPS_args['time_burst'], FSPS_args['dt_burst'],
-                FSPS_args['A'], self.time0, mtot_cont))[0]
+                FSPS_args['A'], self.time0),
+            points=discont, epsrel=5.0e-3)[0]
 
-        print '\n'
-        print '\n'.join(
-            ['{}: {}'.format(*l) for l in zip(
-                ['mtot_cont', 'mtot_burst', 'mtot', 'mtot_integration'],
-                [mtot_cont, mtot_burst, mtot, mtot_integration])])
+        sfrs = self.sfrs
+        ts = self.ts
 
-        #sfrs = np.array(
-        #    [self.all_sf(t, time0=self.time0, **FSPS_args)
-        #     for t in ts])
+        if plot:
+            self.plot_sfh(ts=ts, sfrs=sfrs, save=saveplot)
 
-        sfrs = all_sf_v(ts, time0=self.time0, **FSPS_args)
-        print 'array-summed SFR:', sfrs.sum() * (ts[1] - ts[0])
+    def plot_sfh(self, ts=None, sfrs=None, save=False):
 
-        '''plt.figure(figsize=(3, 2), dpi=300)
-                                plt.plot(ts, sfrs)
-                                plt.xlabel('time [Gyr]')
-                                plt.ylabel('SFR [sol mass/Gyr]')
-                                plt.yscale('log')
-                                plt.show()'''
+        if ts is None:
+            ts = self.ts
 
+        if sfrs is None:
+            sfrs = self.sfrs
+
+        plt.figure(figsize=(3, 2), dpi=300)
+        ax = plt.subplot(111)
+        ax.plot(self.ts, self.sfrs, c='b', linewidth=0.5)
+        ax.set_xlabel('time [Gyr]', size=8)
+        ax.set_ylabel('SFR [sol mass/Gyr]', size=8)
+        ax.set_yscale('log')
+        ax.tick_params(labelsize=8)
+
+        plt.tight_layout()
+        if save:
+            plt.savefig('.'.join([self.fname, 'png']))
+        plt.show()
+
+    def dump(self):
+        '''
+        dump object to a pickle file
+        '''
+
+        with open('.'.join([self.fname, 'sfh']), 'wb') as f:
+            pickle.dump(self, f)
+
+    def write_sfh(self, mtot_formed_force=1.0e6):
+        pass
+
+    @property
+    def all_sf_v(self):
+        return np.vectorize(
+            self.all_sf,
+            excluded=set(self.FSPS_args.keys() + ['time0',]),
+            cache=True)
+
+    @property
+    def ts(self):
+        return np.linspace(0., self.time0, 10000)
+
+    @property
+    def sfrs(self):
+        return self.all_sf_v(self.ts, time0=self.time0, **self.FSPS_args)
 
     #=====
     # static methods
