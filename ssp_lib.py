@@ -163,6 +163,8 @@ class FSPS_SFHBuilder(object):
         if sfrs is None:
             sfrs = self.sfrs
 
+        plt.close('all')
+
         plt.figure(figsize=(3, 2), dpi=300)
         ax = plt.subplot(111)
         ax.plot(self.ts, self.sfrs, c='b', linewidth=0.5)
@@ -170,6 +172,15 @@ class FSPS_SFHBuilder(object):
         ax.set_ylabel('SFR [sol mass/Gyr]', size=8)
         ax.set_yscale('log')
         ax.tick_params(labelsize=8)
+
+        # compute y-axis limits
+        # cover a dynamic range of a few OOM, plus bursts
+        ylim_cont = [5.0e-3, 1.25]
+        ylim = ylim_cont
+        if self.nburst > 0:
+            ylim[1] = 1.25*sfrs.max()
+
+        ax.set_ylim(ylim)
 
         plt.tight_layout()
         if save:
@@ -203,6 +214,56 @@ class FSPS_SFHBuilder(object):
         burst_end = self.FSPS_args['dt_burst']
         burst_points = np.column_stack(burst_start, burst_end).flatten()
 
+    def generate_full_spectrum(self, lllim=3700., lulim=10200.):
+        # if there are no bursts, then just run a single underlying
+        # continuous SFH
+
+        # compute mass fractions from each burst and continuous portion
+        mfrac_cont = 1./(1. + self.FSPS_args['A'].sum())
+        mfrac_b = self.FSPS_args['A'] / (1. + self.FSPS_args['A'].sum())
+
+        # start out with continuous, underlying portion of SFH
+        h_cont = self.run_fsps_continuous(
+            time_form=self.FSPS_args['time_form'],
+            eftu=self.FSPS_args['eftu'], time0=self.time0,
+            tau_V=self.FSPS_args['tau_V'], mu=self.FSPS_args['mu'],
+            zmet=self.FSPS_args['zmet'], sigma=self.FSPS_args['sigma'])
+        l_cont, s_cont = h_cont.get_spectrum(tage=self.time0, peraa=True)
+        mstar_cont = h_cont.stellar_mass
+
+        l_cont, s_cont = l_cont[(l_cont > lllim) * (l_cont < lulim)], \
+                         s_cont[(l_cont > lllim) * (l_cont < lulim)]
+
+        if self.nburst == 0:
+            l, s = l_cont, s_cont
+            return l, s, mstar_cont
+
+        # manage starbursts
+        s_bursts = [None, ] * self.nburst
+        mstar_bursts = [None, ] * self.nburst
+        for i in range(self.nburst):
+            h_b = self.run_fsps_burst(
+                time_form=self.FSPS_args['time_form'],
+                eftu=self.FSPS_args['eftu'], time0=self.time0,
+                tau_V=self.FSPS_args['tau_V'], mu=self.FSPS_args['mu'],
+                zmet=self.FSPS_args['zmet'], sigma=self.FSPS_args['sigma'],
+                time_burst=self.FSPS_args['time_burst'])
+            l_b, s_b = h_b.get_spectrum(tage=self.time0, peraa=True)
+            mstar_b = h_b.stellar_mass
+
+            mstar_bursts[i] = mfrac_cont * mfrac_b[i]
+
+            s_b *= (mstar_bursts[i] / mstar_b)
+            l_b, s_b = l_b[(l_b > lllim) * (l_b < lulim)], \
+                       s_b[(l_b > lllim) * (l_b < lulim)]
+            s_bursts[i] = s_b
+
+        s = np.array(s_bursts).sum(axis=0) + s_cont
+        l = l_cont
+
+        mtot = mstar_cont + np.array(mstar_bursts).sum()
+
+        return l, s, mtot
 
 
     @property
@@ -390,25 +451,35 @@ class FSPS_SFHBuilder(object):
         return continuous + burst
 
     @staticmethod
-    def run_fsps_continuous(eftu, time0, tau_V, mu, zmet, sigma, time_start):
+    def run_fsps_continuous(time_form, eftu, time0, tau_V, mu, zmet, sigma):
         '''
         models underlying continuous SFH. DO NOT USE FOR BURSTS
         '''
         sp = fsps.StellarPopulation(
-            compute_vega_mags=False, vactoair=False, smooth_velocity=True,
+            compute_vega_mags=False, vactoair_flag=False, smooth_velocity=True,
             add_stellar_remnants=True, imf_type=2, # Kroupa IMF
             tau=eftu, const=0, tage=time0, fburst=0., tburst=999., # no burst
             dust1=tau_V, dust2=tau_V*mu, zcontinuous=1,
-            logzsol=np.log10(zmet), sf_start=time_start, sf_trunc=0.,
+            logzsol=np.log10(zmet), sf_start=time_form, sf_trunc=0.,
             sf_slope=0., masscut=150., sfh=1, # five-parameter SFH
             sigma_smooth=sigma)
         return sp
 
     @staticmethod
-    def run_fsps_burst():
+    def run_fsps_burst(time_form, eftu, time0, tau_V, mu, zmet, sigma,
+                       time_burst):
         '''
         models single SF burst only
         '''
+        sp = fsps.StellarPopulation(
+            compute_vega_mags=False, vactoair_flag=False, smooth_velocity=True,
+            add_stellar_remnants=True, imf_type=2, # Kroupa IMF
+            tau=eftu, const=0, tage=time0, fburst=1., tburst=time_burst,
+            dust1=tau_V, dust2=tau_V*mu, zcontinuous=1,
+            logzsol=np.log10(zmet), sf_start=time_form, sf_trunc=0.,
+            sf_slope=0., masscut=150., sfh=1, # five-parameter SFH
+            sigma_smooth=sigma)
+        return sp
 
 
 
