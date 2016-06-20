@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from astropy.cosmology import WMAP9
 from astropy import units as u, constants as c, table as t
 
-import fsps
+from conroy_tools import make_conroy_file
 
 zsol_padova = .019
 zs_padova = t.Table(
@@ -73,10 +73,10 @@ class FSPS_SFHBuilder(object):
         # pack into dict for easy stringification, and update with new values
 
         self.FSPS_args = {
-            'time_form': None, 'eftu': None, 'A': np.array([]),
-            'time_burst': np.array([]), 'dt_burst': np.array([]),
-            'time_cut': None, 'eftc': None, 'tau_V': None, 'mu': None,
-            'zmet': None, 'sigma': None}
+            'time_form': np.nan, 'eftu': np.nan, 'A': np.nan,
+            'time_burst': np.nan, 'dt_burst': np.nan,
+            'time_cut': np.nan, 'eftc': np.nan, 'tau_V': np.nan,
+            'mu': np.nan, 'zmet': np.nan, 'sigma': np.nan}
         self.FSPS_args.update(kwargs)
 
         self.FSPS_args['time_form'] = self.time_form_gen(
@@ -193,7 +193,11 @@ class FSPS_SFHBuilder(object):
         '''
 
         with open('.'.join([self.fname, 'sfh']), 'wb') as f:
-            pickle.dump(self, f)
+            pickle.dump(self.FSPS_args, f)
+
+    #=====
+    # properties
+    #=====
 
     @property
     def all_sf_v(self):
@@ -217,37 +221,76 @@ class FSPS_SFHBuilder(object):
 
     @staticmethod
     def time_form_gen(override):
-        if override is not None:
+        if not np.isnan(override):
             return override
 
         return np.random.uniform(low=1.5, high=13.5)
 
     @staticmethod
     def eftu_gen(override):
-        if override is not None:
+        if not np.isnan(override):
             return override
 
         return 1./np.random.rand()
 
     @staticmethod
-    def cut_gen(time_form, time0, override):
-        if override != (None, None):
+    def time_cut_gen(time_form, time0, override):
+        if not np.isnan(override):
             return override
 
+        return np.random.uniform(time_form, time0)
+
+    @staticmethod
+    def eftc_gen(override):
+        if not np.isnan(override):
+            return override
+
+        return 10.**np.random.uniform(-2, 0)
+
+    @staticmethod
+    def cut_gen(time_form, time0, override):
         # does cutoff occur?
-        cut_yn = np.random.rand() < .3
+        if None in override:
+            return None, None
+        if np.isnan(override).sum() < 2:
+            # if any override has been given, there is a cutoff
+            cut_yn = True
+        else:
+            cut_yn = np.random.rand() < .3
+
         if not cut_yn:
             return (None, None)
 
-        time_cut = np.random.uniform(time_form, time0)
-        eftc = 10.**np.random.uniform(-2, 0)
+        time_cut = FSPS_SFHBuilder.time_cut_gen(
+            time_form, time0, override[0])
+        eftc = FSPS_SFHBuilder.eftc_gen(override[1])
 
         return time_cut, eftc
 
     @staticmethod
+    def time_burst_gen(time_form, dt, nburst):
+        return np.random.uniform(time_form, time_form + dt, nburst)
+
+    @staticmethod
+    def dt_burst_gen(nburst):
+        return np.random.uniform(.01, .1, nburst)
+
+    @staticmethod
+    def A_burst_gen(nburst):
+        return 10.**np.random.uniform(np.log10(.03), np.log10(4.), nburst)
+
+    @staticmethod
     def burst_gen(time_form, time0, time_cut, override):
-        if map(len, override) != [0, 0, 0]:
-            return override
+        '''
+        allow bursts to be partially specified...
+
+        `override` has 3 elements: time_burst, dt_burst, and A (mass ampl.)
+
+        IMPORTANT: if there's no burst at all, then len-0 arrays should
+        be specified for each of the elements of `override`
+        '''
+
+        time_burst, dt_burst, A = override
 
         # statistically, one burst occurs in duration time0
         # but forbidden to happen after cutoff
@@ -256,21 +299,72 @@ class FSPS_SFHBuilder(object):
         else:
             dt = time0 - time_form
 
-        # number of bursts
-        nburst = stats.poisson.rvs(dt/time0)
-        # when they occur
+        # =====
 
-        time_burst = np.random.uniform(time_form, time_form + dt, nburst)
-        # how long they last
-        dt_burst = np.random.uniform(.01, .1, nburst)
-        # how much mass each forms
-        A = 10.**np.random.uniform(np.log10(.03), np.log10(4.), nburst)
+        # handle case that a burst is forbidden, i.e., override is 3 Nones
+        if time_burst is None and dt_burst is None and A is None:
+            return (np.array([]), ) * 3
+
+        # =====
+
+        # handle the case that no burst information is given (3 NaNs)
+        if ((np.isnan(time_burst).sum() * \
+             np.isnan(dt_burst).sum() * \
+             np.isnan(A).sum()) == 1) and \
+            (np.ndarray not in map(type, override)):
+
+            # number of bursts
+            nburst = stats.poisson.rvs(dt/time0)
+            # when they occur
+            time_burst = FSPS_SFHBuilder.time_burst_gen(time_form, dt, nburst)
+            # how long they last
+            dt_burst = FSPS_SFHBuilder.dt_burst_gen(nburst)
+            # how much mass each forms
+            A = FSPS_SFHBuilder.A_burst_gen(nburst)
+
+            return time_burst, dt_burst, A
+
+        # =====
+
+        # handle case that single burst is specified, and move forward
+        if type(time_burst) is not np.ndarray:
+            time_burst = np.array([time_burst])
+        if type(dt_burst) is not np.ndarray:
+            dt_burst = np.array([dt_burst])
+        if type(A) is not np.ndarray:
+            A = np.array([A])
+
+        # =====
+
+        # handle case of arbitrary number of bursts
+
+        # make sure that lengths of all provided burst parameter
+        # arrays are equal. Otherwise iterating over them will fail.
+        assert len(time_burst) == len(dt_burst) == len(A), \
+            'override elements have differing lengths ({}, {}, {})'.format(
+                len(time_burst), len(dt_burst), len(A))
+
+        # iterate through expressions for each burst
+        # IMPORTANT: if there's no burst, then len-0 arrays
+        # (i.e., np.array([])) should be specified for each
+        # of the components of `override`
+        for i in range(len(time_burst)):
+            # if no burst time has been specified, generate one
+            if np.isnan(time_burst[i]):
+                time_burst[i] = FSPS_SFHBuilder.time_burst_gen(
+                    time_form, dt, 1)
+            # if no burst duration has been specified, generate one
+            if np.isnan(dt_burst[i]):
+                dt_burst[i] = FSPS_SFHBuilder.dt_burst_gen(1)
+            # if no burst amplitude (mass) has been specified, generate one
+            if np.isnan(A[i]):
+                A[i] = FSPS_SFHBuilder.A_burst_gen(1)
 
         return time_burst, dt_burst, A
 
     @staticmethod
     def zmet_gen(override, zsol=zsol_padova):
-        if override is not None:
+        if not np.isnan(override):
             return override
 
         if np.random.rand() < .95:
@@ -280,7 +374,7 @@ class FSPS_SFHBuilder(object):
 
     @staticmethod
     def tau_V_gen(override):
-        if override is not None:
+        if not np.isnan(override):
             return override
 
         mu_tau_V = 1.2
@@ -298,7 +392,7 @@ class FSPS_SFHBuilder(object):
 
     @staticmethod
     def mu_gen(override):
-        if override is not None:
+        if not np.isnan(override):
             return override
 
         mu_mu = 0.3
@@ -317,7 +411,7 @@ class FSPS_SFHBuilder(object):
 
     @staticmethod
     def sigma_gen(override):
-        if override != None:
+        if not np.isnan(override):
             return override
 
         return np.random.uniform(50., 400.)
@@ -378,39 +472,6 @@ class FSPS_SFHBuilder(object):
         burst = (mtot_cont * A / dt_burst).dot(in_burst)
 
         return continuous + burst
-
-    @staticmethod
-    def run_fsps_continuous(time_form, eftu, time0, tau_V, mu, zmet, sigma):
-        '''
-        models underlying continuous SFH. DO NOT USE FOR BURSTS
-        '''
-        sp = fsps.StellarPopulation(
-            compute_vega_mags=False, vactoair_flag=False, smooth_velocity=True,
-            add_stellar_remnants=True, imf_type=2, # Kroupa IMF
-            tau=eftu, const=0, tage=time0, fburst=0., tburst=999., # no burst
-            dust1=tau_V, dust2=tau_V*mu, zcontinuous=1,
-            logzsol=np.log10(zmet), sf_start=time_form, sf_trunc=0.,
-            sf_slope=0., masscut=150., sfh=1, # five-parameter SFH
-            sigma_smooth=sigma)
-        return sp
-
-    @staticmethod
-    def run_fsps_burst(time_form, eftu, time0, tau_V, mu, zmet, sigma,
-                       time_burst):
-        '''
-        models single SF burst only
-        '''
-        sp = fsps.StellarPopulation(
-            compute_vega_mags=False, vactoair_flag=False, smooth_velocity=True,
-            add_stellar_remnants=True, imf_type=2, # Kroupa IMF
-            tau=eftu, const=0, tage=time0, fburst=1., tburst=time_burst,
-            dust1=tau_V, dust2=tau_V*mu, zcontinuous=1,
-            logzsol=np.log10(zmet), sf_start=time_form, sf_trunc=0.,
-            sf_slope=0., masscut=150., sfh=1, # five-parameter SFH
-            sigma_smooth=sigma)
-        return sp
-
-
 
     #=====
     # utility methods
