@@ -115,6 +115,11 @@ class FSPS_SFHBuilder(object):
         now = datetime.now().strftime('%Y%m%d-%H%M%S')
         self.fname = '-'.join(['sfh', now])
 
+    @classmethod
+    def from_pickle(cls, fname):
+        FSPS_args = pickle.load(open('.'.join([fname, 'sfh'])))
+        return cls(**FSPS_args)
+
     def calc_sfh(self, plot=False, saveplot=False, mformed_compare=False):
         '''
         return an array of times (rel to BB) and SFRs (Msol/yr)
@@ -208,7 +213,7 @@ class FSPS_SFHBuilder(object):
 
     @property
     def ts(self):
-        return np.linspace(0., self.time0, 10000)
+        return np.linspace(0., self.time0, 1000)
 
     @property
     def sfrs(self):
