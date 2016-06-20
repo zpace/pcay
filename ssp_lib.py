@@ -117,7 +117,7 @@ class FSPS_SFHBuilder(object):
 
     @classmethod
     def from_pickle(cls, fname):
-        FSPS_args = pickle.load(open('.'.join([fname, 'sfh'])))
+        FSPS_args = pickle.load(open(fname))
         return cls(**FSPS_args)
 
     def calc_sfh(self, plot=False, saveplot=False, mformed_compare=False):
@@ -213,7 +213,12 @@ class FSPS_SFHBuilder(object):
 
     @property
     def ts(self):
-        return np.linspace(0., self.time0, 1000)
+        burst_ends = self.FSPS_args['time_burst'] + self.FSPS_args['dt_burst']
+        discont = np.append(self.FSPS_args['time_burst'], burst_ends)
+        ts = np.linspace(0., self.time0, 1000)
+        ts = np.append(ts, discont)
+        ts.sort()
+        return ts
 
     @property
     def sfrs(self):
