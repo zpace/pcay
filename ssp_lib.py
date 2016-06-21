@@ -138,23 +138,12 @@ class FSPS_SFHBuilder(object):
         self.mformed_cont = mtot_cont
         self.mformed_burst = mtot_burst
 
-        burst_ends = FSPS_args['time_burst'] + FSPS_args['dt_burst']
-        discont = np.append(FSPS_args['time_burst'], burst_ends)
-
-        mtot_integration = integrate.quad(
-            self.all_sf, 0., self.time0, args=(
-                FSPS_args['time_form'], FSPS_args['eftu'],
-                FSPS_args['time_cut'], FSPS_args['eftc'],
-                FSPS_args['time_burst'], FSPS_args['dt_burst'],
-                FSPS_args['A'], self.time0),
-            points=discont, epsrel=5.0e-3)[0]
-
         sfrs = self.sfrs
         ts = self.ts
 
         if mformed_compare:
             print 'Total mass formed'
-            print '\tintegral:', self.mformed_tot
+            print '\tintegral:', self.mformed_integration
             print '\tsummation:', self.sfrs.sum() * (ts[1] - ts[0])
 
         if plot:
@@ -223,6 +212,49 @@ class FSPS_SFHBuilder(object):
     @property
     def sfrs(self):
         return self.all_sf_v(self.ts, time0=self.time0, **self.FSPS_args)
+
+    @property
+    def disconts(self):
+        burst_ends = self.FSPS_args['time_burst'] + self.FSPS_args['dt_burst']
+        points = np.append(self.FSPS_args['time_burst'], burst_ends)
+        return points
+
+    @property
+    def mformed_integration(self):
+        integrate.quad(
+            self.all_sf, 0., self.time0, args=(
+                FSPS_args['time_form'], FSPS_args['eftu'],
+                FSPS_args['time_cut'], FSPS_args['eftc'],
+                FSPS_args['time_burst'], FSPS_args['dt_burst'],
+                FSPS_args['A'], self.time0),
+            points=self.disconts, epsrel=5.0e-3)[0]
+
+    @property
+    def mass_weighted_age(self):
+
+        disconts = self.disconts
+        mtot_cont = self.mtot_cont(
+            self.FSPS_args['time_form'], self.time0, self.FSPS_args['eftu'],
+            self.FSPS_args['time_cut'], self.FSPS_args['eftc'])
+
+        def num_integrand(tau, mtot_cont):
+            return tau * self.all_sf(
+                self.time0 - tau, mtot_cont=mtot_cont,
+                time0=self.time0, **self.FSPS_args)
+
+        def denom_integrand(tau, mtot_cont):
+            return self.all_sf(
+                self.time0 - tau, mtot_cont=mtot_cont,
+                time0=self.time0, **self.FSPS_args)
+
+        # integrating tau * SFR(time0 - tau) wrt tau from 0 to time0
+        num = integrate.quad(
+            num_integrand, 0., self.time0, args=(mtot_cont),
+            points=disconts, epsrel=5.0e-3)[0]
+        denom = integrate.quad(
+            denom_integrand, 0., self.time0, args=(mtot_cont),
+            points=disconts, epsrel=5.0e-3)[0]
+        return num/denom
 
     #=====
     # static methods
@@ -490,3 +522,11 @@ class FSPS_SFHBuilder(object):
     def __repr__(self):
         return '\n'.join(
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.iteritems()])
+
+'''
+to do:
+ - D4000 and HdA spectral indices
+ - r-band luminosity-weighted age
+ - mass-weighted age
+ - i- and z-band mass-to-light ratio
+'''
