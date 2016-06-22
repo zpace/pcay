@@ -221,6 +221,7 @@ class FSPS_SFHBuilder(object):
 
     @property
     def mformed_integration(self):
+        FSPS_args = self.FSPS_args
         integrate.quad(
             self.all_sf, 0., self.time0, args=(
                 FSPS_args['time_form'], FSPS_args['eftu'],
@@ -255,6 +256,22 @@ class FSPS_SFHBuilder(object):
             denom_integrand, 0., self.time0, args=(mtot_cont),
             points=disconts, epsrel=5.0e-3)[0]
         return num/denom
+
+    @property
+    def Fstar(self):
+        '''
+        mass fraction formed in last Gyr
+        '''
+        FSPS_args = self.FSPS_args
+        mformed_lastGyr = integrate.quad(
+            self.all_sf, self.time0 - 1., self.time0, args=(
+                FSPS_args['time_form'], FSPS_args['eftu'],
+                FSPS_args['time_cut'], FSPS_args['eftc'],
+                FSPS_args['time_burst'], FSPS_args['dt_burst'],
+                FSPS_args['A'], self.time0),
+            points=self.disconts, epsrel=5.0e-3)[0]
+
+        return mformed_lastGyr / self.mformed_integration
 
     #=====
     # static methods
