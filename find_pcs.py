@@ -1,6 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+import spec_tools
+import ssp_lib
+
 from astropy import constants as c, units as u
 from itertools import izip
 
@@ -62,7 +65,8 @@ class StellarPop_PCA(object):
 
         pca_models = PCA()
         pca_models.fit(self.spectra - self.mean_spectrum)
-        [plt.plot(self.l, pca_models.components_[i] + i*.1, label=str(i))
+        [plt.plot(self.l, pca_models.components_[i] + i*.1, label=str(i),
+                  drawstyle='steps-mid')
             for i in range(10)]
         plt.legend(loc='best', prop={'size': 8})
         plt.show()
@@ -91,3 +95,83 @@ class StellarPop_PCA(object):
                 for lo, up in izip(mask_ledges, mask_uedges)])
         antimask = np.prod(full_antimask, axis=0)
         return ~antimask.astype(bool)
+
+class MaNGA_deredshift(object):
+    '''
+    class to deredshift reduced MaNGA data based on velocity info from DAP
+
+    preserves cube information, in general
+    '''
+    def __init__(self, drp_hdulist, dap_hdulist,
+                 max_vel_unc=90.*u.Unit('km/s'), drp_logl=None):
+        self.drp_hdulist = drp_hdulist
+        self.dap_hdulist = dap_hdulist
+
+        self.vel = dap_hdulist['STELLAR_VEL'].data * u.Unit('km/s')
+        self.vel_ivar = dap_hdulist['STELLAR_VEL_IVAR'].data * u.Unit(
+            'km-2s2')
+        # mask all the spaxels that have high stellar velocity uncertainty
+        self.vel_ivar_mask = 1./np.sqrt(vel_ivar) > max_vel_unc
+
+        self.drp_logl = np.log10(drp_hdulist['WAVE'])
+        if drp_dlogl is None:
+            drp_dlogl = spec_tools.determine_dlogl(self.drp_logl)
+        self.drp_dlogl = drp_dlogl
+
+        self.flux = self.drp_hdulist['FLUX'].data
+
+    @classmethod
+    def from_filenames(cls, drp_fname, dap_fname):
+        drp_hdulist = fits.open(drp_fname)
+        dap_hdulist = fits.open(dap_fname)
+        return cls(drp_hdulist, dap_hdulist)
+
+    def regrid_to_rest(self, template_logl, template_dlogl=None):
+        '''
+        regrid flux density measurements from MaNGA DRP logcube results
+            to a specified logl grid, essentially picking the pixels that
+            fall in the logl grid's range, after being de-redshifted
+
+        (this does not perform any fancy interpolation, just "shifting")
+        (nor are emission line features masked--that must be done in post-)
+        '''
+        if template_dlogl is None:
+            template_dlogl = spec_tools.determine_dlogl(template_logl)
+
+        if template_dlogl != drp_dlogl:
+            raise ssp_lib.TemplateCoverageError(
+                'template and input spectra must have same dlogl: ' +\
+                'template\'s is {}; input spectra\'s is {}'.format(
+                    template_dlogl, self.drp_dlogl))
+
+        # initialize a cube with spatial dimensions of DAP/DRP cube,
+        # and spectral dimension of template wavelength array
+        regridded_cube = np.zeros(self.vel.shape[:-1] + (len(filler),))
+
+        # determine starting index for each of the spaxels
+
+        template_logl0 = template_logl[0]
+        template_logl0_z = template_logl0 + (self.vel/c.c).to('').value
+        # find the index for the wavelength that best corresponds to
+        # an appropriately redshifted wavelength grid
+        ix_logl0_z = np.argmin((template_logl0_z - drp_logl)**2.,
+                               axis=-1)
+        # test whether wavelength grid extends beyond MaNGA coverage
+        # in any spaxels
+        bad_logl_extent = (ix_logl0_z + len(template_logl)) >= len(drp_logl)
+        bad_ = (bad_logl_extent | self.vel_ivar_mask)[:, :, np.newaxis]
+        # select len(template_logl) values from self.flux, w/ diff starting
+        # (see http://stackoverflow.com/questions/37984214/
+        # pure-numpy-expression-for-selecting-same-length-
+        # subarrays-with-different-startin)
+        I, J, _ = np.ix_(*[range(i) for i in self.flux.shape])
+        # (and also filter out spaxels that are bad)
+        regridded_cube[~bad_] = self.flux[
+            I, J, ix_logl0_z[..., None] + np.arange(
+            len(template_logl))][~bad_]
+
+        self.bad_ = bad_
+
+        self.regridded_cube = regridded_cube
+
+        return self.regridded_cube, self.bad_
