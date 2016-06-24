@@ -5,6 +5,7 @@ import spec_tools
 import ssp_lib
 
 from astropy import constants as c, units as u
+from astropy.io import fits
 from itertools import izip
 
 class StellarPop_PCA(object):
@@ -71,6 +72,23 @@ class StellarPop_PCA(object):
         plt.legend(loc='best', prop={'size': 8})
         plt.show()
 
+    def project_onto_PCs(self, spec, err):
+        '''
+        project a set of measured spectra with measurement errors onto
+            the principal components of the model library
+
+        params:
+         - spec: n-by-m array, where n is the number of spectra, and m
+            is the number of spectral wavelength bins. [Flux-density units]
+         - err: n-by-m array, containing the measurement errors for each
+            of the rows in spec [Flux-density units]
+
+        REFERENCE: Connolly & Szalay (1999, AJ, 117, 2052)
+            [particularly eqs. 3, 4, 5]
+            (http://iopscience.iop.org/article/10.1086/300839/pdf)
+        '''
+        raise NotImplementedError
+
     # =====
     # properties
     # =====
@@ -101,9 +119,11 @@ class MaNGA_deredshift(object):
     class to deredshift reduced MaNGA data based on velocity info from DAP
 
     preserves cube information, in general
+
+    also builds in a check on velocity coverage, and computes a mask
     '''
     def __init__(self, drp_hdulist, dap_hdulist,
-                 max_vel_unc=90.*u.Unit('km/s'), drp_logl=None):
+                 max_vel_unc=90.*u.Unit('km/s'), drp_dlogl=None):
         self.drp_hdulist = drp_hdulist
         self.dap_hdulist = dap_hdulist
 
@@ -111,9 +131,9 @@ class MaNGA_deredshift(object):
         self.vel_ivar = dap_hdulist['STELLAR_VEL_IVAR'].data * u.Unit(
             'km-2s2')
         # mask all the spaxels that have high stellar velocity uncertainty
-        self.vel_ivar_mask = 1./np.sqrt(vel_ivar) > max_vel_unc
+        self.vel_ivar_mask = 1./np.sqrt(self.vel_ivar) > max_vel_unc
 
-        self.drp_logl = np.log10(drp_hdulist['WAVE'])
+        self.drp_logl = np.log10(drp_hdulist['WAVE'].data)
         if drp_dlogl is None:
             drp_dlogl = spec_tools.determine_dlogl(self.drp_logl)
         self.drp_dlogl = drp_dlogl
@@ -138,7 +158,7 @@ class MaNGA_deredshift(object):
         if template_dlogl is None:
             template_dlogl = spec_tools.determine_dlogl(template_logl)
 
-        if template_dlogl != drp_dlogl:
+        if template_dlogl != self.drp_dlogl:
             raise ssp_lib.TemplateCoverageError(
                 'template and input spectra must have same dlogl: ' +\
                 'template\'s is {}; input spectra\'s is {}'.format(
@@ -146,29 +166,35 @@ class MaNGA_deredshift(object):
 
         # initialize a cube with spatial dimensions of DAP/DRP cube,
         # and spectral dimension of template wavelength array
-        regridded_cube = np.zeros(self.vel.shape[:-1] + (len(filler),))
+        regridded_cube = np.zeros(
+            self.vel.shape[1:] + (len(template_logl),))
 
         # determine starting index for each of the spaxels
 
         template_logl0 = template_logl[0]
         template_logl0_z = template_logl0 + (self.vel/c.c).to('').value
+
         # find the index for the wavelength that best corresponds to
         # an appropriately redshifted wavelength grid
-        ix_logl0_z = np.argmin((template_logl0_z - drp_logl)**2.,
-                               axis=-1)
+        ix_logl0_z = np.argmin(
+            (template_logl0_z[:, :, np.newaxis] - np.tile(
+                self.drp_logl, (1,) + self.vel.shape))**2.,
+            axis=0)
+
         # test whether wavelength grid extends beyond MaNGA coverage
         # in any spaxels
-        bad_logl_extent = (ix_logl0_z + len(template_logl)) >= len(drp_logl)
+        bad_logl_extent = (
+            ix_logl0_z + len(template_logl)) >= len(self.drp_logl)
         bad_ = (bad_logl_extent | self.vel_ivar_mask)[:, :, np.newaxis]
         # select len(template_logl) values from self.flux, w/ diff starting
         # (see http://stackoverflow.com/questions/37984214/
         # pure-numpy-expression-for-selecting-same-length-
         # subarrays-with-different-startin)
-        I, J, _ = np.ix_(*[range(i) for i in self.flux.shape])
+        _, I, J = np.ix_(*[range(i) for i in self.flux.shape])
         # (and also filter out spaxels that are bad)
         regridded_cube[~bad_] = self.flux[
-            I, J, ix_logl0_z[..., None] + np.arange(
-            len(template_logl))][~bad_]
+            ix_logl0_z[..., None] + np.arange(
+            len(template_logl)), I, J][~bad_]
 
         self.bad_ = bad_
 
