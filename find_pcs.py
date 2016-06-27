@@ -1,12 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 import spec_tools
 import ssp_lib
+import manga_tools as m
 
-from astropy import constants as c, units as u
+from astropy import constants as c, units as u, table as t
 from astropy.io import fits
-from itertools import izip
+from itertools import izip, product
 
 class StellarPop_PCA(object):
     '''
@@ -123,13 +125,21 @@ class MaNGA_deredshift(object):
     also builds in a check on velocity coverage, and computes a mask
     '''
     def __init__(self, drp_hdulist, dap_hdulist,
-                 max_vel_unc=90.*u.Unit('km/s'), drp_dlogl=None):
+                 max_vel_unc=90.*u.Unit('km/s'), drp_dlogl=None,
+                 MPL_v='MPL-4'):
         self.drp_hdulist = drp_hdulist
         self.dap_hdulist = dap_hdulist
+        self.plateifu = self.drp_hdulist[0].header['PLATEIFU']
 
         self.vel = dap_hdulist['STELLAR_VEL'].data * u.Unit('km/s')
         self.vel_ivar = dap_hdulist['STELLAR_VEL_IVAR'].data * u.Unit(
             'km-2s2')
+
+        self.z = m.get_drpall_val(
+            os.path.join(
+                m.drpall_loc, 'drpall-{}.fits'.format(m.MPL_versions[MPL_v])),
+            ['nsa_redshift'], self.plateifu)[0]['nsa_redshift']
+
         # mask all the spaxels that have high stellar velocity uncertainty
         self.vel_ivar_mask = 1./np.sqrt(self.vel_ivar) > max_vel_unc
 
@@ -164,40 +174,40 @@ class MaNGA_deredshift(object):
                 'template\'s is {}; input spectra\'s is {}'.format(
                     template_dlogl, self.drp_dlogl))
 
-        # initialize a cube with spatial dimensions of DAP/DRP cube,
-        # and spectral dimension of template wavelength array
-        regridded_cube = np.zeros(
-            self.vel.shape[1:] + (len(template_logl),))
-
         # determine starting index for each of the spaxels
 
         template_logl0 = template_logl[0]
-        template_logl0_z = template_logl0 + (self.vel/c.c).to('').value
+        z_map = (self.vel/c.c).to('').value #+ self.z
+        template_logl0_z = template_logl0 + z_map
+        drp_logl_tiled = np.tile(
+            self.drp_logl[:, np.newaxis, np.newaxis],
+            self.vel.shape)
+        template_logl0_z_ = template_logl0_z[np.newaxis, :, :]
 
         # find the index for the wavelength that best corresponds to
         # an appropriately redshifted wavelength grid
-        ix_logl0_z = np.argmin(
-            (template_logl0_z[:, :, np.newaxis] - np.tile(
-                self.drp_logl, (1,) + self.vel.shape))**2.,
-            axis=0)
+        logl_diff = template_logl0_z_ - drp_logl_tiled
+        ix_logl0_z = np.argmin(logl_diff**2., axis=0)
 
         # test whether wavelength grid extends beyond MaNGA coverage
         # in any spaxels
         bad_logl_extent = (
             ix_logl0_z + len(template_logl)) >= len(self.drp_logl)
-        bad_ = (bad_logl_extent | self.vel_ivar_mask)[:, :, np.newaxis]
+        bad_ = (bad_logl_extent | self.vel_ivar_mask)[np.newaxis:, :]
         # select len(template_logl) values from self.flux, w/ diff starting
         # (see http://stackoverflow.com/questions/37984214/
         # pure-numpy-expression-for-selecting-same-length-
         # subarrays-with-different-startin)
-        _, I, J = np.ix_(*[range(i) for i in self.flux.shape])
         # (and also filter out spaxels that are bad)
-        regridded_cube[~bad_] = self.flux[
-            ix_logl0_z[..., None] + np.arange(
-            len(template_logl)), I, J][~bad_]
+
+        _, I, J = np.ix_(*[range(i) for i in self.flux.shape])
+
+        self.regridded_cube = self.flux[
+            ix_logl0_z[None, ...] + np.arange(len(template_logl))[
+                :, np.newaxis, np.newaxis], I, J]
 
         self.bad_ = bad_
 
-        self.regridded_cube = regridded_cube
+        self.regridded_cube[:, bad_] = 0.
 
         return self.regridded_cube, self.bad_
