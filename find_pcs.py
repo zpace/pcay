@@ -1,21 +1,24 @@
 import numpy as np
 import matplotlib.pyplot as plt
+
+from astropy import constants as c, units as u, table as t
+from astropy.io import fits
+
 import os
+from scipy.interpolate import interp1d
 
 import spec_tools
 import ssp_lib
 import manga_tools as m
 
-from astropy import constants as c, units as u, table as t
-from astropy.io import fits
 from itertools import izip, product
+from glob import glob
 
 class StellarPop_PCA(object):
     '''
     class for determining PCs of a library of synthetic spectra
     '''
-    def __init__(self, l, spectra, gen_dicts, metadata,
-                 mask_half_dv=500.*u.Unit('km/s'), dlogl=None):
+    def __init__(self, l, spectra, gen_dicts, metadata, dlogl=None):
         '''
         params:
          - l: length-n array-like defining the wavelength bin centers
@@ -38,15 +41,60 @@ class StellarPop_PCA(object):
             dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
         self.dlogl = dlogl
 
-        self.mask_half_dv = mask_half_dv
-
         self.spectra = spectra
+        self.metadata = metadata
+        self.gen_dicts = gen_dicts
+
+    @classmethod
+    def from_YMC(cls, metadata_file, spec_file_dir, spec_file_base):
+        '''
+        initialize object from CSP library provided by Y-M Chen, which is
+            based on a BC03 model library
+        '''
+
+        # get wavelength grid, and prepare for interpolation of model
+        l_raw = fits.open(
+            os.path.join(
+                spec_file_dir, '{}_{}.fits'.format(
+                    spec_file_base, 1)))[2].data
+        l_raw_good = (3700. <= l_raw) * (l_raw <= 5500.)
+        l_raw = l_raw[l_raw_good]
+        dlogl_final = 1.0e-4
+        l_final= 10.**np.arange(np.log10(3700.), np.log10(5500.),
+                                dlogl_final)
+        nl_final = len(l_final)
+
+        # load metadata table
+        metadata = t.Table.read(metadata_file, format='ascii')
+        nspec = len(metadata)
+
+        # initialize array that resampled spectra will go into
+        spec = np.empty((nspec, nl_final))
+        goodspec = np.ones(nspec).astype(bool)
+        # and fill it
+        for i, fname in enumerate(glob(os.path.join(spec_file_dir,
+                                       '{}_*.fits'.format(
+                                            spec_file_base)))):
+            try:
+                hdulist = fits.open(fname)
+            except IOError:
+                goodspec[i] = False
+            else:
+                f_lambda = hdulist[3].data[l_raw_good]
+                spec[i] = interp1d(l_raw, f_lambda)(l_final)
+
+        ixs = np.arange(nspec)
+        metadata.remove_rows(ixs[~goodspec])
+        spec = spec[goodspec]
+
+        return cls(l=l_final*u.Unit('AA'), spectra=spec,
+                   gen_dicts=None, metadata=metadata, dlogl=dlogl_final)
 
     # =====
     # methods
     # =====
 
-    def run_pca_models(self):
+    def run_pca_models(self, mask_half_dv=500.*u.Unit('km/s')):
         '''
         run PCA on library of model spectra
         '''
@@ -74,7 +122,7 @@ class StellarPop_PCA(object):
         plt.legend(loc='best', prop={'size': 8})
         plt.show()
 
-    def project_onto_PCs(self, spec, err):
+    def project_onto_PCs(self, spec, ivar=None):
         '''
         project a set of measured spectra with measurement errors onto
             the principal components of the model library
@@ -82,14 +130,28 @@ class StellarPop_PCA(object):
         params:
          - spec: n-by-m array, where n is the number of spectra, and m
             is the number of spectral wavelength bins. [Flux-density units]
-         - err: n-by-m array, containing the measurement errors for each
+         - ivar: n-by-m array, containing the inverse-variances for each
             of the rows in spec [Flux-density units]
+            (this functions like the array w_lam in REF [1])
 
-        REFERENCE: Connolly & Szalay (1999, AJ, 117, 2052)
-            [particularly eqs. 3, 4, 5]
-            (http://iopscience.iop.org/article/10.1086/300839/pdf)
+        REFERENCE:
+            [1] Connolly & Szalay (1999, AJ, 117, 2052)
+                [particularly eqs. 3, 4, 5]
+                (http://iopscience.iop.org/article/10.1086/300839/pdf)
         '''
-        raise NotImplementedError
+        if not hasattr(self, 'PCs'):
+            raise PCAError('must run PCA before projecting!')
+
+        e = self.PCs
+
+        if ivar is None:
+            ivar = np.ones_like(spec)
+
+        a = np.empty(spec.shape[0])
+        for i in range(a):
+            M = self.make_M(ivar[i], e)
+            F = self.make_F(ivar, spec[i], e)
+            a[i] = np.linalg.inv(M)[i,:] * F
 
     # =====
     # properties
@@ -115,6 +177,43 @@ class StellarPop_PCA(object):
                 for lo, up in izip(mask_ledges, mask_uedges)])
         antimask = np.prod(full_antimask, axis=0)
         return ~antimask.astype(bool)
+
+    # =====
+    # staticmethods
+    # =====
+
+    @staticmethod
+    def make_M(w, e):
+        '''
+        take weights `w` and eigenvectors `e`, and create matrix M,
+            where element M[i,j] = (e[i] * e[j] * w).sum()
+        '''
+        dim = (len(e[0]), )*2
+        M = np.empty(dim)
+        for i in range(M.shape[0]):
+            for j in range(M.shape[1]):
+                M[i, j] = (e[i] * e[j] * w).sum()
+
+        return M
+
+    @staticmethod
+    def make_F(w, f, e):
+        '''
+        take weights `w`, observed spectrum `f`, and eigenvectors `e`
+            and create vector F, where F[j] = (w * f * e[j]).sum()
+        '''
+        dim = e.shape[0]
+        F = np.empty(dim)
+        for j in range(dim):
+            F[j] = (w * f * e[j]).sum()
+
+        return F
+
+class PCAError(Exception):
+    '''
+    general error for PCA
+    '''
+    pass
 
 class MaNGA_deredshift(object):
     '''
