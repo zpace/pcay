@@ -177,8 +177,9 @@ class MaNGA_deredshift(object):
         # determine starting index for each of the spaxels
 
         template_logl0 = template_logl[0]
-        z_map = (self.vel/c.c).to('').value #+ self.z
-        template_logl0_z = template_logl0 + z_map
+        z_map = (self.vel/c.c).to('').value + self.z
+        self.z_map = z_map
+        template_logl0_z = np.log10(10.**(template_logl0) * (1. + z_map))
         drp_logl_tiled = np.tile(
             self.drp_logl[:, np.newaxis, np.newaxis],
             self.vel.shape)
