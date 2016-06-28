@@ -87,6 +87,10 @@ class StellarPop_PCA(object):
         metadata.remove_rows(ixs[~goodspec])
         spec = spec[goodspec]
 
+        metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mfb_1e9']
+
+        metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar']
+
         return cls(l=l_final*u.Unit('AA'), spectra=spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final)
 
@@ -98,7 +102,6 @@ class StellarPop_PCA(object):
         '''
         run PCA on library of model spectra
         '''
-        from sklearn.decomposition import PCA
         # first run some prep on the model spectra
 
         # find lower and upper edges of each wavelength bin,
@@ -114,11 +117,10 @@ class StellarPop_PCA(object):
         self.normed_spectra = self.spectra/norm_flux[:, np.newaxis]
         self.mean_spectrum = np.mean(self.normed_spectra, axis=0)
 
-        pca_models = PCA()
-        pca_models.fit(self.spectra - self.mean_spectrum)
-        [plt.plot(self.l, pca_models.components_[i] + i*.1, label=str(i),
+        self.PCs = self.PCA(self.spectra - self.mean_spectrum, dims=7)
+        [plt.plot(self.l, self.PCs[i] + i*.1, label=str(i),
                   drawstyle='steps-mid')
-            for i in range(10)]
+            for i in range(7)]
         plt.legend(loc='best', prop={'size': 8})
         plt.show()
 
@@ -208,6 +210,39 @@ class StellarPop_PCA(object):
             F[j] = (w * f * e[j]).sum()
 
         return F
+
+    @staticmethod
+    def PCA(data, dims=None):
+        '''
+        perform pure numpy PCA on array of data, returning `dims`-length
+            evals and evecs. This method is covariance-based, not SVD-based.
+        '''
+
+        if dims is None:
+            dims = data.shape[1]
+
+        # calculate the covariance matrix
+        R = np.cov(data, rowvar=False)
+
+        # calculate eigenvectors & eigenvalues of the covariance matrix
+        # use 'eigh' rather than 'eig' since R is symmetric,
+        # the performance gain is substantial
+        evals, evecs = np.linalg.eigh(R)
+
+        # sort eigenvalue in decreasing order
+        idx = np.argsort(evals)[::-1]
+        evecs = evecs[:,idx]
+
+        # sort eigenvectors according to same index
+        evals = evals[idx]
+
+        # select the first n eigenvectors (n is desired dimension
+        # of rescaled data array, or dims_rescaled_data)
+        evecs = evecs[:, :dims].T
+
+        # carry out the transformation on the data using eigenvectors
+        # and return the re-scaled data, eigenvalues, and eigenvectors
+        return evecs
 
 class PCAError(Exception):
     '''
