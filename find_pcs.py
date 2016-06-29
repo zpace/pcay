@@ -18,7 +18,7 @@ class StellarPop_PCA(object):
     '''
     class for determining PCs of a library of synthetic spectra
     '''
-    def __init__(self, l, spectra, gen_dicts, metadata, dlogl=None):
+    def __init__(self, l, trn_spectra, gen_dicts, metadata, dlogl=None):
         '''
         params:
          - l: length-n array-like defining the wavelength bin centers
@@ -41,7 +41,7 @@ class StellarPop_PCA(object):
             dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
         self.dlogl = dlogl
 
-        self.spectra = spectra
+        self.trn_spectra = trn_spectra
         self.metadata = metadata
         self.gen_dicts = gen_dicts
 
@@ -53,10 +53,11 @@ class StellarPop_PCA(object):
         '''
 
         # get wavelength grid, and prepare for interpolation of model
-        l_raw = fits.open(
-            os.path.join(
-                spec_file_dir, '{}_{}.fits'.format(
-                    spec_file_base, 1)))[2].data
+        hdulist = fits.open(os.path.join(spec_file_dir, '{}_1.fits'.format(
+            spec_file_base)))
+        l_raw = hdulist[2].data
+        hdulist.close()
+
         l_raw_good = (3700. <= l_raw) * (l_raw <= 5500.)
         l_raw = l_raw[l_raw_good]
         dlogl_final = 1.0e-4
@@ -72,26 +73,41 @@ class StellarPop_PCA(object):
         spec = np.empty((nspec, nl_final))
         goodspec = np.ones(nspec).astype(bool)
         # and fill it
-        for i, fname in enumerate(glob(os.path.join(spec_file_dir,
-                                       '{}_*.fits'.format(
-                                            spec_file_base)))):
+        for i in range(nspec):
+            # create a hypothetical filename
+            fname = os.path.join(spec_file_dir, '{}_{}.fits'.format(
+                spec_file_base, i))
+
+            # handle file-DNE case exception-less-ly
+            if not os.path.exists(fname):
+                goodspec[i] = False
+                continue
+
             try:
                 hdulist = fits.open(fname)
+            # if there's another issue...
             except IOError:
+                #print 'bad!', fname
                 goodspec[i] = False
             else:
                 f_lambda = hdulist[3].data[l_raw_good]
-                spec[i] = interp1d(l_raw, f_lambda)(l_final)
+            finally:
+                hdulist.close()
+
+            if goodspec[i] == False:
+                continue
+
+            spec[i] = interp1d(l_raw, f_lambda)(l_final)
 
         ixs = np.arange(nspec)
         metadata.remove_rows(ixs[~goodspec])
-        spec = spec[goodspec]
+        spec = spec[goodspec, :]
 
-        metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mfb_1e9']
+        metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mgalaxy']
 
         metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar']
 
-        return cls(l=l_final*u.Unit('AA'), spectra=spec,
+        return cls(l=l_final*u.Unit('AA'), trn_spectra=spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final)
 
     # =====
@@ -111,18 +127,30 @@ class StellarPop_PCA(object):
         dl = self.dl = l_upper - l_lower
 
         # scale each spectrum such that the mean flux between
-        # 3700 and 5000 AA is unity
-        norm_flux = (self.spectra * dl)[:, (3700.*u.AA < self.l) * \
-                                           (self.l < 5000.*u.AA)].sum(axis=1)
-        self.normed_spectra = self.spectra/norm_flux[:, np.newaxis]
-        self.mean_spectrum = np.mean(self.normed_spectra, axis=0)
+        # 3700 and 5500 AA is unity
+        avg_trn_flux = np.mean(self.trn_spectra * dl, axis=1)
 
-        self.PCs = self.PCA(self.spectra - self.mean_spectrum, dims=7)
-        [plt.plot(self.l, self.PCs[i] + i*.1, label=str(i),
-                  drawstyle='steps-mid')
-            for i in range(7)]
-        plt.legend(loc='best', prop={'size': 8})
-        plt.show()
+        self.normed_trn_spectra = \
+            self.trn_spectra/avg_trn_flux[:, np.newaxis]
+        self.mean_trn_spectrum = np.mean(
+            self.normed_trn_spectra, axis=0)
+
+        self.PCs = self.PCA(
+            self.normed_trn_spectra - self.mean_trn_spectrum,
+            dims=7)
+        # transformation matrix: spectra -> PC amplitudes
+        self.tfm_sp2PC = self.PCs.T
+
+        # project back onto the PCs to get the weight vectors
+        self.trn_PC_wts = (self.normed_trn_spectra - \
+            self.mean_trn_spectrum).dot(self.tfm_sp2PC)
+        # and reconstruct the best approximation for the spectra from PCs
+        self.trn_recon = self.trn_PC_wts.dot(self.PCs)
+        # residuals
+        self.trn_resid = self.normed_trn_spectra - \
+            (self.mean_trn_spectrum + self.trn_recon)
+
+        self.cov_th = np.cov(self.trn_resid.T)
 
     def project_onto_PCs(self, spec, ivar=None):
         '''
@@ -222,7 +250,7 @@ class StellarPop_PCA(object):
             dims = data.shape[1]
 
         # calculate the covariance matrix
-        R = np.cov(data, rowvar=False)
+        R = np.cov(data.T)
 
         # calculate eigenvectors & eigenvalues of the covariance matrix
         # use 'eigh' rather than 'eig' since R is symmetric,
@@ -240,8 +268,8 @@ class StellarPop_PCA(object):
         # of rescaled data array, or dims_rescaled_data)
         evecs = evecs[:, :dims].T
 
-        # carry out the transformation on the data using eigenvectors
-        # and return the re-scaled data, eigenvalues, and eigenvectors
+        # transformation matrix takes (scaled) data to array of PC weights
+
         return evecs
 
 class PCAError(Exception):
