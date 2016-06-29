@@ -152,7 +152,9 @@ class StellarPop_PCA(object):
 
         self.cov_th = np.cov(self.trn_resid.T)
 
-    def project_onto_PCs(self, spec, ivar=None):
+
+
+    def robust_project_onto_PCs(self, spec, ivar=None):
         '''
         project a set of measured spectra with measurement errors onto
             the principal components of the model library
@@ -211,6 +213,31 @@ class StellarPop_PCA(object):
     # =====
     # staticmethods
     # =====
+
+    @staticmethod
+    def __obj_fn_Pfit__(P, C, X, Z):
+        '''
+        objective function for fitting parameters with PCs
+
+        params:
+            - P: n-by-p array, representing n spectra having p parameters
+                associated with them. P contains the true parameter values
+                for all spectra
+            - C: n-by-q array, representing principal component amplitudes
+                associated with a PCA realization, where n is the number of
+                spectra used in the PCA and q is the number of principal
+                components kept
+            - X: q-by-p array, which takes C.T to an estimate of
+                the true P, P_
+            - Z: length-p vector, representing the zeropoint associated
+                with each parameter P[:, i]
+
+        C.T (dot) X must have the same dimensions as P
+        '''
+
+        P_ = np.dot(C.T, X) + Z
+        P_resid_sq = (((P_ - P).sum(axis=1))**2.).sum()
+        return P_resid_sq
 
     @staticmethod
     def make_M(w, e):
