@@ -50,7 +50,8 @@ class StellarPop_PCA(object):
         self.gen_dicts = gen_dicts
 
     @classmethod
-    def from_YMC(cls, metadata_file, spec_file_dir, spec_file_base):
+    def from_YMC(cls, lib_para_file, form_file,
+                 spec_file_dir, spec_file_base):
         '''
         initialize object from CSP library provided by Y-M Chen, which is
             based on a BC03 model library
@@ -69,9 +70,14 @@ class StellarPop_PCA(object):
                                 dlogl_final)
         nl_final = len(l_final)
 
-        # load metadata table
-        metadata = t.Table.read(metadata_file, format='ascii')
-        nspec = len(metadata)
+        # load metadata tables
+        lib_para = t.Table.read(lib_para_file, format='ascii')
+        form_data = t.Table.read(form_file, format='ascii')
+        form_data_goodcols = ['zmet', 'Tau_v', 'mu']
+        for n in form_data_goodcols:
+            lib_para[n] = np.zeros(len(lib_para))
+
+        nspec = len(lib_para)
 
         # initialize array that resampled spectra will go into
         spec = np.empty((nspec, nl_final))
@@ -95,6 +101,8 @@ class StellarPop_PCA(object):
                 goodspec[i] = False
             else:
                 f_lambda = hdulist[3].data[l_raw_good]
+                lib_para[form_data_goodcols][i-1] = \
+                    form_data[form_data_goodcols][i]
             finally:
                 hdulist.close()
 
@@ -103,13 +111,16 @@ class StellarPop_PCA(object):
 
             spec[i] = interp1d(l_raw, f_lambda)(l_final)
 
+        metadata = lib_para
+
         ixs = np.arange(nspec)
         metadata.remove_rows(ixs[~goodspec])
         spec = spec[goodspec, :]
 
         metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mgalaxy']
 
-        metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar']
+        metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar',
+                            'zmet', 'Tau_v', 'mu']
 
         return cls(l=l_final*u.Unit('AA'), trn_spectra=spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final)
@@ -118,10 +129,14 @@ class StellarPop_PCA(object):
     # methods
     # =====
 
-    def run_pca_models(self, mask_half_dv=500.*u.Unit('km/s'), max_q=50):
+    def run_pca_models(self, mask_half_dv=500.*u.Unit('km/s'),
+                       q=None, max_q=None):
         '''
         run PCA on library of model spectra
         '''
+
+        if (q is None) and (max_q is None):
+            raise ValueError('must provide either or both `q`/`max_q`!')
         # first run some prep on the model spectra
 
         # find lower and upper edges of each wavelength bin,
@@ -139,9 +154,55 @@ class StellarPop_PCA(object):
         self.mean_trn_spectrum = np.mean(
             self.normed_trn_spectra, axis=0)
 
-        res_q = [None, ] * max_q
+        # if user asks to test param reconstruction from PCs over range
+        # of # of PCs kept
+        # this does not keep record of each iteration's output, even at end
+        if max_q is not None:
+            res_q = [None, ] * max_q
+            for dim_pc_subspace in range(1, max_q):
+                PCs = self.PCA(
+                    self.normed_trn_spectra - self.mean_trn_spectrum,
+                    dims=dim_pc_subspace)
+                # transformation matrix: spectra -> PC amplitudes
+                tfm_sp2PC = PCs.T
 
-        for dim_pc_subspace in range(1, max_q):
+                # project back onto the PCs to get the weight vectors
+                trn_PC_wts = (self.normed_trn_spectra - \
+                    self.mean_trn_spectrum).dot(tfm_sp2PC)
+                # and reconstruct the best approximation for the spectra from PCs
+                trn_recon = trn_PC_wts.dot(PCs)
+                # residuals
+                trn_resid = self.normed_trn_spectra - \
+                    (self.mean_trn_spectrum + trn_recon)
+
+                cov_th = np.cov(trn_resid.T)
+
+                # find weights of each PC in determining parameters in metadata
+                (n_, p_, q_) = (self.trn_spectra.shape[0],
+                                len(self.metadata.colnames),
+                                dim_pc_subspace)
+                m_dims_ = (n_, p_, q_)
+
+                res_q[dim_pc_subspace] = minimize(
+                    self.__obj_fn_Pfit__,
+                    x0=np.random.uniform(-1, 1, p_ * (q_ + 1)),
+                    args=(self.metadata_a, trn_PC_wts, m_dims_))
+
+                plt.scatter(
+                    dim_pc_subspace,
+                    res_q[dim_pc_subspace].fun/res_q[dim_pc_subspace].x.size,
+                    c='b', marker='x')
+
+            plt.yscale('log')
+            plt.xlabel(r'\# of PCs kept')
+            plt.ylabel(r'$\Delta/\delta$ (sum-squared-error over DOF)')
+            plt.title('Parameter Estimation Errors')
+            plt.savefig('param_est_QA.png')
+
+        # if user asks to run parameter regression of specific # of PCs
+        # this also sets self attributes, so that everything is kept
+        if q is not None:
+            dim_pc_subspace = q
             self.PCs = self.PCA(
                 self.normed_trn_spectra - self.mean_trn_spectrum,
                 dims=dim_pc_subspace)
@@ -165,21 +226,14 @@ class StellarPop_PCA(object):
                             dim_pc_subspace)
             m_dims_ = (n_, p_, q_)
 
-            res_q[dim_pc_subspace] = minimize(
+            res_q = minimize(
                 self.__obj_fn_Pfit__,
                 x0=np.random.uniform(-1, 1, p_ * (q_ + 1)),
                 args=(self.metadata_a, self.trn_PC_wts, m_dims_))
 
-            plt.scatter(
-                dim_pc_subspace,
-                res_q[dim_pc_subspace].fun/res_q[dim_pc_subspace].x.size,
-                c='b', marker='x')
+            self.PC2params_A = res_q.x[:(q_ * p_)].reshape((q_, p_))
+            self.PC2params_Z = res_q.x[(q_ * p_):].flatten()
 
-        plt.yscale('log')
-        plt.xlabel(r'\# of PCs kept')
-        plt.ylabel(r'$\Delta/\delta$ (sum-squared-error over DOF)')
-        plt.title('Parameter Estimation Errors')
-        plt.savefig('param_est_QA.png')
 
     def robust_project_onto_PCs(self, spec, ivar=None):
         '''
