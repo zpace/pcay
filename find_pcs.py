@@ -6,6 +6,7 @@ from astropy.io import fits
 
 import os
 from scipy.interpolate import interp1d
+from scipy.optimize import minimize
 
 import spec_tools
 import ssp_lib
@@ -43,6 +44,9 @@ class StellarPop_PCA(object):
 
         self.trn_spectra = trn_spectra
         self.metadata = metadata
+        self.metadata_a = np.array(
+            self.metadata).view(dtype=float).reshape(
+            (len(self.metadata), -1))
         self.gen_dicts = gen_dicts
 
     @classmethod
@@ -114,7 +118,7 @@ class StellarPop_PCA(object):
     # methods
     # =====
 
-    def run_pca_models(self, mask_half_dv=500.*u.Unit('km/s')):
+    def run_pca_models(self, mask_half_dv=500.*u.Unit('km/s'), max_q=50):
         '''
         run PCA on library of model spectra
         '''
@@ -135,24 +139,47 @@ class StellarPop_PCA(object):
         self.mean_trn_spectrum = np.mean(
             self.normed_trn_spectra, axis=0)
 
-        self.PCs = self.PCA(
-            self.normed_trn_spectra - self.mean_trn_spectrum,
-            dims=7)
-        # transformation matrix: spectra -> PC amplitudes
-        self.tfm_sp2PC = self.PCs.T
+        res_q = [None, ] * max_q
 
-        # project back onto the PCs to get the weight vectors
-        self.trn_PC_wts = (self.normed_trn_spectra - \
-            self.mean_trn_spectrum).dot(self.tfm_sp2PC)
-        # and reconstruct the best approximation for the spectra from PCs
-        self.trn_recon = self.trn_PC_wts.dot(self.PCs)
-        # residuals
-        self.trn_resid = self.normed_trn_spectra - \
-            (self.mean_trn_spectrum + self.trn_recon)
+        for dim_pc_subspace in range(1, max_q):
+            self.PCs = self.PCA(
+                self.normed_trn_spectra - self.mean_trn_spectrum,
+                dims=dim_pc_subspace)
+            # transformation matrix: spectra -> PC amplitudes
+            self.tfm_sp2PC = self.PCs.T
 
-        self.cov_th = np.cov(self.trn_resid.T)
+            # project back onto the PCs to get the weight vectors
+            self.trn_PC_wts = (self.normed_trn_spectra - \
+                self.mean_trn_spectrum).dot(self.tfm_sp2PC)
+            # and reconstruct the best approximation for the spectra from PCs
+            self.trn_recon = self.trn_PC_wts.dot(self.PCs)
+            # residuals
+            self.trn_resid = self.normed_trn_spectra - \
+                (self.mean_trn_spectrum + self.trn_recon)
 
+            self.cov_th = np.cov(self.trn_resid.T)
 
+            # find weights of each PC in determining parameters in metadata
+            (n_, p_, q_) = (self.trn_spectra.shape[0],
+                            len(self.metadata.colnames),
+                            dim_pc_subspace)
+            m_dims_ = (n_, p_, q_)
+
+            res_q[dim_pc_subspace] = minimize(
+                self.__obj_fn_Pfit__,
+                x0=np.random.uniform(-1, 1, p_ * (q_ + 1)),
+                args=(self.metadata_a, self.trn_PC_wts, m_dims_))
+
+            plt.scatter(
+                dim_pc_subspace,
+                res_q[dim_pc_subspace].fun/res_q[dim_pc_subspace].x.size,
+                c='b', marker='x')
+
+        plt.yscale('log')
+        plt.xlabel(r'\# of PCs kept')
+        plt.ylabel(r'$\Delta/\delta$ (sum-squared-error over DOF)')
+        plt.title('Parameter Estimation Errors')
+        plt.savefig('param_est_QA.png')
 
     def robust_project_onto_PCs(self, spec, ivar=None):
         '''
@@ -215,7 +242,7 @@ class StellarPop_PCA(object):
     # =====
 
     @staticmethod
-    def __obj_fn_Pfit__(P, C, X, Z):
+    def __obj_fn_Pfit__(XZ, P, C, dims):
         '''
         objective function for fitting parameters with PCs
 
@@ -227,15 +254,21 @@ class StellarPop_PCA(object):
                 associated with a PCA realization, where n is the number of
                 spectra used in the PCA and q is the number of principal
                 components kept
-            - X: q-by-p array, which takes C.T to an estimate of
-                the true P, P_
+            - X: q-by-p array, which takes C.T to P_, an estimate of
+                the true P
             - Z: length-p vector, representing the zeropoint associated
                 with each parameter P[:, i]
 
-        C.T (dot) X must have the same dimensions as P
+        n: number of spectra
+        p: number of galaxy parameters estimated
+        q: number of PCs kept (i.e., dimension of PC subspace)
         '''
+        (n, p, q) = dims
 
-        P_ = np.dot(C.T, X) + Z
+        X = XZ[:(q * p)].reshape((q, p))
+        Z = XZ[(q * p):].flatten()
+
+        P_ = np.dot(C, X) + Z
         P_resid_sq = (((P_ - P).sum(axis=1))**2.).sum()
         return P_resid_sq
 
