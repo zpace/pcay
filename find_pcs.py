@@ -251,6 +251,9 @@ class StellarPop_PCA(object):
             [1] Connolly & Szalay (1999, AJ, 117, 2052)
                 [particularly eqs. 3, 4, 5]
                 (http://iopscience.iop.org/article/10.1086/300839/pdf)
+
+        This should be done on the largest number of spectra possible
+            simultaneously, for greatest speed. Rules of thumb to come.
         '''
         if not hasattr(self, 'PCs'):
             raise PCAError('must run PCA before projecting!')
@@ -260,11 +263,14 @@ class StellarPop_PCA(object):
         if ivar is None:
             ivar = np.ones_like(spec)
 
-        a = np.empty(spec.shape[0])
-        for i in range(a):
-            M = self.make_M(ivar[i], e)
-            F = self.make_F(ivar, spec[i], e)
-            a[i] = np.linalg.inv(M)[i,:] * F
+        M = np.einsum('sk,ik,jk->sij', ivar, e, e)
+        M_inv = np.linalg.inv(M) # takes invs for each axis-zero slice!
+
+        F = np.einsum('sk,sk,jk->sj', ivar, spec, e)
+
+        A = np.linalg.solve(M, F)
+
+        return A
 
     # =====
     # properties
