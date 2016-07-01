@@ -234,44 +234,6 @@ class StellarPop_PCA(object):
             self.PC2params_A = res_q.x[:(q_ * p_)].reshape((q_, p_))
             self.PC2params_Z = res_q.x[(q_ * p_):].flatten()
 
-
-    def robust_project_onto_PCs(self, spec, ivar=None):
-        '''
-        project a set of measured spectra with measurement errors onto
-            the principal components of the model library
-
-        params:
-         - spec: n-by-m array, where n is the number of spectra, and m
-            is the number of spectral wavelength bins. [Flux-density units]
-         - ivar: n-by-m array, containing the inverse-variances for each
-            of the rows in spec [Flux-density units]
-            (this functions like the array w_lam in REF [1])
-
-        REFERENCE:
-            [1] Connolly & Szalay (1999, AJ, 117, 2052)
-                [particularly eqs. 3, 4, 5]
-                (http://iopscience.iop.org/article/10.1086/300839/pdf)
-
-        This should be done on the largest number of spectra possible
-            simultaneously, for greatest speed. Rules of thumb to come.
-        '''
-        if not hasattr(self, 'PCs'):
-            raise PCAError('must run PCA before projecting!')
-
-        e = self.PCs
-
-        if ivar is None:
-            ivar = np.ones_like(spec)
-
-        M = np.einsum('sk,ik,jk->sij', ivar, e, e)
-        M_inv = np.linalg.inv(M) # takes invs for each axis-zero slice!
-
-        F = np.einsum('sk,sk,jk->sj', ivar, spec, e)
-
-        A = np.linalg.solve(M, F)
-
-        return A
-
     # =====
     # properties
     # =====
@@ -300,6 +262,41 @@ class StellarPop_PCA(object):
     # =====
     # staticmethods
     # =====
+
+    @staticmethod
+    def robust_project_onto_PCs(e, f, w=None):
+        '''
+        project a set of measured spectra with measurement errors onto
+            the principal components of the model library
+
+        params:
+         - e: n-by-l array of eigenvectors
+         - f: n-by-m array, where n is the number of spectra, and m
+            is the number of spectral wavelength bins. [Flux-density units]
+         - w: n-by-m array, containing the inverse-variances for each
+            of the rows in spec [Flux-density units]
+            (this functions like the array w_lam in REF [1])
+
+        REFERENCE:
+            [1] Connolly & Szalay (1999, AJ, 117, 2052)
+                [particularly eqs. 3, 4, 5]
+                (http://iopscience.iop.org/article/10.1086/300839/pdf)
+
+        This should be done on the largest number of spectra possible
+            simultaneously, for greatest speed. Rules of thumb to come.
+        '''
+
+        if w is None:
+            w = np.ones_like(f)
+
+        M = np.einsum('sk,ik,jk->sij', w, e, e)
+        M_inv = np.linalg.inv(M) # takes invs for each axis-zero slice!
+
+        F = np.einsum('sk,sk,jk->sj', w, f, e)
+
+        A = np.linalg.solve(M, F)
+
+        return A
 
     @staticmethod
     def __obj_fn_Pfit__(XZ, P, C, dims):
