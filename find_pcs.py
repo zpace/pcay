@@ -310,33 +310,6 @@ class StellarPop_PCA(object):
         return P_resid_sq
 
     @staticmethod
-    def make_M(w, e):
-        '''
-        take weights `w` and eigenvectors `e`, and create matrix M,
-            where element M[i,j] = (e[i] * e[j] * w).sum()
-        '''
-        dim = (len(e[0]), )*2
-        M = np.empty(dim)
-        for i in range(M.shape[0]):
-            for j in range(M.shape[1]):
-                M[i, j] = (e[i] * e[j] * w).sum()
-
-        return M
-
-    @staticmethod
-    def make_F(w, f, e):
-        '''
-        take weights `w`, observed spectrum `f`, and eigenvectors `e`
-            and create vector F, where F[j] = (w * f * e[j]).sum()
-        '''
-        dim = e.shape[0]
-        F = np.empty(dim)
-        for j in range(dim):
-            F[j] = (w * f * e[j]).sum()
-
-        return F
-
-    @staticmethod
     def PCA(data, dims=None):
         '''
         perform pure numpy PCA on array of data, returning `dims`-length
@@ -472,7 +445,8 @@ class MaNGA_deredshift(object):
 
         return self.regridded_cube, self.bad_
 
-    def compute_eline_mask(self, template_logl, template_dlogl, ix_Hb=1):
+    def compute_eline_mask(self, template_logl, template_dlogl, ix_Hb=1,
+                           half_dv=500.*u.Unit('km/s')):
         '''
         find where EW(Hb) < -5 AA, and return a mask 500 km/s around
             each of the following emission lines:
@@ -492,9 +466,8 @@ class MaNGA_deredshift(object):
         EW_Hb = self.eline_EW(ix=ix_Hb)
         eline_dom = EW_Hb > 5.*u.AA # True if elines dominate
 
-        template_l = 10.**template_logl
+        template_l = 10.**template_logl * u.AA
 
-        half_dv = self.mask_half_dv
         line_ctrs = u.Unit('AA') * \
             np.array([
                 3751.22, 3771.70, 3798.98, 3836.48, 3890.15, 3971.19,
@@ -521,7 +494,8 @@ class MaNGA_deredshift(object):
 
         full_mask = np.ones(
             (len(template_l),) + (self.flux.shape[1:])).astype(bool)
-        full_mask[:, eline_dom] = ~antimask
+        #print full_mask.shape
+        full_mask[~eline_dom] = False
 
         return full_mask
 
