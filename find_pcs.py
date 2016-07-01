@@ -238,26 +238,6 @@ class StellarPop_PCA(object):
     # properties
     # =====
 
-    @property
-    def model_eline_mask(self):
-        from astropy import units as u, constants as c
-        half_dv = self.mask_half_dv
-        line_ctrs = u.Unit('AA') * \
-            np.array([3727.09, 3729.88, 3889.05, 3969.81, 3968.53,
-        #              [OII]    [OII]      H8    [NeIII]  [NeIII]
-                      4341.69, 4102.92, 4862.69, 5008.24, 4960.30])
-        #                Hg       Hd       Hb     [OIII]   [OIII]
-
-        # compute mask edges
-        mask_ledges = line_ctrs * (1 - (half_dv / c.c).to(''))
-        mask_uedges = line_ctrs * (1 + (half_dv / c.c).to(''))
-
-        # find whether each wavelength bin is used in for each eline's mask
-        full_antimask = np.row_stack(
-            [~((lo < self.l) * (self.l < up))
-                for lo, up in izip(mask_ledges, mask_uedges)])
-        antimask = np.prod(full_antimask, axis=0)
-        return ~antimask.astype(bool)
 
     # =====
     # staticmethods
@@ -491,3 +471,59 @@ class MaNGA_deredshift(object):
         self.regridded_cube[:, bad_] = 0.
 
         return self.regridded_cube, self.bad_
+
+    def compute_eline_mask(self, template_logl, template_dlogl, ix_Hb=1):
+        '''
+        find where EW(Hb) < -5 AA, and return a mask 500 km/s around
+            each of the following emission lines:
+
+             - Ha - H11
+             - HeI/II 4388/5048/5016
+             - [NeIII] 3868/3968
+             - [OIII] 4363/4959/5007
+             - [NII] 5754/6549/6583
+             - [SII] 6717/6731
+             - [NeII] 6583/6548/5754
+             - [OI] 5577/6300
+             - [SIII] 6313/9071/9533
+             - [ArIII] 7137/7753
+        '''
+
+        EW_Hb = self.eline_EW(ix=ix_Hb)
+        eline_dom = EW_Hb > 5.*u.AA # True if elines dominate
+
+        template_l = 10.**template_logl
+
+        half_dv = self.mask_half_dv
+        line_ctrs = u.Unit('AA') * \
+            np.array([
+                3751.22, 3771.70, 3798.98, 3836.48, 3890.15, 3971.19,
+                #  H12     H11      H10      H9       H8       He
+                4102.92, 4341.69, 4862.69, 6564.61, 5008.24, 4960.30,
+                #  Hd      Hg       Hb       Ha      [OIII]   [OIII]
+                4364.44, 6549.84, 6585.23, 5756.24, 6718.32, 6732.71,
+                # [OIII]  [NII]    [NII]    [NII]    [SII]    [SII]
+                6302.04, 6313.8, 6585.23, 6549.84, 5756.24, 7137.8, 7753.2,
+                # [OI]   [SIII]   [NeII]   [NeII]   [NeII]  [ArIII] [ArIII]
+                9071.1, 9533.2, 3889.75, 5877.30, 6679.996, 5017.08
+                #[SIII] [SIII]    HeI      HeI      HeI      HeII
+            ])
+
+        # compute mask edges
+        mask_ledges = line_ctrs * (1 - (half_dv / c.c).to(''))
+        mask_uedges = line_ctrs * (1 + (half_dv / c.c).to(''))
+
+        # find whether each wavelength bin is used in for each eline's mask
+        full_antimask = np.row_stack(
+            [~((lo < template_l) * (template_l < up))
+                for lo, up in izip(mask_ledges, mask_uedges)])
+        antimask = np.prod(full_antimask, axis=0)
+
+        full_mask = np.ones(
+            (len(template_l),) + (self.flux.shape[1:])).astype(bool)
+        full_mask[:, eline_dom] = ~antimask
+
+        return full_mask
+
+    def eline_EW(self, ix):
+        return self.dap_hdulist['EMLINE_EW'].data[ix] * u.Unit('AA')
