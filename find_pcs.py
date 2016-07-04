@@ -487,17 +487,20 @@ class MaNGA_deredshift(object):
         mask_uedges = line_ctrs * (1 + (half_dv / c.c).to(''))
 
         # find whether each wavelength bin is used in for each eline's mask
-        full_antimask = np.row_stack(
+        antimask = np.row_stack(
             [~((lo < template_l) * (template_l < up))
                 for lo, up in izip(mask_ledges, mask_uedges)])
-        antimask = np.prod(full_antimask, axis=0)
-
-        full_mask = np.ones(
+        antimask = np.prod(antimask, axis=0).astype(bool)
+        return antimask
+        full_mask = np.zeros(
             (len(template_l),) + (self.flux.shape[1:])).astype(bool)
-        #print full_mask.shape
-        full_mask[~eline_dom] = False
+
+        for i, j in product(*tuple(map(range, eline_dom.shape))):
+            if eline_dom[i, j] == True:
+                full_mask[:, i, j] = antimask
 
         return full_mask
 
     def eline_EW(self, ix):
         return self.dap_hdulist['EMLINE_EW'].data[ix] * u.Unit('AA')
+
