@@ -238,6 +238,12 @@ class StellarPop_PCA(object):
     # properties
     # =====
 
+    @property
+    def Cov_th(self):
+        R = (self.normed_trn_spectra - self.mean_trn_spectrum) - \
+            self.trn_recon
+
+        return np.cov(R)
 
     # =====
     # staticmethods
