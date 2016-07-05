@@ -470,6 +470,8 @@ class MaNGA_deredshift(object):
 
         line_ctrs = u.Unit('AA') * \
             np.array([
+                3727.09, 3729.88,
+                #[OII]    [OII]
                 3751.22, 3771.70, 3798.98, 3836.48, 3890.15, 3971.19,
                 #  H12     H11      H10      H9       H8       He
                 4102.92, 4341.69, 4862.69, 6564.61, 5008.24, 4960.30,
@@ -491,13 +493,13 @@ class MaNGA_deredshift(object):
             [~((lo < template_l) * (template_l < up))
                 for lo, up in izip(mask_ledges, mask_uedges)])
         antimask = np.prod(antimask, axis=0).astype(bool)
-        return antimask
+
         full_mask = np.zeros(
             (len(template_l),) + (self.flux.shape[1:])).astype(bool)
 
-        for i, j in product(*tuple(map(range, eline_dom.shape))):
+        for (i, j) in product(*tuple(map(range, eline_dom.shape))):
             if eline_dom[i, j] == True:
-                full_mask[:, i, j] = antimask
+                full_mask[:, i, j] = ~antimask
 
         return full_mask
 
