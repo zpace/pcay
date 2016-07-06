@@ -234,6 +234,43 @@ class StellarPop_PCA(object):
             self.PC2params_A = res_q.x[:(q_ * p_)].reshape((q_, p_))
             self.PC2params_Z = res_q.x[(q_ * p_):].flatten()
 
+    def project_real_data(f, ivar, dl, mask_spax=None, mask_spec=None,
+                          mask_cube=None, labels=None):
+        '''
+        project real spectra onto principal components, given a
+            flux array & inverse-variance array, plus optional
+            additional masks
+
+        params:
+         - f: flux array (should be regridded to rest, need not be normalized)
+            with shape (nspec, m, m) (shape of IFU datacube)
+         - ivar: inverse-variance (same shape as f)
+         - dl: width of wavelength bins (nspec-length array)
+         - mask_spax: sets ivar in True spaxels to zero at all wavelengths
+            within a given spaxel
+         - mask_spec: sets ivar in True elements to zero in all spaxels
+         - mask_cube: sets ivar in True elements to zero in only the
+            corresponding elements
+
+        Note: all three masks can be used simultaneously, but mask_spax
+            is applied first, then mask_spec, then mask_cube
+        '''
+
+        # manage masks
+        if mask_spax is not None:
+            ivar *= (~mask_spax).astype(float)
+        if mask_spec is not None:
+            ivar *= (~mask_spec[:, np.newaxis, np.newaxis]).astype(float)
+        if mask_cube is not None:
+            ivar *= (~mask_cube).astype(float)
+
+        # normalize flux array
+        f /= np.mean(f*dl[:, np.newaxis, np.newaxis], axis=0)
+        f -= np.mean(f, axis=(1, 2))
+
+        # need to do some reshaping
+        A = self.robust_project_onto_PCs(e=self.PCs, f=f, w=ivar)
+
     # =====
     # properties
     # =====
@@ -512,3 +549,11 @@ class MaNGA_deredshift(object):
     def eline_EW(self, ix):
         return self.dap_hdulist['EMLINE_EW'].data[ix] * u.Unit('AA')
 
+if __name__ == '__main__':
+    dered = MaNGA_deredshift.from_filenames(
+        drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
+        dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
+    regr, bad_regr = dered.regrid_to_rest(
+        template_logl=logl, template_dlogl=dlogl)
+    cube_mask = dered.compute_eline_mask(
+        template_logl=logl, template_dlogl=dlogl)
