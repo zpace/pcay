@@ -141,9 +141,7 @@ class StellarPop_PCA(object):
 
         # find lower and upper edges of each wavelength bin,
         # and compute width of bins
-        l_lower = 10.**(self.logl - self.dlogl/2.)
-        l_upper = 10.**(self.logl + self.dlogl/2.)
-        dl = self.dl = l_upper - l_lower
+        dl = self.dl
 
         # scale each spectrum such that the mean flux between
         # 3700 and 5500 AA is unity
@@ -234,8 +232,8 @@ class StellarPop_PCA(object):
             self.PC2params_A = res_q.x[:(q_ * p_)].reshape((q_, p_))
             self.PC2params_Z = res_q.x[(q_ * p_):].flatten()
 
-    def project_real_data(f, ivar, dl, mask_spax=None, mask_spec=None,
-                          mask_cube=None, labels=None):
+    def project_cube(f, ivar, mask_spax=None, mask_spec=None,
+                     mask_cube=None):
         '''
         project real spectra onto principal components, given a
             flux array & inverse-variance array, plus optional
@@ -243,7 +241,7 @@ class StellarPop_PCA(object):
 
         params:
          - f: flux array (should be regridded to rest, need not be normalized)
-            with shape (nspec, m, m) (shape of IFU datacube)
+            with shape (nl, m, m) (shape of IFU datacube)
          - ivar: inverse-variance (same shape as f)
          - dl: width of wavelength bins (nspec-length array)
          - mask_spax: sets ivar in True spaxels to zero at all wavelengths
@@ -256,6 +254,10 @@ class StellarPop_PCA(object):
             is applied first, then mask_spec, then mask_cube
         '''
 
+        assert ivar.shape == f.shape, 'cube shapes must be equal'
+        cube_shape = f.shape
+        dl = self.dl
+
         # manage masks
         if mask_spax is not None:
             ivar *= (~mask_spax).astype(float)
@@ -264,12 +266,20 @@ class StellarPop_PCA(object):
         if mask_cube is not None:
             ivar *= (~mask_cube).astype(float)
 
+        # make f and ivar effectively a list of spectra
+        f = np.transpose(f, (1,2,0)).reshape(-1, f.shape[0])
+        ivar = np.transpose(ivar, (1,2,0)).reshape(-1, ivar.shape[0])
+
         # normalize flux array
         f /= np.mean(f*dl[:, np.newaxis, np.newaxis], axis=0)
-        f -= np.mean(f, axis=(1, 2))
+        f -= np.mean(f, axis=0)
 
         # need to do some reshaping
         A = self.robust_project_onto_PCs(e=self.PCs, f=f, w=ivar)
+
+        A = A.T.reshape((self.PCs.shape[1],) + cube_shape[1:])
+
+        return A
 
     # =====
     # properties
@@ -281,6 +291,18 @@ class StellarPop_PCA(object):
             self.trn_recon
 
         return np.cov(R)
+
+    @property
+    def l_lower(self):
+        return 10.**(self.logl - self.dlogl/2.)
+
+    @property
+    def l_upper(self):
+        return 10.**(self.logl + self.dlogl/2.)
+
+    @property
+    def dl(self):
+        return self.l_upper - self.l_lower
 
     # =====
     # staticmethods
@@ -313,8 +335,6 @@ class StellarPop_PCA(object):
             w = np.ones_like(f)
 
         M = np.einsum('sk,ik,jk->sij', w, e, e)
-        M_inv = np.linalg.inv(M) # takes invs for each axis-zero slice!
-
         F = np.einsum('sk,sk,jk->sj', w, f, e)
 
         A = np.linalg.solve(M, F)
@@ -424,6 +444,7 @@ class MaNGA_deredshift(object):
         self.drp_dlogl = drp_dlogl
 
         self.flux = self.drp_hdulist['FLUX'].data
+        self.ivar = self.drp_hdulist['IVAR'].data
 
     @classmethod
     def from_filenames(cls, drp_fname, dap_fname):
@@ -478,15 +499,17 @@ class MaNGA_deredshift(object):
 
         _, I, J = np.ix_(*[range(i) for i in self.flux.shape])
 
-        self.regridded_cube = self.flux[
+        self.flux_regr = self.flux[
             ix_logl0_z[None, ...] + np.arange(len(template_logl))[
                 :, np.newaxis, np.newaxis], I, J]
 
-        self.bad_ = bad_
+        self.ivar_regr = self.ivar[
+            ix_logl0_z[None, ...] + np.arange(len(template_logl))[
+                :, np.newaxis, np.newaxis], I, J]
 
-        self.regridded_cube[:, bad_] = 0.
+        self.spax_mask = bad_
 
-        return self.regridded_cube, self.bad_
+        return self.flux_regr, self.ivar_regr, self.spax_mask
 
     def compute_eline_mask(self, template_logl, template_dlogl, ix_Hb=1,
                            half_dv=500.*u.Unit('km/s')):
@@ -553,7 +576,18 @@ if __name__ == '__main__':
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
         dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
-    regr, bad_regr = dered.regrid_to_rest(
-        template_logl=logl, template_dlogl=dlogl)
-    cube_mask = dered.compute_eline_mask(
-        template_logl=logl, template_dlogl=dlogl)
+    pca = StellarPop_PCA.from_YMC(
+        lib_para_file='model_spec_bc03/lib_para',
+        form_file='model_spec_bc03/input_model_para_for_paper',
+        spec_file_dir='model_spec_bc03',
+        spec_file_base='modelspec')
+    pca.run_pca_models(q=7)
+
+    flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
+        template_logl=pca.logl, template_dlogl=pca.dlogl)
+    mask_cube = dered.compute_eline_mask(
+        template_logl=pca.logl, template_dlogl=pca.dlogl)
+
+    A = pca.project_cube(f=flux_regr)#, ivar=ivar_regr)
+        #f=flux_regr, ivar=ivar_regr)#,
+        #mask_spax=mask_spax, mask_cube=mask_cube)
