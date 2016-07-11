@@ -15,6 +15,8 @@ import manga_tools as m
 from itertools import izip, product
 from glob import glob
 
+eps = np.finfo(float).eps
+
 class StellarPop_PCA(object):
     '''
     class for determining PCs of a library of synthetic spectra
@@ -232,7 +234,7 @@ class StellarPop_PCA(object):
             self.PC2params_A = res_q.x[:(q_ * p_)].reshape((q_, p_))
             self.PC2params_Z = res_q.x[(q_ * p_):].flatten()
 
-    def project_cube(f, ivar, mask_spax=None, mask_spec=None,
+    def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
                      mask_cube=None):
         '''
         project real spectra onto principal components, given a
@@ -271,13 +273,15 @@ class StellarPop_PCA(object):
         ivar = np.transpose(ivar, (1,2,0)).reshape(-1, ivar.shape[0])
 
         # normalize flux array
-        f /= np.mean(f*dl[:, np.newaxis, np.newaxis], axis=0)
-        f -= np.mean(f, axis=0)
+        mf = np.mean(f*dl, axis=0)
+        f = f/mf
+        mfd = np.mean(f, axis=0)
+        f = f - mfd
 
         # need to do some reshaping
         A = self.robust_project_onto_PCs(e=self.PCs, f=f, w=ivar)
 
-        A = A.T.reshape((self.PCs.shape[1],) + cube_shape[1:])
+        A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
 
         return A
 
@@ -333,6 +337,11 @@ class StellarPop_PCA(object):
 
         if w is None:
             w = np.ones_like(f)
+        elif type(w) != np.ndarray:
+            raise TypeError('w must be array')
+        # make singular system non-singular
+        else:
+            w[w == 0] = eps
 
         M = np.einsum('sk,ik,jk->sij', w, e, e)
         F = np.einsum('sk,sk,jk->sj', w, f, e)
@@ -588,6 +597,6 @@ if __name__ == '__main__':
     mask_cube = dered.compute_eline_mask(
         template_logl=pca.logl, template_dlogl=pca.dlogl)
 
-    A = pca.project_cube(f=flux_regr)#, ivar=ivar_regr)
-        #f=flux_regr, ivar=ivar_regr)#,
-        #mask_spax=mask_spax, mask_cube=mask_cube)
+    A = pca.project_cube(
+        f=flux_regr, ivar=ivar_regr,
+        mask_spax=mask_spax, mask_cube=mask_cube)
