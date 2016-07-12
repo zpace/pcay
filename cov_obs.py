@@ -6,6 +6,7 @@ from astropy.io import fits
 from astropy import coordinates as coords
 
 import os
+import sys
 
 import spec_tools
 import ssp_lib
@@ -14,7 +15,11 @@ import manga_tools as m
 from itertools import izip, product
 from glob import glob
 
-def extract_duplicate_spectra(lllim, lulim):
+# =====
+
+spec_locs = '/media/SAMSUNG/SDSSIII/v5_4_45'
+
+def extract_duplicate_spectra(group, lllim, lulim):
     '''
     for a single object, extract duplicate spectra in the correct
         wavelength range, and output into two stacked arrays (flux and ivar)
@@ -39,7 +44,7 @@ def compute_cov(objs_fs, objs_ivars, dest='cov_obs.fits'):
     for j, k in product(range(covar.shape[0]), range(covar.shape[1])):
         covar[j, k] = np.average(
             (objs_normed[:, j] * objs_normed[:, k]),
-            weights=(objs_ivars[:, j]*objs_ivars[:, k]))
+            weights=(objs_ivars[:, j] * objs_ivars[:, k]))
 
     hdulist = [fits.PrimaryHDU(covar)]
     hdulist = fits.HDUList(hdulist)
@@ -53,17 +58,37 @@ def find_BOSS_duplicates():
         the associated [plate/mjd/fiberid] combinations
     '''
     # read in file that contains all BOSS observation coordinates
-    obs_t = t.Table.read()
+    spAll = fits.open('spAll-v5_9_0.fits', memmap=True)
+    (objid, specprimary, plate, mjd, fiberid) = (
+        spAll[1].data['OBJID'], spAll[1].data['SPECPRIMARY'],
+        spAll[1].data['PLATE'], spAll[1].data['MJD'],
+        spAll[1].data['FIBERID'])
+    obs_t = t.Table([objid, specprimary, plate, mjd, fiberid],
+                     names=['objid', 'specprimary', 'plate', 'mjd', 'fiberid'])
+    obs_t = obs_t[obs_t['objid'] != '                   ']
+    del spAll # clean up!
 
-    # objectIDs for all "primary objects"
-    prim = obs_t[obs_t['specprimary']]['objid']
+    groups = {}
+    # touch the download list file to clear it
+    with open('specfiles.txt', 'w') as f:
+        pass
 
-    collated = {}
-    for p in prim:
-        obj = obs_t[obs_t['objid'] == p]
-        # when there's only one observation, we don't care!
-        if len(obj) <= 1:
+    obs_t_by_object = obs_t.group_by('objid')
+    for i, (o, g) in enumerate(izip(obs_t_by_object.groups.keys,
+                                    obs_t_by_object.groups)):
+        if len(g) <= 1:
             continue
 
-        # when there's more than one, output [plate, mjd, fiber] to dict
-        collated[p] = [r['plate', 'mjd', 'fiberid'] r in obj]
+        groups[o] = g['plate', 'mjd', 'fiberid']
+
+        # add to the download list file
+        # lines have form PLATE/spec-PLATE-MJD-FIBERID.fits
+        with open('specfiles.txt', 'a') as f:
+            for row in g:
+                f.write('{0}/spec-{0}-{1}-{2}.fits\n'.format(
+                    row['plate'], row['mjd'], row['fiberid']))
+
+    print len(groups)
+
+if __name__ == '__main__':
+    find_BOSS_duplicates()
