@@ -85,7 +85,7 @@ def find_BOSS_duplicates():
         # lines have form PLATE/spec-PLATE-MJD-FIBERID.fits
         with open('specfiles.txt', 'a') as f:
             for row in g:
-                f.write('{0}/spec-{0}-{1}-{2}.fits\n'.format(
+                f.write('{0}/spec-{0}-{1}-{2:04d}.fits\n'.format(
                     row['plate'], row['mjd'], row['fiberid']))
 
     print len(groups)
