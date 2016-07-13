@@ -28,3 +28,33 @@ Also computed and stored are:
 * stellar-mass-weighted age
 * i- and z-band stellar mass-to-light ratios
   * originally, this was computed for the redshift range 0 - 0.8, in steps of .05, but since all MaNGA galaxies are nearby, we just compute at `z = 0`
+
+## Usage
+
+The philosophy is that M* calculations should be carried out on a galaxy-by-galaxy basis. So you should be able to load a galaxy's DRP and DAP outputs, and calculate resolved stellar masses for all spaxels at the same time. We should also only have to compute our model spectra once, and just load them from disk thereafter.
+
+The meat of the computation will be done in instances of the `StellarPop_PCA` and `MaNGA_deredshift` classes (in `find_pcs.py`). But some prep is needed first...
+
+Start by initializing a library of model spectra:
+
+    PCA = find_pcs.StellarPop_PCA(...)
+
+I use the `from_YMC()` class method, which loads some pre-computed BC03 templates provided by Yanmei Chen. This method will eventually be exchanged for a cleaner method, once FSPS-C3K is available and we start generating natively high-res spectra. You can then run PCA on the models with `PCA.run_pca_models()`, specifying a value for `q`, if you like.
+
+Then, pick a MaNGA galaxy (I'm using 7815-6104), and load its LOGCUBE and DAP-MAPS files into dereddening object, along with your CSP spectral characteristics:
+
+    dered = find_pcs.MaNGA_deredshift(...)
+    flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
+        template_logl=pca.logl, template_dlogl=pca.dlogl)
+    mask_cube = dered.compute_eline_mask(
+        template_logl=pca.logl, template_dlogl=pca.dlogl)
+
+The `from_filenames()` class method will allow you to just specify a path to the LOGCUBE and MAPS files.
+
+Finally, project the galaxies down onto the PCs.
+
+    A = PCA.project_cube(
+        f=flux_regr, ivar=ivar_regr,
+        mask_spax=mask_spax, mask_cube=mask_cube)
+
+`PCA.project_cube()` employs an weighted-chi-square-minimization approach to the projection, such that wavelength bins with high uncertainty are downweighted.
