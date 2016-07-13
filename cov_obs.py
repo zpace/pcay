@@ -18,6 +18,41 @@ from glob import glob
 
 # =====
 
+class Cov_Obs(object):
+    '''
+    a class to precompute observational spectral covariance matrices
+    '''
+    def __init__(self, cov):
+        self.cov = cov
+
+    @staticmethod
+    def _dupl_table(spAll):
+        (objid, specprimary, plate, mjd, fiberid) = (
+            spAll[1].data['OBJID'], spAll[1].data['SPECPRIMARY'],
+            spAll[1].data['PLATE'], spAll[1].data['MJD'],
+            spAll[1].data['FIBERID'])
+        obs_t = t.Table([objid, specprimary, plate, mjd, fiberid],
+                         names=['objid', 'specprimary', 'plate', 'mjd', 'fiberid'])
+        obs_t = obs_t[obs_t['objid'] != '                   ']
+        obs_t_by_object = obs_t.group_by('objid')
+
+        start = np.array(obs_t_by_object.groups.indices)
+        stop = np.append(start[1:], start[-1] + 1)
+        repeat = stop - start > 1
+        repeat_sf_ixs = np.column_stack([start, stop])[stop - start > 1, :]
+        a = np.zeros((repeat.sum(), len(obs_t)))
+        return obs_t
+
+    @classmethod
+    def from_spAll(cls, spAll):
+        '''
+        returns a covariance object made from an spAll file
+        '''
+        obs_t = self._dupl_table(spAll)
+        del spAll # clean up!
+
+        return cls(cov)
+
 def extract_duplicate_spectra(objid, group, lllim, nspec):
     '''
     for a single object, extract duplicate spectra in the correct
@@ -98,6 +133,7 @@ def find_BOSS_duplicates():
     obs_t = t.Table([objid, specprimary, plate, mjd, fiberid],
                      names=['objid', 'specprimary', 'plate', 'mjd', 'fiberid'])
     obs_t = obs_t[obs_t['objid'] != '                   ']
+    # obs_t = obs_t[:1e5]
     del spAll # clean up!
 
     groups = {}
