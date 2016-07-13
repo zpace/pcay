@@ -7,6 +7,7 @@ from astropy import coordinates as coords
 
 import os
 import sys
+import cPickle as pkl
 
 import spec_tools
 import ssp_lib
@@ -17,13 +18,44 @@ from glob import glob
 
 # =====
 
-spec_locs = '/media/SAMSUNG/SDSSIII/v5_4_45'
-
-def extract_duplicate_spectra(group, lllim, lulim):
+def extract_duplicate_spectra(objid, group, lllim, nspec):
     '''
     for a single object, extract duplicate spectra in the correct
         wavelength range, and output into two stacked arrays (flux and ivar)
     '''
+
+    fnames = [None, ] * len(group)
+    # check to see if spectra exist
+    for i, specobj in enumerate(group):
+        fname = '{0}/spec-{0}-{1}-{2:04d}.fits\n'.format(*specobj)
+        # if one doesn't exist, get it!
+        if ~os.path.isfile(os.path.join('calib/', fname)):
+            q = 'rsync -raz --password-file={0} rsync://sdss@{1} {2}'.format(
+                    os.path.join(m.drpall_loc, m.pw_loc),
+                    os.path.join(
+                        m.base_url,
+                        'ebosswork/eboss/spectro/redux/v5_9_0/spectra/lite',
+                        fname.rstrip('\n')),
+                    'calib')
+            os.system(q)
+
+        fnames[i] = os.path.join(
+            'calib/', 'spec-{0}-{1}-{2:04d}.fits'.format(*specobj))
+
+    # load each spectrum
+    group_hdulist = [fits.open(fname) for fname in fnames]
+    # decide where each of them start and stop
+    lllim_i = [np.argmin((10.**hdulist['COADD'].data['loglam'] - lllim)**2.) for hdulist in group_hdulist]
+    lulim_i = [li + nspec for li in lllim_i]
+    obj_fs = np.row_stack(
+        [group_hdulist[i]['COADD'].data['flux'][lllim_i[i]:lulim_i[i]]
+         for i in range(len(group_hdulist))])
+
+    obj_ivars = np.row_stack(
+        [group_hdulist[i]['COADD'].data['ivar'][lllim_i[i]:lulim_i[i]]
+         for i in range(len(group_hdulist))])
+
+    return obj_fs, obj_ivars
 
 def compute_cov(objs_fs, objs_ivars, dest='cov_obs.fits'):
     '''
@@ -33,7 +65,7 @@ def compute_cov(objs_fs, objs_ivars, dest='cov_obs.fits'):
     # for each object (group of spectra), subtract the mean spectrum
     # (mean is weighted by ivar + eps)
 
-    objs_normed = [f - np.average(f, weights=i, axis=0) for f in obj_fs]
+    objs_normed = [f - np.average(f, weights=i, axis=0) for f in objs_fs]
     objs_normed = np.row_stack(objs_normed)
 
     objs_ivars = np.row_stack(objs_ivars)
@@ -69,9 +101,11 @@ def find_BOSS_duplicates():
     del spAll # clean up!
 
     groups = {}
+    '''
     # touch the download list file to clear it
     with open('specfiles.txt', 'w') as f:
         pass
+    '''
 
     obs_t_by_object = obs_t.group_by('objid')
     for i, (o, g) in enumerate(izip(obs_t_by_object.groups.keys,
@@ -83,12 +117,25 @@ def find_BOSS_duplicates():
 
         # add to the download list file
         # lines have form PLATE/spec-PLATE-MJD-FIBERID.fits
+        '''
         with open('specfiles.txt', 'a') as f:
             for row in g:
                 f.write('{0}/spec-{0}-{1}-{2:04d}.fits\n'.format(
                     row['plate'], row['mjd'], row['fiberid']))
+        '''
 
-    print len(groups)
+    pkl.dump(groups, open('groups.pkl', 'wb'))
+    return groups
 
 if __name__ == '__main__':
-    find_BOSS_duplicates()
+    groups = pkl.load(open('groups.pkl', 'rb'))
+
+    objs_fs = [None, ] * len(groups)
+    objs_ivars = [None, ] * len(groups)
+
+    for i, (k, obj) in enumerate(groups.iteritems()):
+        objs_fs[i], objs_ivars[i] = extract_duplicate_spectra(
+            k, obj, lllim=4000, nspec=500)
+        if i == 2: break
+
+    print objs_fs[:2], objs_ivars[:2]
