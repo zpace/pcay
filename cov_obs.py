@@ -24,32 +24,41 @@ class Cov_Obs(object):
     '''
     def __init__(self, cov):
         self.cov = cov
+        self.nspec = len(cov)
 
     @staticmethod
-    def _dupl_table(spAll):
-        (objid, specprimary, plate, mjd, fiberid) = (
-            spAll[1].data['OBJID'], spAll[1].data['SPECPRIMARY'],
-            spAll[1].data['PLATE'], spAll[1].data['MJD'],
-            spAll[1].data['FIBERID'])
-        obs_t = t.Table([objid, specprimary, plate, mjd, fiberid],
-                         names=['objid', 'specprimary', 'plate', 'mjd', 'fiberid'])
-        obs_t = obs_t[obs_t['objid'] != '                   ']
-        obs_t_by_object = obs_t.group_by('objid')
+    def _mults(spAll):
+        (objid, plate, mjd, fiberid) = (
+            spAll[1].data['OBJID'], spAll[1].data['PLATE'],
+            spAll[1].data['MJD'], spAll[1].data['FIBERID'])
+        obs = t.Table([objid, plate, mjd, fiberid],
+                      names=['objid', 'plate', 'mjd', 'fiberid'])
+        obs = obs[obs['objid'] != '                   ']
+        obs['objid'] = obs['objid'].astype(int)
+        objs = obs.group_by('objid')
 
-        start = np.array(obs_t_by_object.groups.indices)
+        start = np.array(objs.groups.indices)
         stop = np.append(start[1:], start[-1] + 1)
-        repeat = stop - start > 1
+        # use objects with more than two observations
+        repeat = stop - start > 2
         repeat_sf_ixs = np.column_stack([start, stop])[stop - start > 1, :]
-        a = np.zeros((repeat.sum(), len(obs_t)))
-        return obs_t
+
+        obs_dupl = objs.groups[repeat]
+        objs_dupl = objs_dupl = obs_dupl.group_by('objid')
+        objids = objs_dupl.groups.keys
+
+        return dict(zip(objids, objs_dupl['plate', 'mjd', 'fiberid'].groups))
 
     @classmethod
     def from_spAll(cls, spAll):
         '''
         returns a covariance object made from an spAll file
         '''
-        obs_t = self._dupl_table(spAll)
+        # dict of multiply-observed objects
+        mults = self._mults(spAll)
         del spAll # clean up!
+
+        # build list of fluxes and ivars
 
         return cls(cov)
 
