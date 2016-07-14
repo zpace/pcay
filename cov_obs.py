@@ -49,138 +49,76 @@ class Cov_Obs(object):
 
         return dict(zip(objids, objs_dupl['plate', 'mjd', 'fiberid'].groups))
 
+    @staticmethod
+    def download_obj_specs(tab, base_dir='calib/'):
+        '''
+        for all objects in a `mults`-style dict, download their FITS spectra
+        '''
+
+        make_full_fname = lambda row: '{0}/spec-{0}-{1}-{2:04d}.fits'.format(
+            *row)
+        make_final_fname = lambda row: os.path.join(
+            base_dir, 'spec-{0}-{1}-{2:04d}.fits'.format(
+                *row))
+        full_fnames = map(make_full_fname, tab)
+        final_fnames = map(make_final_fname, tab)
+        success = [False, ] * len(full_fnames)
+        for i, fname in enumerate(full_fnames):
+            # if one does exist, move on
+            if os.path.isfile(os.path.join(base_dir, fname)):
+                success[i] = True
+                continue
+
+            # if not, retrieve it over rsync!
+            q = 'rsync -raz --password-file={0} rsync://sdss@{1} {2}'.format(
+                os.path.join(m.drpall_loc, m.pw_loc), # password file
+                os.path.join(
+                    m.base_url,
+                    'ebosswork/eboss/spectro/redux/v5_9_0/spectra/lite',
+                    fname),
+                'calib')
+            s_ = os.system(q) # os.system() returns 0 on success
+            if s_ == 0:
+                success[i] = True
+        return base_dir, final_fnames, success
+
+    @staticmethod
+    def load_obj_spec(base_dir, fnames, success, data_name):
+        '''
+        for all files in a list, load and return an array of fluxes
+        '''
+
+        data = [fits.open(f)['COADD'].data[data_name]
+                for f, s in izip(fnames, success) if s]
+
+        return data
+
+    @staticmethod
+    def load_zeronormed_obj_spec(base_dir, fnames, success):
+        flux = Cov_Obs.load_obj_spec(
+            base_dir, fnames, success, data_name='flux')
+        ivar = Cov_Obs.load_obj_spec(
+            base_dir, fnames, success, data_name='ivar')
+        loglam = Cov_Obs.load_obj_spec(
+            base_dir, fnames, success, data_name='loglam')
+
+        normed = flux - np.average(flux, weights=ivar, axis=0)
+
+        return normed
+
     @classmethod
-    def from_spAll(cls, spAll):
+    def from_spAll(cls, spAll, lam):
         '''
         returns a covariance object made from an spAll file
         '''
         # dict of multiply-observed objects
-        mults = self._mults(spAll)
+        mults = Cov_Obs._mults(spAll)
         del spAll # clean up!
 
-        # build list of fluxes and ivars
+        # build list of fluxes
+        normed_specs = np.row_stack([
+            Cov_Obs.load_zeronormed_obj_spec(
+                *Cov_Obs.download_obj_specs(obj))
+            for k, obj in mults.iteritems()])
 
         return cls(cov)
-
-def extract_duplicate_spectra(objid, group, lllim, nspec):
-    '''
-    for a single object, extract duplicate spectra in the correct
-        wavelength range, and output into two stacked arrays (flux and ivar)
-    '''
-
-    fnames = [None, ] * len(group)
-    # check to see if spectra exist
-    for i, specobj in enumerate(group):
-        fname = '{0}/spec-{0}-{1}-{2:04d}.fits\n'.format(*specobj)
-        # if one doesn't exist, get it!
-        if ~os.path.isfile(os.path.join('calib/', fname)):
-            q = 'rsync -raz --password-file={0} rsync://sdss@{1} {2}'.format(
-                    os.path.join(m.drpall_loc, m.pw_loc),
-                    os.path.join(
-                        m.base_url,
-                        'ebosswork/eboss/spectro/redux/v5_9_0/spectra/lite',
-                        fname.rstrip('\n')),
-                    'calib')
-            os.system(q)
-
-        fnames[i] = os.path.join(
-            'calib/', 'spec-{0}-{1}-{2:04d}.fits'.format(*specobj))
-
-    # load each spectrum
-    group_hdulist = [fits.open(fname) for fname in fnames]
-    # decide where each of them start and stop
-    lllim_i = [np.argmin((10.**hdulist['COADD'].data['loglam'] - lllim)**2.) for hdulist in group_hdulist]
-    lulim_i = [li + nspec for li in lllim_i]
-    obj_fs = np.row_stack(
-        [group_hdulist[i]['COADD'].data['flux'][lllim_i[i]:lulim_i[i]]
-         for i in range(len(group_hdulist))])
-
-    obj_ivars = np.row_stack(
-        [group_hdulist[i]['COADD'].data['ivar'][lllim_i[i]:lulim_i[i]]
-         for i in range(len(group_hdulist))])
-
-    return obj_fs, obj_ivars
-
-def compute_cov(objs_fs, objs_ivars, dest='cov_obs.fits'):
-    '''
-    given a list of spectra, grouped by object, find the spectral covariance
-    '''
-
-    # for each object (group of spectra), subtract the mean spectrum
-    # (mean is weighted by ivar + eps)
-
-    objs_normed = [f - np.average(f, weights=i, axis=0) for f in objs_fs]
-    objs_normed = np.row_stack(objs_normed)
-
-    objs_ivars = np.row_stack(objs_ivars)
-    # and take the (weighted) covariance of the residual
-
-    # this loop is bad and I should feel bad
-    covar = np.empty((objs_fs[0].shape[1], ) * 2)
-    for j, k in product(range(covar.shape[0]), range(covar.shape[1])):
-        covar[j, k] = np.average(
-            (objs_normed[:, j] * objs_normed[:, k]),
-            weights=(objs_ivars[:, j] * objs_ivars[:, k]))
-
-    hdulist = [fits.PrimaryHDU(covar)]
-    hdulist = fits.HDUList(hdulist)
-    hdulist.writeto(dest)
-
-    return covar
-
-def find_BOSS_duplicates():
-    '''
-    using spAll file, find objIDs that have multiple observations, and
-        the associated [plate/mjd/fiberid] combinations
-    '''
-    # read in file that contains all BOSS observation coordinates
-    spAll = fits.open('spAll-v5_9_0.fits', memmap=True)
-    (objid, specprimary, plate, mjd, fiberid) = (
-        spAll[1].data['OBJID'], spAll[1].data['SPECPRIMARY'],
-        spAll[1].data['PLATE'], spAll[1].data['MJD'],
-        spAll[1].data['FIBERID'])
-    obs_t = t.Table([objid, specprimary, plate, mjd, fiberid],
-                     names=['objid', 'specprimary', 'plate', 'mjd', 'fiberid'])
-    obs_t = obs_t[obs_t['objid'] != '                   ']
-    # obs_t = obs_t[:1e5]
-    del spAll # clean up!
-
-    groups = {}
-    '''
-    # touch the download list file to clear it
-    with open('specfiles.txt', 'w') as f:
-        pass
-    '''
-
-    obs_t_by_object = obs_t.group_by('objid')
-    for i, (o, g) in enumerate(izip(obs_t_by_object.groups.keys,
-                                    obs_t_by_object.groups)):
-        if len(g) <= 1:
-            continue
-
-        groups[o] = g['plate', 'mjd', 'fiberid']
-
-        # add to the download list file
-        # lines have form PLATE/spec-PLATE-MJD-FIBERID.fits
-        '''
-        with open('specfiles.txt', 'a') as f:
-            for row in g:
-                f.write('{0}/spec-{0}-{1}-{2:04d}.fits\n'.format(
-                    row['plate'], row['mjd'], row['fiberid']))
-        '''
-
-    pkl.dump(groups, open('groups.pkl', 'wb'))
-    return groups
-
-if __name__ == '__main__':
-    groups = pkl.load(open('groups.pkl', 'rb'))
-
-    objs_fs = [None, ] * len(groups)
-    objs_ivars = [None, ] * len(groups)
-
-    for i, (k, obj) in enumerate(groups.iteritems()):
-        objs_fs[i], objs_ivars[i] = extract_duplicate_spectra(
-            k, obj, lllim=4000, nspec=500)
-        if i == 2: break
-
-    print objs_fs[:2], objs_ivars[:2]
