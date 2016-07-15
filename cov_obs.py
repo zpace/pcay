@@ -31,7 +31,11 @@ class Cov_Obs(object):
         self.dlogl = dlogl
 
     def write_fits(self, fname='cov.fits'):
-        hdu
+        hdu = fits.ImageHDU(data=self.cov)
+        hdu.header['LOGL0'] = np.log10(self.lllim)
+        hdu.header['DLOGL'] = self.dlogl
+        hdulist = fits.HDUList([hdu])
+        hdulist.writeto(fname, clobber=True)
 
     @staticmethod
     def _mults(spAll):
@@ -61,6 +65,7 @@ class Cov_Obs(object):
         '''
         for all objects in a `mults`-style dict, download their FITS spectra
         '''
+        print tab
 
         make_full_fname = lambda row: '{0}/spec-{0}-{1}-{2:04d}.fits'.format(
             *row)
@@ -87,6 +92,8 @@ class Cov_Obs(object):
             s_ = os.system(q) # os.system() returns 0 on success
             if s_ == 0:
                 success[i] = True
+            elif s_ == 2:
+                raise KeyboardInterrupt
         return base_dir, final_fnames, success
 
     @staticmethod
