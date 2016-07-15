@@ -31,10 +31,11 @@ class Cov_Obs(object):
         self.dlogl = dlogl
 
     def write_fits(self, fname='cov.fits'):
+        hdu_ = fits.PrimaryHDU()
         hdu = fits.ImageHDU(data=self.cov)
         hdu.header['LOGL0'] = np.log10(self.lllim)
         hdu.header['DLOGL'] = self.dlogl
-        hdulist = fits.HDUList([hdu])
+        hdulist = fits.HDUList([hdu_, hdu])
         hdulist.writeto(fname, clobber=True)
 
     @staticmethod
@@ -48,24 +49,23 @@ class Cov_Obs(object):
         obs['objid'] = obs['objid'].astype(int)
         objs = obs.group_by('objid')
 
-        start = np.array(objs.groups.indices)
-        stop = np.append(start[1:], start[-1] + 1)
+        start = np.array(objs.groups.indices[:-1])
+        stop = np.array(objs.groups.indices[1:])
         # use objects with more than two observations
         repeat = stop - start > 2
         repeat_sf_ixs = np.column_stack([start, stop])[stop - start > 1, :]
-
         obs_dupl = objs.groups[repeat]
         objs_dupl = objs_dupl = obs_dupl.group_by('objid')
         objids = objs_dupl.groups.keys
 
-        return dict(zip(objids, objs_dupl['plate', 'mjd', 'fiberid'].groups))
+        return dict(zip(
+            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups)[:5])
 
     @staticmethod
     def download_obj_specs(tab, base_dir='calib/'):
         '''
         for all objects in a `mults`-style dict, download their FITS spectra
         '''
-        print tab
 
         make_full_fname = lambda row: '{0}/spec-{0}-{1}-{2:04d}.fits'.format(
             *row)
@@ -116,13 +116,15 @@ class Cov_Obs(object):
             # could list bring down to length-one and mess up statistics
             except IndexError:
                 return None
+            # if things have different lengths
             if True in map(lambda x: len(x) != nspec, data):
                 return None
 
         return data
 
     @staticmethod
-    def load_zeronormed_obj_spec(base_dir, fnames, success, lllim, nspec):
+    def load_zeronormed_obj_spec(base_dir, fnames, success,
+                                 lllim, nspec, i):
         loglam = Cov_Obs.load_obj_spec(
             base_dir, fnames, success, data_name='loglam')
         # figure out where to start and end
@@ -152,18 +154,25 @@ class Cov_Obs(object):
         '''
         returns a covariance object made from an spAll file
         '''
+
         # dict of multiply-observed objects
         mults = Cov_Obs._mults(spAll)
         del spAll # clean up!
 
-        # build list of fluxes
         normed_specs = np.row_stack([
             Cov_Obs.load_zeronormed_obj_spec(
-                *Cov_Obs.download_obj_specs(obj), lllim=lllim, nspec=nspec)
-            for k, obj in mults.iteritems()])
+                *Cov_Obs.download_obj_specs(obj),
+                lllim=lllim, nspec=nspec, i=i)
+            for i, (k, obj) in enumerate(mults.iteritems())])
+
         # filter out bad rows
         bad_rows = (np.isnan(normed_specs).sum(axis=1) > 0)
         normed_specs = normed_specs[~bad_rows, :]
         cov = np.cov(normed_specs.T)
 
         return cls(cov, lllim=lllim, dlogl=dlogl)
+
+if __name__ == '__main__':
+    spAll = fits.open('spAll-v5_9_0.fits', memmap=True)
+    Cov = Cov_Obs.from_spAll(spAll=spAll)
+    Cov.write_fits()

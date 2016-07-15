@@ -540,9 +540,20 @@ class FSPS_SFHBuilder(object):
         return '\n'.join(
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.iteritems()])
 
+# my hobby: needlessly subclassing exceptions
+
+class TemplateError(Exception):
+    '''
+    when there's something wrong with a template
+    '''
+
+class TemplateCoverageError(TemplateError):
+    '''
+    when there's something wrong with the wavelength coverage of a template
+    '''
+
 '''
 to do:
- - D4000 and HdA spectral indices
  - r-band luminosity-weighted age
  - mass-weighted age
  - i- and z-band mass-to-light ratio
