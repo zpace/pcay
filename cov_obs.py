@@ -16,15 +16,22 @@ import manga_tools as m
 from itertools import izip, product
 from glob import glob
 
+eps = np.finfo(float).eps
+
 # =====
 
 class Cov_Obs(object):
     '''
     a class to precompute observational spectral covariance matrices
     '''
-    def __init__(self, cov):
+    def __init__(self, cov, lllim, dlogl):
         self.cov = cov
         self.nspec = len(cov)
+        self.lllim = lllim
+        self.dlogl = dlogl
+
+    def write_fits(self, fname='cov.fits'):
+        hdu
 
     @staticmethod
     def _mults(spAll):
@@ -83,31 +90,58 @@ class Cov_Obs(object):
         return base_dir, final_fnames, success
 
     @staticmethod
-    def load_obj_spec(base_dir, fnames, success, data_name):
+    def load_obj_spec(base_dir, fnames, success, data_name,
+                      lam_ix0s=None, nspec=None):
         '''
         for all files in a list, load and return an array of fluxes
         '''
 
-        data = [fits.open(f)['COADD'].data[data_name]
-                for f, s in izip(fnames, success) if s]
+        # handle cacse that we want everything
+        if (lam_ix0s is None) or (nspec is None):
+            data = [fits.open(f)['COADD'].data[data_name]
+                    for f, s in izip(fnames, success) if s]
+        else:
+            try:
+                data = [fits.open(f)['COADD'].data[data_name][i0 : i0 + nspec]
+                        for f, s, i0 in izip(fnames, success, lam_ix0s) if s]
+            # handle cases where wavelength solution is outside bounds
+            # shouldn't just throw out individual spectra, since that
+            # could list bring down to length-one and mess up statistics
+            except IndexError:
+                return None
+            if True in map(lambda x: len(x) != nspec, data):
+                return None
 
         return data
 
     @staticmethod
-    def load_zeronormed_obj_spec(base_dir, fnames, success):
-        flux = Cov_Obs.load_obj_spec(
-            base_dir, fnames, success, data_name='flux')
-        ivar = Cov_Obs.load_obj_spec(
-            base_dir, fnames, success, data_name='ivar')
+    def load_zeronormed_obj_spec(base_dir, fnames, success, lllim, nspec):
         loglam = Cov_Obs.load_obj_spec(
             base_dir, fnames, success, data_name='loglam')
+        # figure out where to start and end
+        lllim_log = np.log10(lllim)
+        lam_ix0s = [np.argmin((logl - lllim_log)**2.) for logl in loglam]
 
+        flux = Cov_Obs.load_obj_spec(
+            base_dir, fnames, success, data_name='flux', lam_ix0s=lam_ix0s,
+            nspec=nspec)
+        ivar = Cov_Obs.load_obj_spec(
+            base_dir, fnames, success, data_name='ivar', lam_ix0s=lam_ix0s,
+            nspec=nspec)
+
+        if (flux is None) or (ivar is None):
+            return np.nan * np.ones(nspec)
+
+        flux = np.row_stack(flux)
+        ivar = np.row_stack(ivar)
+        ivar = np.maximum(ivar, eps)
         normed = flux - np.average(flux, weights=ivar, axis=0)
 
         return normed
 
     @classmethod
-    def from_spAll(cls, spAll, lam):
+    def from_spAll(cls, spAll, lllim=3650.059970708618, nspec=4378,
+                   dlogl=1.0e-4):
         '''
         returns a covariance object made from an spAll file
         '''
@@ -118,7 +152,11 @@ class Cov_Obs(object):
         # build list of fluxes
         normed_specs = np.row_stack([
             Cov_Obs.load_zeronormed_obj_spec(
-                *Cov_Obs.download_obj_specs(obj))
+                *Cov_Obs.download_obj_specs(obj), lllim=lllim, nspec=nspec)
             for k, obj in mults.iteritems()])
+        # filter out bad rows
+        bad_rows = (np.isnan(normed_specs).sum(axis=1) > 0)
+        normed_specs = normed_specs[~bad_rows, :]
+        cov = np.cov(normed_specs.T)
 
-        return cls(cov)
+        return cls(cov, lllim=lllim, dlogl=dlogl)
