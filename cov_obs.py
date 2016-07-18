@@ -59,7 +59,7 @@ class Cov_Obs(object):
         objids = objs_dupl.groups.keys
 
         return dict(zip(
-            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups)[:5])
+            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups))
 
     @staticmethod
     def download_obj_specs(tab, base_dir='calib/'):
@@ -69,14 +69,11 @@ class Cov_Obs(object):
 
         make_full_fname = lambda row: '{0}/spec-{0}-{1}-{2:04d}.fits'.format(
             *row)
-        make_final_fname = lambda row: os.path.join(
-            base_dir, 'spec-{0}-{1}-{2:04d}.fits'.format(
-                *row))
         full_fnames = map(make_full_fname, tab)
-        final_fnames = map(make_final_fname, tab)
+
         success = [False, ] * len(full_fnames)
         for i, fname in enumerate(full_fnames):
-            # if one does exist, move on
+            # if file has already been downloaded, move on
             if os.path.isfile(os.path.join(base_dir, fname)):
                 success[i] = True
                 continue
@@ -94,6 +91,12 @@ class Cov_Obs(object):
                 success[i] = True
             elif s_ == 2:
                 raise KeyboardInterrupt
+
+        make_final_fname = lambda row: os.path.join(
+            base_dir, 'spec-{0}-{1}-{2:04d}.fits'.format(
+                *row))
+        final_fnames = map(make_final_fname, tab)
+
         return base_dir, final_fnames, success
 
     @staticmethod
@@ -171,6 +174,15 @@ class Cov_Obs(object):
         cov = np.cov(normed_specs.T)
 
         return cls(cov, lllim=lllim, dlogl=dlogl)
+
+    @classmethod
+    def from_fits(cls, fname):
+        hdulist = fits.open(fname)
+        cov = hdulist[1].data
+        h = hdulist[1].header
+        lllim = 10.**h['LOGL0']
+        dlogl = h['DLOGL']
+        return cls(cov=cov, lllim=lllim, dlogl=dlogl)
 
 if __name__ == '__main__':
     spAll = fits.open('spAll-v5_9_0.fits', memmap=True)
