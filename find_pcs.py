@@ -190,7 +190,7 @@ class StellarPop_PCA(object):
 
                 plt.scatter(
                     dim_pc_subspace,
-                    res_q[dim_pc_subspace].fun/res_q[dim_pc_subspace].x.size,
+                    res_q[dim_pc_subspace].fun/dim_pc_subspace,
                     c='b', marker='x')
 
             plt.yscale('log')
