@@ -24,19 +24,80 @@ class Cov_Obs(object):
     '''
     a class to precompute observational spectral covariance matrices
     '''
-    def __init__(self, cov, lllim, dlogl):
+    def __init__(self, cov, lllim, dlogl, nobj):
         self.cov = cov
         self.nspec = len(cov)
         self.lllim = lllim
         self.dlogl = dlogl
+        self.nobj = nobj
+
+    # =====
+    # classmethods
+    # =====
+
+    @classmethod
+    def from_spAll(cls, spAll, lllim=3650.059970708618, nspec=4378,
+                   dlogl=1.0e-4):
+        '''
+        returns a covariance object made from an spAll file
+        '''
+
+        # dict of multiply-observed objects
+        mults = Cov_Obs._mults(spAll)
+        del spAll # clean up!
+
+        stack = [
+                 Cov_Obs.load_zeronormed_obj_spec(
+                     *Cov_Obs.download_obj_specs(obj),
+                     lllim=lllim, nspec=nspec, i=i)
+                 for i, (k, obj) in enumerate(mults.iteritems())]
+
+        print stack[0].shape
+
+        resids = np.concatenate([s[:len(s)/2] for s in stack], axis=0)
+        ivars = np.concatenate([s[len(s)/2:] for s in stack], axis=0)
+
+        # filter out bad rows
+        bad_rows = (np.isnan(resids).sum(axis=1) > 0)
+        resids = np.abs(resids[~bad_rows, :])
+        ivars = ivars[~bad_rows, :]
+        nobj = resids.shape[0]
+        nspec = resids.shape[1]
+        # cov = np.cov(normed_specs, rowvar=True)
+        cov = np.zeros((nspec, ) * 2)
+        for i, j in product(range(nspec), range(nspec)):
+            cov[i, j] = np.sum(
+                resids[:, i] * resids[:, j] * ivars[:, i] * ivars[:, j]) / \
+                np.sum(ivars[:, i] * ivars[:, j])
+
+        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+
+    @classmethod
+    def from_fits(cls, fname):
+        hdulist = fits.open(fname)
+        cov = hdulist[1].data
+        h = hdulist[1].header
+        lllim = 10.**h['LOGL0']
+        dlogl = h['DLOGL']
+        nobj = h['NOBJ']
+        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+
+    # =====
+    # methods
+    # =====
 
     def write_fits(self, fname='cov.fits'):
         hdu_ = fits.PrimaryHDU()
         hdu = fits.ImageHDU(data=self.cov)
         hdu.header['LOGL0'] = np.log10(self.lllim)
         hdu.header['DLOGL'] = self.dlogl
+        hdu.header['NOBJ'] = self.nobj
         hdulist = fits.HDUList([hdu_, hdu])
         hdulist.writeto(fname, clobber=True)
+
+    # =====
+    # staticmethods
+    # =====
 
     @staticmethod
     def _mults(spAll):
@@ -59,7 +120,7 @@ class Cov_Obs(object):
         objids = objs_dupl.groups.keys
 
         return dict(zip(
-            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups))
+            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups)[:10])
 
     @staticmethod
     def download_obj_specs(tab, base_dir='calib/'):
@@ -149,40 +210,7 @@ class Cov_Obs(object):
         ivar = np.maximum(ivar, eps)
         normed = flux - np.average(flux, weights=ivar, axis=0)
 
-        return normed
-
-    @classmethod
-    def from_spAll(cls, spAll, lllim=3650.059970708618, nspec=4378,
-                   dlogl=1.0e-4):
-        '''
-        returns a covariance object made from an spAll file
-        '''
-
-        # dict of multiply-observed objects
-        mults = Cov_Obs._mults(spAll)
-        del spAll # clean up!
-
-        normed_specs = np.row_stack([
-            Cov_Obs.load_zeronormed_obj_spec(
-                *Cov_Obs.download_obj_specs(obj),
-                lllim=lllim, nspec=nspec, i=i)
-            for i, (k, obj) in enumerate(mults.iteritems())])
-
-        # filter out bad rows
-        bad_rows = (np.isnan(normed_specs).sum(axis=1) > 0)
-        normed_specs = normed_specs[~bad_rows, :]
-        cov = np.cov(normed_specs.T)
-
-        return cls(cov, lllim=lllim, dlogl=dlogl)
-
-    @classmethod
-    def from_fits(cls, fname):
-        hdulist = fits.open(fname)
-        cov = hdulist[1].data
-        h = hdulist[1].header
-        lllim = 10.**h['LOGL0']
-        dlogl = h['DLOGL']
-        return cls(cov=cov, lllim=lllim, dlogl=dlogl)
+        return np.concatenate([normed, ivar], axis=0)
 
 if __name__ == '__main__':
     spAll = fits.open('spAll-v5_9_0.fits', memmap=True)
