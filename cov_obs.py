@@ -59,16 +59,15 @@ class Cov_Obs(object):
 
         # filter out bad rows
         bad_rows = (np.isnan(resids).sum(axis=1) > 0)
-        resids = np.abs(resids[~bad_rows, :])
+        resids = resids[~bad_rows, :]
         ivars = ivars[~bad_rows, :]
         nobj = resids.shape[0]
         nspec = resids.shape[1]
         # cov = np.cov(normed_specs, rowvar=True)
         cov = np.zeros((nspec, ) * 2)
-        for i, j in product(range(nspec), range(nspec)):
-            cov[i, j] = np.sum(
-                resids[:, i] * resids[:, j] * ivars[:, i] * ivars[:, j]) / \
-                np.sum(ivars[:, i] * ivars[:, j])
+        A = np.einsum('ki,kj->ij', resids*ivars, resids*ivars)
+        B = np.einsum('ki,kj->ij', ivars, ivars)
+        cov = A / B
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
 
