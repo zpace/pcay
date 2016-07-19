@@ -24,12 +24,14 @@ class Cov_Obs(object):
     '''
     a class to precompute observational spectral covariance matrices
     '''
-    def __init__(self, cov, lllim, dlogl, nobj):
+    def __init__(self, cov, lllim, dlogl, nobj, SB_r_mean):
         self.cov = cov
         self.nspec = len(cov)
         self.lllim = lllim
+        self.loglllim = np.log10(self.lllim)
         self.dlogl = dlogl
         self.nobj = nobj
+        self.SB_r_mean = SB_r_mean
 
     # =====
     # classmethods
@@ -43,7 +45,7 @@ class Cov_Obs(object):
         '''
 
         # dict of multiply-observed objects
-        mults = Cov_Obs._mults(spAll)
+        mults, SB_r_mean = Cov_Obs._mults(spAll)
         del spAll # clean up!
 
         stack = [
@@ -52,8 +54,6 @@ class Cov_Obs(object):
                      lllim=lllim, nspec=nspec, i=i)
                  for i, (k, obj) in enumerate(mults.iteritems())]
 
-        print stack[0].shape
-
         resids = np.concatenate([s[:len(s)/2] for s in stack], axis=0)
         ivars = np.concatenate([s[len(s)/2:] for s in stack], axis=0)
 
@@ -61,15 +61,13 @@ class Cov_Obs(object):
         bad_rows = (np.isnan(resids).sum(axis=1) > 0)
         resids = resids[~bad_rows, :]
         ivars = ivars[~bad_rows, :]
-        nobj = resids.shape[0]
-        nspec = resids.shape[1]
-        # cov = np.cov(normed_specs, rowvar=True)
-        cov = np.zeros((nspec, ) * 2)
-        A = np.einsum('ki,kj->ij', resids*ivars, resids*ivars)
-        B = np.einsum('ki,kj->ij', ivars, ivars)
-        cov = A / B
+        nobj, nspec = resids.shape
 
-        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+        cov = np.einsum('ki,kj->ij', resids*ivars, resids*ivars) / \
+            np.einsum('ki,kj->ij', ivars, ivars)
+
+        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
+                   SB_r_mean=SB_r_mean)
 
     @classmethod
     def from_fits(cls, fname):
@@ -79,7 +77,9 @@ class Cov_Obs(object):
         lllim = 10.**h['LOGL0']
         dlogl = h['DLOGL']
         nobj = h['NOBJ']
-        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+        SB_r_mean = h['SBRMEAN']
+        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
+                   SB_r_mean=SB_r_mean)
 
     # =====
     # methods
@@ -91,21 +91,44 @@ class Cov_Obs(object):
         hdu.header['LOGL0'] = np.log10(self.lllim)
         hdu.header['DLOGL'] = self.dlogl
         hdu.header['NOBJ'] = self.nobj
+        hdu.header['SBRMEAN'] = self.SB_r_mean
         hdulist = fits.HDUList([hdu_, hdu])
         hdulist.writeto(fname, clobber=True)
+
+    # =====
+    # properties
+    # =====
+
+    @property
+    def logl(self):
+        return self.loglllim + np.linspace(0., self.dlogl*self.nspec, nspec)
+
+    @property
+    def l(self):
+        return 10.**self.logl
 
     # =====
     # staticmethods
     # =====
 
     @staticmethod
-    def _mults(spAll):
+    def _mults(spAll, i_lim=100):
+        '''
+        return a lits of duplicate observations of the same object, using
+            astropy table grouping
+        '''
         (objid, plate, mjd, fiberid) = (
             spAll[1].data['OBJID'], spAll[1].data['PLATE'],
             spAll[1].data['MJD'], spAll[1].data['FIBERID'])
-        obs = t.Table([objid, plate, mjd, fiberid],
-                      names=['objid', 'plate', 'mjd', 'fiberid'])
+        # average surface brightness within .67 arcsec of object center
+        # (from photometric pipeline)
+        SB_r = t.Column(
+            data=spAll[1].data['APERFLUX'][:, 2, 1] / (np.pi * 0.67**2.),
+            name='SB_r')
+        obs = t.Table([objid, plate, mjd, fiberid, SB_r],
+                      names=['objid', 'plate', 'mjd', 'fiberid', 'SB_r'])
         obs = obs[obs['objid'] != '                   ']
+        obs = obs[np.nonzero(obs['SB_r'])]
         obs['objid'] = obs['objid'].astype(int)
         objs = obs.group_by('objid')
 
@@ -118,8 +141,11 @@ class Cov_Obs(object):
         objs_dupl = objs_dupl = obs_dupl.group_by('objid')
         objids = objs_dupl.groups.keys
 
-        return dict(zip(
-            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups)[:10])
+        mults_dict = dict(zip(
+            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups)[:i_lim])
+        SB_r_mean = np.mean(obs['SB_r'])
+
+        return mults_dict, SB_r_mean
 
     @staticmethod
     def download_obj_specs(tab, base_dir='calib/'):
