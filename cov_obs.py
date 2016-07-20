@@ -63,8 +63,8 @@ class Cov_Obs(object):
         ivars = ivars[~bad_rows, :]
         nobj, nspec = resids.shape
 
-        cov = np.einsum('ki,kj->ij', resids*ivars, resids*ivars) / \
-            np.einsum('ki,kj->ij', ivars, ivars)
+        qw = resids*ivars
+        cov = qw.T.dot(qw)/ivars.T.dot(ivars)
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
                    SB_r_mean=SB_r_mean)
@@ -114,8 +114,11 @@ class Cov_Obs(object):
     @staticmethod
     def _mults(spAll, i_lim=100):
         '''
-        return a lits of duplicate observations of the same object, using
+        return a dict of duplicate observations of the same object, using
             astropy table grouping
+
+        also return a mean object surface brightness (nMgy/arcsec2) to aid
+            in scaling the covariance matrix against MaNGA spaxels
         '''
         (objid, plate, mjd, fiberid) = (
             spAll[1].data['OBJID'], spAll[1].data['PLATE'],
