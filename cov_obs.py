@@ -101,7 +101,8 @@ class Cov_Obs(object):
 
     @property
     def logl(self):
-        return self.loglllim + np.linspace(0., self.dlogl*self.nspec, nspec)
+        return self.loglllim + np.linspace(
+            0., self.dlogl*self.nspec, self.nspec)
 
     @property
     def l(self):

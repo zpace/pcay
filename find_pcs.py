@@ -11,6 +11,7 @@ from scipy.optimize import minimize
 import spec_tools
 import ssp_lib
 import manga_tools as m
+import cov_obs
 
 from itertools import izip, product
 from glob import glob
@@ -21,7 +22,8 @@ class StellarPop_PCA(object):
     '''
     class for determining PCs of a library of synthetic spectra
     '''
-    def __init__(self, l, trn_spectra, gen_dicts, metadata, dlogl=None):
+    def __init__(self, l, trn_spectra, gen_dicts, metadata, K_obs,
+                 dlogl=None):
         '''
         params:
          - l: length-n array-like defining the wavelength bin centers
@@ -51,9 +53,16 @@ class StellarPop_PCA(object):
             (len(self.metadata), -1))
         self.gen_dicts = gen_dicts
 
+        # observational covariance matrix
+        if K_obs.__class__ != cov_obs.Cov_Obs:
+            raise TypeError('incorrect observational covariance matrix class!')
+
+        if K_obs.dlogl != self.dlogl:
+            raise PCAError('non-matching log-lambda spacing!')
+
     @classmethod
     def from_YMC(cls, lib_para_file, form_file,
-                 spec_file_dir, spec_file_base):
+                 spec_file_dir, spec_file_base, K_obs):
         '''
         initialize object from CSP library provided by Y-M Chen, which is
             based on a BC03 model library
@@ -125,7 +134,8 @@ class StellarPop_PCA(object):
                             'zmet', 'Tau_v', 'mu']
 
         return cls(l=l_final*u.Unit('AA'), trn_spectra=spec,
-                   gen_dicts=None, metadata=metadata, dlogl=dlogl_final)
+                   gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
+                   K_obs=K_obs)
 
     # =====
     # methods
@@ -284,6 +294,60 @@ class StellarPop_PCA(object):
         A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
 
         return A
+
+    def compute_cov_sp_full(self, a_map, z_map, SB_map, obs_logl, K_obs):
+        '''
+        compute a full spectral covariance matrix for each spaxel
+
+        params:
+         - a_map: mean flux-density of original spectra (n by n)
+         - z_map: spaxel redshift map (get this from an dered instance)
+         - SB_map: r-band surface brightness map (nMgy/arcsec2) to scale
+            observational covariance matrix by (wrt to avg SB)
+         - obs_logl: log-lambda vector (1D) of datacube
+
+        all params with _map as part of the name have to be n by n arrays,
+            with the same shape as the last two dimensions of a datacube
+
+        returns:
+         - K: array giving the spectral covariance for each spaxel
+
+        shape of K: (nl, nl, n, n) -- that is, each spaxel gets a
+            covariance matrix, and final two dimensions have the same
+            shape as the final two dimensions of a datacube
+
+        Full cov matrix is q x q for each spaxel
+        '''
+
+        K_th = self.cov_th
+
+        # figure out where to start sampling the covariance matrix
+
+        cov_logl = K_obs.logl
+        nlam = K_th.shape[0]
+
+        tem_logl0 = self.logl[0]
+
+        tem_logl0_z = np.log10(10.**(tem_logl0) / (1. + z_map))
+        cov_logl_tiled = np.tile(
+            cov_logl[:, np.newaxis, np.newaxis],
+            z_map.shape)
+
+        # find the index for the wavelength that best corresponds to
+        # an appropriately redshifted wavelength grid
+        logl_diff = tem_logl0_z[np.newaxis, :, :] - cov_logl_tiled
+        ix_logl0_z = np.argmin(np.abs(logl_diff), axis=0)
+
+        return ix_logl0_z
+
+        _, I, J = np.ix_(*[range(i) for i in self.flux.shape])
+
+        # for ONE spaxel...
+        k_th = K_th.cov[
+            ix_logl0_z[None, ...] + np.arange(len(template_logl))[
+                :, np.newaxis, np.newaxis], I, J]
+
+        K_obs = self.K_obs
 
     # =====
     # properties
@@ -585,11 +649,12 @@ if __name__ == '__main__':
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
         dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
+    K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     pca = StellarPop_PCA.from_YMC(
         lib_para_file='model_spec_bc03/lib_para',
         form_file='model_spec_bc03/input_model_para_for_paper',
         spec_file_dir='model_spec_bc03',
-        spec_file_base='modelspec')
+        spec_file_base='modelspec', K_obs=K_obs)
     pca.run_pca_models(q=7)
 
     flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
@@ -600,3 +665,10 @@ if __name__ == '__main__':
     A = pca.project_cube(
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
+
+    i0 = pca.compute_cov_sp_full(
+            a_map=None, z_map=dered.z_map, SB_map=None,
+            obs_logl=dered.drp_logl, K_obs=K_obs)
+    plt.imshow(i0, aspect='equal')
+    plt.colorbar()
+    plt.show()
