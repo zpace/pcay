@@ -295,9 +295,62 @@ class StellarPop_PCA(object):
 
         return A
 
-    def compute_cov_sp_full(self, a_map, z_map, SB_map, obs_logl, K_obs_):
+    def _compute_spec_cov_spax(self, K_obs_, i0, SB, a, f):
         '''
-        compute a full spectral covariance matrix for each spaxel
+        compute the spectral covariance matrix for one spaxel
+
+        params:
+         - K_obs_: observational covariance object
+         - i0: starting index of observational covariance matrix
+         - SB: Surface brightness of spaxel
+        '''
+
+        K_th = self.cov_th
+        nspec = K_th.shape[0]
+        K_full = K_obs_.cov[i0:i0+nspec, i0:i0+nspec] * f + K_th * a**2.
+
+        return K_full
+
+    def _compute_PC_cov_spax(self, K_spec):
+        '''
+        compute the PC covariance matrix for one spaxel
+
+        See Chen+'12 (Eq 11) for full expression
+        '''
+
+        E = self.PCs
+
+        return E.dot(K_spec).dot(E.T)
+
+    def _compute_i0_map(self, tem_logl0, logl, z_map):
+        '''
+        compute the index of some array corresponding to the given
+            wavelength at some redshift
+
+        params:
+         - tem_logl0: the smallest wavelength of the fixed-grid template
+            that will be the destination of the bin-shift
+         - logl: the wavelength grid that will be transformed
+         - z_map: the 2D array of redshifts used to figure out the offset
+        '''
+
+        tem_logl0_z = np.log10(10.**(tem_logl0) * (1. + z_map))
+        cov_logl_tiled = np.tile(
+            logl[:, np.newaxis, np.newaxis],
+            z_map.shape)
+
+        # find the index for the wavelength that best corresponds to
+        # an appropriately redshifted wavelength grid
+        logl_diff = tem_logl0_z[np.newaxis, :, :] - cov_logl_tiled
+        i0_map = np.argmin(np.abs(logl_diff), axis=0)
+
+        return i0_map
+
+    def compute_spec_cov_full(self, a_map, z_map, SB_map, obs_logl, K_obs_):
+        '''
+        DO NOT USE!! Array output too large, raises MemoryError
+
+        compute a full PC covariance matrix for each spaxel
 
         params:
          - a_map: mean flux-density of original spectra (n by n)
@@ -305,6 +358,7 @@ class StellarPop_PCA(object):
          - SB_map: r-band surface brightness map (nMgy/arcsec2) to scale
             observational covariance matrix by (wrt to avg SB)
          - obs_logl: log-lambda vector (1D) of datacube
+         - K_obs_: observational spectral covariance
 
         all params with _map as part of the name have to be n by n arrays,
             with the same shape as the last two dimensions of a datacube
@@ -317,6 +371,8 @@ class StellarPop_PCA(object):
             shape as the final two dimensions of a datacube
 
         Full cov matrix is q x q for each spaxel
+
+        This raises MemoryError as float64
         '''
 
         K_th = self.cov_th
@@ -325,18 +381,10 @@ class StellarPop_PCA(object):
 
         cov_logl = K_obs_.logl
         nlam = K_th.shape[0]
-
         tem_logl0 = self.logl[0]
 
-        tem_logl0_z = np.log10(10.**(tem_logl0) * (1. + z_map))
-        cov_logl_tiled = np.tile(
-            cov_logl[:, np.newaxis, np.newaxis],
-            z_map.shape)
-
-        # find the index for the wavelength that best corresponds to
-        # an appropriately redshifted wavelength grid
-        logl_diff = tem_logl0_z[np.newaxis, :, :] - cov_logl_tiled
-        ix0 = np.argmin(np.abs(logl_diff), axis=0)
+        i0_map = self._compute_i0_map(
+            tem_logl0=tem_logl0, logl=cov_logl, z_map=z_map)
 
         N = np.arange(nlam)
         I, J = np.meshgrid(N, N)
@@ -345,9 +393,36 @@ class StellarPop_PCA(object):
             ix0[..., None, None] + J, ix0[..., None, None] + I]
         SB_BOSS = K_obs_.SB_r_mean
 
-        K_full = a_map * K_th + (SB_map / SB_BOSS) * K_obs
+        K_full = a_map * K_th + (SB_map / SB_BOSS).to('').value * K_obs
 
         return K_full
+
+    def build_PC_cov_full(self, a_map, z_map, SB_map, obs_logl, K_obs_):
+        '''
+        for each spaxel, build a PC covariance matrix, and return in array
+            of shape (q, q, n, n)
+
+        params:
+         - E: eigenvectors of PC basis
+         - a_map: mean flux-density of original spectra (n by n)
+         - z_map: spaxel redshift map (get this from an dered instance)
+         - SB_map: r-band surface brightness map (nMgy/arcsec2) to scale
+            observational covariance matrix by (wrt to avg SB)
+         - obs_logl: log-lambda vector (1D) of datacube
+         - K_obs_: observational spectral covariance object
+        '''
+
+        E = self.PCs
+        q, l = E.shape
+        cubeshape = a_map.shape
+
+        # build an array to hold covariances
+        K_PC = np.empty((q, q) + cubeshape)
+
+        iter_ = np.nditer(
+            [K_PC, a_map, z_map, SB_map], # arrays
+            op_flags=['readwrite', 'read', 'read', 'read'], # permissions
+            order=)
 
     # =====
     # properties
@@ -492,6 +567,9 @@ class MaNGA_deredshift(object):
 
     also builds in a check on velocity coverage, and computes a mask
     '''
+
+    self.spaxel_side = 0.5 * u.arcsec
+
     def __init__(self, drp_hdulist, dap_hdulist,
                  max_vel_unc=90.*u.Unit('km/s'), drp_dlogl=None,
                  MPL_v='MPL-4'):
@@ -645,6 +723,27 @@ class MaNGA_deredshift(object):
     def eline_EW(self, ix):
         return self.dap_hdulist['EMLINE_EW'].data[ix] * u.Unit('AA')
 
+    # =====
+    # properties
+    # =====
+
+    @property
+    def SB_map(self):
+        # RIMG gives nMgy/pix
+        return self.drp_hdulist['RIMG'].data * \
+            1.0e-9 * m.Mgy / self.spaxel_side**2.
+
+    # =====
+    # staticmethods
+    # =====
+
+    @staticmethod
+    def a_map(f, logl, dlogl):
+        lllims = 10.**(logl - 0.5*dlogl)
+        lulims = 10.**(logl + 0.5*dlogl)
+        dl = lulims - lllims
+        return np.mean(f*dl, axis=0)
+
 if __name__ == '__main__':
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
@@ -666,6 +765,7 @@ if __name__ == '__main__':
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
 
+    a_map = dered.a_map(f=flux_regr, logl=pca.logl, dlogl=pca.dlogl)
     K_obs = pca.compute_cov_sp_full(
-            a_map=None, z_map=dered.z_map, SB_map=None,
+            a_map=, z_map=dered.z_map, SB_map=dered.SB_map,
             obs_logl=dered.drp_logl, K_obs_=K_obs)
