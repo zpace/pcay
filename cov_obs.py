@@ -77,7 +77,7 @@ class Cov_Obs(object):
         lllim = 10.**h['LOGL0']
         dlogl = h['DLOGL']
         nobj = h['NOBJ']
-        SB_r_mean = h['SBRMEAN']
+        SB_r_mean = h['SBRMEAN'] * 1.0e-9 * m.Mgy / (u.arcsec)**2.
         return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
                    SB_r_mean=SB_r_mean)
 
@@ -91,7 +91,7 @@ class Cov_Obs(object):
         hdu.header['LOGL0'] = np.log10(self.lllim)
         hdu.header['DLOGL'] = self.dlogl
         hdu.header['NOBJ'] = self.nobj
-        hdu.header['SBRMEAN'] = self.SB_r_mean
+        hdu.header['SBRMEAN'] = self.SB_r_mean.value
         hdulist = fits.HDUList([hdu_, hdu])
         hdulist.writeto(fname, clobber=True)
 
@@ -147,7 +147,7 @@ class Cov_Obs(object):
 
         mults_dict = dict(zip(
             objids, objs_dupl['plate', 'mjd', 'fiberid'].groups)[:i_lim])
-        SB_r_mean = np.mean(obs['SB_r'])
+        SB_r_mean = np.mean(obs['SB_r']) * 1.0e-9 * m.Mgy / (u.arcsec)**2.
 
         return mults_dict, SB_r_mean
 
