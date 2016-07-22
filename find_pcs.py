@@ -295,7 +295,7 @@ class StellarPop_PCA(object):
 
         return A
 
-    def compute_cov_sp_full(self, a_map, z_map, SB_map, obs_logl, K_obs):
+    def compute_cov_sp_full(self, a_map, z_map, SB_map, obs_logl, K_obs_):
         '''
         compute a full spectral covariance matrix for each spaxel
 
@@ -323,12 +323,12 @@ class StellarPop_PCA(object):
 
         # figure out where to start sampling the covariance matrix
 
-        cov_logl = K_obs.logl
+        cov_logl = K_obs_.logl
         nlam = K_th.shape[0]
 
         tem_logl0 = self.logl[0]
 
-        tem_logl0_z = np.log10(10.**(tem_logl0) / (1. + z_map))
+        tem_logl0_z = np.log10(10.**(tem_logl0) * (1. + z_map))
         cov_logl_tiled = np.tile(
             cov_logl[:, np.newaxis, np.newaxis],
             z_map.shape)
@@ -336,18 +336,18 @@ class StellarPop_PCA(object):
         # find the index for the wavelength that best corresponds to
         # an appropriately redshifted wavelength grid
         logl_diff = tem_logl0_z[np.newaxis, :, :] - cov_logl_tiled
-        ix_logl0_z = np.argmin(np.abs(logl_diff), axis=0)
+        ix0 = np.argmin(np.abs(logl_diff), axis=0)
 
-        return ix_logl0_z
+        N = np.arange(nlam)
+        I, J = np.meshgrid(N, N)
 
-        _, I, J = np.ix_(*[range(i) for i in self.flux.shape])
+        K_obs = K_obs_.cov[
+            ix0[..., None, None] + J, ix0[..., None, None] + I]
+        SB_BOSS = K_obs_.SB_r_mean
 
-        # for ONE spaxel...
-        k_th = K_th.cov[
-            ix_logl0_z[None, ...] + np.arange(len(template_logl))[
-                :, np.newaxis, np.newaxis], I, J]
+        K_full = a_map * K_th + (SB_map / SB_BOSS) * K_obs
 
-        K_obs = self.K_obs
+        return K_full
 
     # =====
     # properties
@@ -666,9 +666,6 @@ if __name__ == '__main__':
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
 
-    i0 = pca.compute_cov_sp_full(
+    K_obs = pca.compute_cov_sp_full(
             a_map=None, z_map=dered.z_map, SB_map=None,
-            obs_logl=dered.drp_logl, K_obs=K_obs)
-    plt.imshow(i0, aspect='equal')
-    plt.colorbar()
-    plt.show()
+            obs_logl=dered.drp_logl, K_obs_=K_obs)
