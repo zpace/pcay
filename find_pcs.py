@@ -7,6 +7,7 @@ from astropy.io import fits
 import os
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
+from statsmodels.nonparametric.kde import KDEUnivariate
 
 import spec_tools
 import ssp_lib
@@ -439,6 +440,54 @@ class StellarPop_PCA(object):
 
         return K_PC
 
+    def compute_model_weights(self, P, A):
+        '''
+        compute model weights for each combination of spaxel (PC fits)
+            and model
+
+        params:
+         - P: inverse of PC covariance matrix, shape (q, q)
+         - A: PC weights OF OBSERVED DATA obtained from weighted PC
+            projection routine (robust_project_onto_PCs),
+            shape (q, NX, NY)
+        '''
+
+        C = self.trn_PC_wts # shape (nmodel, q)
+        D = C - A
+
+        # one spaxel... np.einsum('...i,ij,...i->...i', C, P, C).shape
+        chi2 = np.einsum('...ixy,ij,...ixy->...ixy', D, P, D)
+        w = np.exp(-chi2/2.)
+
+        return w
+
+    def param_PDF_map(self, qty, wts):
+        '''
+        make a map of a galaxy, where elements are PDFs of the requested
+            quantity. Result is a numpy object array, so you access
+            just like an array!
+
+        This is iteration based, which is not awesome.
+
+        params:
+         - qty: string, specifying which quantity you want (qty must be
+            an element of self.metadata.colnames)
+         - wts: cube of shape (nmodels, NX, NY), with weights for each
+            combination of spaxel and model
+        '''
+
+        cubeshape = wts.shape[-2:]
+        qty_map = np.empty(cubeshape, dtype=object)
+        # make an iterator!
+        inds = np.ndindex(cubeshape) # iterator over datacube shape
+
+        for ind in izip(inds):
+            kde = KDEUnivariate(self.metadata[qty])
+            kde.fit(weights=wts)
+            qty_map[ind[0], ind[1]] = kde
+
+        return qty_map
+
     # =====
     # properties
     # =====
@@ -567,6 +616,32 @@ class StellarPop_PCA(object):
         # transformation matrix takes (scaled) data to array of PC weights
 
         return evecs
+
+    @staticmethod
+    def P_from_K(K):
+        P_PC = np.moveaxis(
+            np.linalg.inv(
+                np.moveaxis(K_PC), [0, 1, 2, 3], [2, 3, 0, 1]),
+            [0, 1, 2, 3], [2, 3, 0, 1])
+        return P_PC
+
+    @staticmethod
+    def param_pctl(Q, p):
+        '''
+        return a 2D array with elements equal to the p-th percentile of
+            the corresponding elements of Q (which are statsmodels
+            1D KDE objects)
+        '''
+
+        cubeshape = Q.shape
+        inds = np.ndindex(cubeshape)
+
+        A = np.empty(cubeshape)
+
+        for ind in inds:
+            A[ind[0], ind[1]] = Q[ind[0], ind[1]].icdf(p)
+
+        return A
 
 class PCAError(Exception):
     '''
@@ -785,7 +860,7 @@ if __name__ == '__main__':
         a_map=a_map, z_map=dered.z_map, SB_map=dered.SB_map,
         obs_logl=dered.drp_logl, K_obs_=K_obs)
 
-    print K_PC[:, :, 37, 37]
-    plt.imshow(K_PC[:, :, 37, 37], aspect='equal')
-    plt.colorbar()
-    plt.show()
+    P_PC = StellarPop_PCA.P_from_K(K_PC)
+    w = pca.compute_model_weights(P=P_PC, A=A)
+    Fstar_PDF_map = pca.param_PDF_map(qty='Fstar', wts=w)
+
