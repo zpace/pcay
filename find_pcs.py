@@ -453,40 +453,42 @@ class StellarPop_PCA(object):
         '''
 
         C = self.trn_PC_wts # shape (nmodel, q)
-        D = C - A
+        D = C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...]
+
+        #print D.shape, P.shape
 
         # one spaxel... np.einsum('...i,ij,...i->...i', C, P, C).shape
-        chi2 = np.einsum('...ixy,ij,...ixy->...ixy', D, P, D)
+        chi2 = np.einsum('...ixy,ijxy,...jxy->...xy', D, P, D)
         w = np.exp(-chi2/2.)
 
         return w
 
-    def param_PDF_map(self, qty, wts):
+    def param_pct_map(self, qty, W, P):
         '''
-        make a map of a galaxy, where elements are PDFs of the requested
-            quantity. Result is a numpy object array, so you access
-            just like an array!
-
         This is iteration based, which is not awesome.
 
         params:
          - qty: string, specifying which quantity you want (qty must be
             an element of self.metadata.colnames)
-         - wts: cube of shape (nmodels, NX, NY), with weights for each
+         - W: cube of shape (nmodels, NX, NY), with weights for each
             combination of spaxel and model
+         - P: percentile(s)
         '''
 
-        cubeshape = wts.shape[-2:]
-        qty_map = np.empty(cubeshape, dtype=object)
-        # make an iterator!
-        inds = np.ndindex(cubeshape) # iterator over datacube shape
+        cubeshape = W.shape[-2:]
+        Q = self.metadata[qty]
 
-        for ind in izip(inds):
-            kde = KDEUnivariate(self.metadata[qty])
-            kde.fit(weights=wts)
-            qty_map[ind[0], ind[1]] = kde
+        inds = np.ndindex(*cubeshape)
 
-        return qty_map
+        A = np.empty((len(P),) + cubeshape)
+
+        for ind in inds:
+            w = W[:, ind[0], ind[1]]
+            i_ = np.argsort(Q, axis=0)
+            q, w = Q[i_], w[i_]
+            A[:, ind[0], ind[1]] = np.interp(P, 100.*w.cumsum()/w.sum(), q)
+
+        return A
 
     # =====
     # properties
@@ -621,27 +623,10 @@ class StellarPop_PCA(object):
     def P_from_K(K):
         P_PC = np.moveaxis(
             np.linalg.inv(
-                np.moveaxis(K_PC), [0, 1, 2, 3], [2, 3, 0, 1]),
+                np.moveaxis(K_PC, [0, 1, 2, 3], [2, 3, 0, 1])),
             [0, 1, 2, 3], [2, 3, 0, 1])
         return P_PC
 
-    @staticmethod
-    def param_pctl(Q, p):
-        '''
-        return a 2D array with elements equal to the p-th percentile of
-            the corresponding elements of Q (which are statsmodels
-            1D KDE objects)
-        '''
-
-        cubeshape = Q.shape
-        inds = np.ndindex(cubeshape)
-
-        A = np.empty(cubeshape)
-
-        for ind in inds:
-            A[ind[0], ind[1]] = Q[ind[0], ind[1]].icdf(p)
-
-        return A
 
 class PCAError(Exception):
     '''
@@ -855,6 +840,8 @@ if __name__ == '__main__':
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
 
+    print A[:, 37, 37]
+
     a_map = dered.a_map(f=flux_regr, logl=pca.logl, dlogl=pca.dlogl)
     K_PC = pca.build_PC_cov_full_iter(
         a_map=a_map, z_map=dered.z_map, SB_map=dered.SB_map,
@@ -862,5 +849,8 @@ if __name__ == '__main__':
 
     P_PC = StellarPop_PCA.P_from_K(K_PC)
     w = pca.compute_model_weights(P=P_PC, A=A)
-    Fstar_PDF_map = pca.param_PDF_map(qty='Fstar', wts=w)
+    print np.count_nonzero(w)
+    Fstar_pct_map = pca.param_pct_map(
+        qty='Fstar', W=w, P=np.array([16., 50., 84.]))
+    print Fstar_pct_map[1, :, :]
 
