@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import Colormap
 
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
@@ -16,6 +17,7 @@ import cov_obs
 
 from itertools import izip, product
 from glob import glob
+from copy import copy
 
 eps = np.finfo(float).eps
 
@@ -296,34 +298,6 @@ class StellarPop_PCA(object):
 
         return A
 
-    def _compute_spec_cov_spax(self, K_obs_, i0, a, f):
-        '''
-        compute the spectral covariance matrix for one spaxel
-
-        params:
-         - K_obs_: observational covariance object
-         - i0: starting index of observational covariance matrix
-         - f: surface brightness ratio btwn BOSS objects & spaxel
-         - a: mean flux-density of original spectra
-        '''
-
-        K_th = self.cov_th
-        nspec = K_th.shape[0]
-        K_full = K_obs_.cov[i0:i0+nspec, i0:i0+nspec] * f + K_th * a**2.
-
-        return K_full
-
-    def _compute_PC_cov_spax(self, K_spec):
-        '''
-        compute the PC covariance matrix for one spaxel
-
-        See Chen+'12 (Eq 11) for full expression
-        '''
-
-        E = self.PCs
-
-        return E.dot(K_spec).dot(E.T)
-
     def _compute_i0_map(self, logl, z_map):
         '''
         compute the index of some array corresponding to the given
@@ -401,6 +375,35 @@ class StellarPop_PCA(object):
 
         return K_full
 
+    def _compute_PC_cov_spax(self, K_spec):
+        '''
+        compute the PC covariance matrix for one spaxel
+
+        See Chen+'12 (Eq 11) for full expression
+        '''
+
+        E = self.PCs
+
+        return E.dot(K_spec).dot(E.T)
+
+    def _compute_spec_cov_spax(self, K_obs_, i0, a, f):
+        '''
+        compute the spectral covariance matrix for one spaxel
+
+        params:
+         - K_obs_: observational covariance object
+         - i0: starting index of observational covariance matrix
+         - f: surface brightness ratio btwn BOSS objects & spaxel
+         - a: mean flux-density of original spectra
+        '''
+
+        K_th = self.cov_th
+        nspec = K_th.shape[0]
+        f = np.ones_like(f)
+        K_full = K_obs_.cov[i0:i0+nspec, i0:i0+nspec] * f + K_th * a**2.
+
+        return K_full
+
     def build_PC_cov_full_iter(self, a_map, z_map, SB_map, obs_logl, K_obs_):
         '''
         for each spaxel, build a PC covariance matrix, and return in array
@@ -454,14 +457,15 @@ class StellarPop_PCA(object):
 
         C = self.trn_PC_wts # shape (nmodel, q)
         D = C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...]
+        # D goes [MODELNUM, PCNUM, XNUM, YNUM]
 
         #print D.shape, P.shape
 
         # one spaxel... np.einsum('...i,ij,...i->...i', C, P, C).shape
-        chi2 = np.einsum('...ixy,ijxy,...jxy->...xy', D, P, D)
+        chi2 = np.einsum('iaxy,aaxy,iaxy->ixy', D, P, D)
         w = np.exp(-chi2/2.)
 
-        return w
+        return w/w.max(axis=0)
 
     def param_pct_map(self, qty, W, P):
         '''
@@ -819,6 +823,33 @@ class MaNGA_deredshift(object):
         dl = (lulims - lllims)[:, np.newaxis, np.newaxis]
         return np.mean(f*dl, axis=0)
 
+cmap = copy(Colormap(cubehelix))
+cmap.set_bad('gray')
+cmap.set_under('k')
+cmap.set_over('w')
+
+def qty_fig(pct_map, mask, qty_str, qty_tex, objname='test'):
+    plt.close('all')
+    fig = plt.figure(figsize=(9, 4), dpi=300)
+
+    ax1 = plt.subplot(121) # median
+    ax2 = plt.subplot(122) # half (P86 - P14)
+
+    m = ax1.imshow(
+        np.ma.array(pct_map[1, :, :], mask=mask), aspect='equal', cmap=cmap)
+    s = ax2.imshow(
+        np.ma.array(
+            np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2., mask=mask),
+        aspect='equal', cmap=cmap)
+
+    plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
+    plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
+
+    plt.suptitle(objname + ': ' + qty_tex)
+
+    plt.tight_layout()
+    plt.savefig('{}-{}.png'.format(objname, qty_str))
+
 if __name__ == '__main__':
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
@@ -840,7 +871,12 @@ if __name__ == '__main__':
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
 
+    mask_map = np.logical_or(
+        mask_spax,
+        (dered.drp_hdulist['RIMG'].data) == 0.)
+
     print A[:, 37, 37]
+    print pca.trn_PC_wts
 
     a_map = dered.a_map(f=flux_regr, logl=pca.logl, dlogl=pca.dlogl)
     K_PC = pca.build_PC_cov_full_iter(
@@ -849,8 +885,14 @@ if __name__ == '__main__':
 
     P_PC = StellarPop_PCA.P_from_K(K_PC)
     w = pca.compute_model_weights(P=P_PC, A=A)
-    print np.count_nonzero(w)
+    plt.imshow(
+        np.ma.array(
+            (~np.isclose(w, 0., atol=1.0e-5)).sum(axis=0), mask=mask_map),
+        aspect='equal', cmap=cmap)
+    plt.colorbar()
+    plt.show()
     Fstar_pct_map = pca.param_pct_map(
         qty='Fstar', W=w, P=np.array([16., 50., 84.]))
-    print Fstar_pct_map[1, :, :]
+
+    qty_fig(Fstar_pct_map, mask=mask_map, qty_str='Fstar', qty_tex=r'$F^*$')
 
