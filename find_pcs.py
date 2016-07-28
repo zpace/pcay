@@ -648,6 +648,15 @@ class Bandpass(object):
         return {n: flam * dl * interp(l)
                 for n, interp in self.interps.iteritems()}
 
+def setup_bandpasses():
+    BP = Bandpass()
+    BP.add_bandpass_from_ascii(
+        fname='filters/r_SDSS.res', band_name='r')
+    BP.add_bandpass_from_ascii(
+        fname='filters/i_SDSS.res', band_name='i')
+    BP.add_bandpass_from_ascii(
+        fname='filters/z_SDSS.res', band_name='z')
+    return BP
 
 class PCAError(Exception):
     '''
@@ -875,6 +884,8 @@ def qty_fig(pct_map, mask, qty_str, qty_tex, objname='test'):
 
 if __name__ == '__main__':
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
+    BP = setup_bandpasses()
+
     pca = StellarPop_PCA.from_YMC(
         lib_para_file='model_spec_bc03/lib_para',
         form_file='model_spec_bc03/input_model_para_for_paper',
