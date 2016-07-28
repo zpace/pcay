@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import Colormap
+from matplotlib import cm as mplcm
+from matplotlib.colors import Normalize, LogNorm
 
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
@@ -158,14 +159,11 @@ class StellarPop_PCA(object):
         # and compute width of bins
         dl = self.dl
 
-        # scale each spectrum such that the mean flux between
-        # 3700 and 5500 AA is unity
-        avg_trn_flux = np.mean(self.trn_spectra * dl, axis=1)
+        # normalize each spectrum to the mean flux density
+        self.a = np.mean(self.trn_spectra, axis=1)
 
-        self.normed_trn_spectra = \
-            self.trn_spectra/avg_trn_flux[:, np.newaxis]
-        self.mean_trn_spectrum = np.mean(
-            self.normed_trn_spectra, axis=0)
+        self.normed_trn = self.trn_spectra/self.a[:, np.newaxis]
+        self.M = np.mean(self.normed_trn, axis=0)
 
         # if user asks to test param reconstruction from PCs over range
         # of # of PCs kept
@@ -174,19 +172,16 @@ class StellarPop_PCA(object):
             res_q = [None, ] * max_q
             for dim_pc_subspace in range(1, max_q):
                 PCs = self.PCA(
-                    self.normed_trn_spectra - self.mean_trn_spectrum,
-                    dims=dim_pc_subspace)
+                    self.normed_trn - self.M, dims=dim_pc_subspace)
                 # transformation matrix: spectra -> PC amplitudes
                 tfm_sp2PC = PCs.T
 
                 # project back onto the PCs to get the weight vectors
-                trn_PC_wts = (self.normed_trn_spectra - \
-                    self.mean_trn_spectrum).dot(tfm_sp2PC)
+                trn_PC_wts = (self.normed_trn - self.M).dot(tfm_sp2PC)
                 # and reconstruct the best approximation for the spectra from PCs
                 trn_recon = trn_PC_wts.dot(PCs)
                 # residuals
-                trn_resid = self.normed_trn_spectra - \
-                    (self.mean_trn_spectrum + trn_recon)
+                trn_resid = self.normed_trn - (self.M + trn_recon)
 
                 cov_th = np.cov(trn_resid.T)
 
@@ -217,19 +212,16 @@ class StellarPop_PCA(object):
         if q is not None:
             dim_pc_subspace = q
             self.PCs = self.PCA(
-                self.normed_trn_spectra - self.mean_trn_spectrum,
-                dims=dim_pc_subspace)
+                self.normed_trn - self.M, dims=dim_pc_subspace)
             # transformation matrix: spectra -> PC amplitudes
             self.tfm_sp2PC = self.PCs.T
 
             # project back onto the PCs to get the weight vectors
-            self.trn_PC_wts = (self.normed_trn_spectra - \
-                self.mean_trn_spectrum).dot(self.tfm_sp2PC)
+            self.trn_PC_wts = (self.normed_trn - self.M).dot(self.tfm_sp2PC)
             # and reconstruct the best approximation for the spectra from PCs
             self.trn_recon = self.trn_PC_wts.dot(self.PCs)
             # residuals
-            self.trn_resid = self.normed_trn_spectra - \
-                (self.mean_trn_spectrum + self.trn_recon)
+            self.trn_resid = self.normed_trn - (self.M + self.trn_recon)
 
             self.cov_th = np.cov(self.trn_resid.T)
 
@@ -284,19 +276,21 @@ class StellarPop_PCA(object):
         # make f and ivar effectively a list of spectra
         f = np.transpose(f, (1,2,0)).reshape(-1, f.shape[0])
         ivar = np.transpose(ivar, (1,2,0)).reshape(-1, ivar.shape[0])
+        ivar[ivar == 0.] = eps
 
-        # normalize flux array
-        mf = np.mean(f*dl, axis=0)
-        f = f/mf
-        mfd = np.mean(f, axis=0)
-        f = f - mfd
+        # normalize by average flux density
+        a = np.average(f, weights=ivar, axis=1)
+        f = f/a[:, np.newaxis]
+        # get mean spectrum
+        M = np.average(f, weights=ivar, axis=0)
+        f = f - M[np.newaxis, :]
 
         # need to do some reshaping
         A = self.robust_project_onto_PCs(e=self.PCs, f=f, w=ivar)
 
         A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
 
-        return A
+        return A, M, a.reshape(cube_shape[-2:])
 
     def _compute_i0_map(self, logl, z_map):
         '''
@@ -456,16 +450,15 @@ class StellarPop_PCA(object):
         '''
 
         C = self.trn_PC_wts # shape (nmodel, q)
-        D = C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...]
+        D = np.abs(C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...])
         # D goes [MODELNUM, PCNUM, XNUM, YNUM]
 
         #print D.shape, P.shape
 
-        # one spaxel... np.einsum('...i,ij,...i->...i', C, P, C).shape
-        chi2 = np.einsum('iaxy,aaxy,iaxy->ixy', D, P, D)
+        chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
         w = np.exp(-chi2/2.)
 
-        return w/w.max(axis=0)
+        return w#/w.max(axis=0)
 
     def param_pct_map(self, qty, W, P):
         '''
@@ -480,16 +473,19 @@ class StellarPop_PCA(object):
         '''
 
         cubeshape = W.shape[-2:]
-        Q = self.metadata[qty]
+        Q = self.metadata[qty][np.isfinite(self.metadata[qty])]
+
+        W = W[np.isfinite(self.metadata[qty])]
 
         inds = np.ndindex(*cubeshape)
 
         A = np.empty((len(P),) + cubeshape)
 
         for ind in inds:
+            q = Q
             w = W[:, ind[0], ind[1]]
-            i_ = np.argsort(Q, axis=0)
-            q, w = Q[i_], w[i_]
+            i_ = np.argsort(q, axis=0)
+            q, w = q[i_], w[i_]
             A[:, ind[0], ind[1]] = np.interp(P, 100.*w.cumsum()/w.sum(), q)
 
         return A
@@ -650,7 +646,7 @@ class MaNGA_deredshift(object):
     spaxel_side = 0.5 * u.arcsec
 
     def __init__(self, drp_hdulist, dap_hdulist,
-                 max_vel_unc=90.*u.Unit('km/s'), drp_dlogl=None,
+                 max_vel_unc=500.*u.Unit('km/s'), drp_dlogl=None,
                  MPL_v='MPL-4'):
         self.drp_hdulist = drp_hdulist
         self.dap_hdulist = dap_hdulist
@@ -667,6 +663,7 @@ class MaNGA_deredshift(object):
 
         # mask all the spaxels that have high stellar velocity uncertainty
         self.vel_ivar_mask = 1./np.sqrt(self.vel_ivar) > max_vel_unc
+        self.vel_mask = self.dap_hdulist['STELLAR_VEL_MASK'].data
 
         self.drp_logl = np.log10(drp_hdulist['WAVE'].data)
         if drp_dlogl is None:
@@ -687,6 +684,8 @@ class MaNGA_deredshift(object):
         regrid flux density measurements from MaNGA DRP logcube results
             to a specified logl grid, essentially picking the pixels that
             fall in the logl grid's range, after being de-redshifted
+
+        also normalizes all spectra to have flux density of mean 1
 
         (this does not perform any fancy interpolation, just "shifting")
         (nor are emission line features masked--that must be done in post-)
@@ -720,7 +719,8 @@ class MaNGA_deredshift(object):
         # in any spaxels
         bad_logl_extent = (
             ix_logl0_z + len(template_logl)) >= len(self.drp_logl)
-        bad_ = (bad_logl_extent | self.vel_ivar_mask)[np.newaxis:, :]
+
+        bad_ = np.logical_or(bad_logl_extent, self.vel_mask)
         # select len(template_logl) values from self.flux, w/ diff starting
         # (see http://stackoverflow.com/questions/37984214/
         # pure-numpy-expression-for-selecting-same-length-
@@ -738,6 +738,7 @@ class MaNGA_deredshift(object):
                 :, np.newaxis, np.newaxis], I, J]
 
         self.spax_mask = bad_
+        self.mean_fdens = np.mean(self.flux_regr, axis=0)
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -823,7 +824,7 @@ class MaNGA_deredshift(object):
         dl = (lulims - lllims)[:, np.newaxis, np.newaxis]
         return np.mean(f*dl, axis=0)
 
-cmap = copy(Colormap(cubehelix))
+cmap = mplcm.get_cmap('cubehelix')
 cmap.set_bad('gray')
 cmap.set_under('k')
 cmap.set_over('w')
@@ -836,11 +837,11 @@ def qty_fig(pct_map, mask, qty_str, qty_tex, objname='test'):
     ax2 = plt.subplot(122) # half (P86 - P14)
 
     m = ax1.imshow(
-        np.ma.array(pct_map[1, :, :], mask=mask), aspect='equal', cmap=cmap)
+        np.ma.array(pct_map[1, :, :], mask=mask), aspect='equal')
     s = ax2.imshow(
         np.ma.array(
             np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2., mask=mask),
-        aspect='equal', cmap=cmap)
+        aspect='equal')
 
     plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
     plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
@@ -849,6 +850,7 @@ def qty_fig(pct_map, mask, qty_str, qty_tex, objname='test'):
 
     plt.tight_layout()
     plt.savefig('{}-{}.png'.format(objname, qty_str))
+
 
 if __name__ == '__main__':
     dered = MaNGA_deredshift.from_filenames(
@@ -867,32 +869,37 @@ if __name__ == '__main__':
     mask_cube = dered.compute_eline_mask(
         template_logl=pca.logl, template_dlogl=pca.dlogl)
 
-    A = pca.project_cube(
+    A, M, a_map = pca.project_cube(
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
 
+    print A
+    plt.imshow(a_map, aspect='equal'); plt.colorbar(); plt.show()
+    '''
     mask_map = np.logical_or(
         mask_spax,
         (dered.drp_hdulist['RIMG'].data) == 0.)
 
-    print A[:, 37, 37]
-    print pca.trn_PC_wts
-
-    a_map = dered.a_map(f=flux_regr, logl=pca.logl, dlogl=pca.dlogl)
     K_PC = pca.build_PC_cov_full_iter(
         a_map=a_map, z_map=dered.z_map, SB_map=dered.SB_map,
         obs_logl=dered.drp_logl, K_obs_=K_obs)
 
     P_PC = StellarPop_PCA.P_from_K(K_PC)
     w = pca.compute_model_weights(P=P_PC, A=A)
-    plt.imshow(
-        np.ma.array(
-            (~np.isclose(w, 0., atol=1.0e-5)).sum(axis=0), mask=mask_map),
-        aspect='equal', cmap=cmap)
-    plt.colorbar()
-    plt.show()
-    Fstar_pct_map = pca.param_pct_map(
-        qty='Fstar', W=w, P=np.array([16., 50., 84.]))
 
-    qty_fig(Fstar_pct_map, mask=mask_map, qty_str='Fstar', qty_tex=r'$F^*$')
+    # plt.imshow(
+    #     np.ma.array(
+    #         (np.isclose(w, 0., atol=1.0e-5)).sum(axis=0), mask=mask_map),
+    #     aspect='equal', cmap=cmap)
+    # plt.colorbar()
+    # plt.show()
+
+    MWA_pct_map = pca.param_pct_map(
+        qty='MWA', W=w, P=np.array([16., 50., 84.]))
+
+    print MWA_pct_map[1, 37, 37]
+    print w[:, 37, 37], (~(w[:, 37, 37] == 0)).sum()
+
+    qty_fig(MWA_pct_map, mask=mask_map, qty_str='MWA', qty_tex=r'$MWA$')
+    '''
 
