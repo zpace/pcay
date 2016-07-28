@@ -66,7 +66,7 @@ class StellarPop_PCA(object):
 
     @classmethod
     def from_YMC(cls, lib_para_file, form_file,
-                 spec_file_dir, spec_file_base, K_obs):
+                 spec_file_dir, spec_file_base, K_obs, BP):
         '''
         initialize object from CSP library provided by Y-M Chen, which is
             based on a BC03 model library
@@ -83,16 +83,20 @@ class StellarPop_PCA(object):
         dlogl_final = 1.0e-4
         l_final= 10.**np.arange(np.log10(3700.), np.log10(5500.),
                                 dlogl_final)
+        dl = 10.**(np.log10(l_final) + dlogl/2.) - \
+            10.**(np.log10(l_final) - dlogl/2.)
         nl_final = len(l_final)
 
         # load metadata tables
         lib_para = t.Table.read(lib_para_file, format='ascii')
+        nspec = len(lib_para)
         form_data = t.Table.read(form_file, format='ascii')
         form_data_goodcols = ['zmet', 'Tau_v', 'mu']
         for n in form_data_goodcols:
             lib_para[n] = np.zeros(len(lib_para))
 
-        nspec = len(lib_para)
+        # initialize arrays for more intensely-computed metadata
+        MLr = MLi = MLz = np.zeros(nspec)
 
         # initialize array that resampled spectra will go into
         spec = np.empty((nspec, nl_final))
@@ -119,6 +123,8 @@ class StellarPop_PCA(object):
                 lib_para[form_data_goodcols][i-1] = \
                     form_data[form_data_goodcols][i]
                 spec[i] = interp1d(l_raw, f_lambda)(l_final)
+                L = BP(flam=spec[i], l=l_final, dl=dl)
+
             finally:
                 hdulist.close()
 
@@ -129,6 +135,8 @@ class StellarPop_PCA(object):
         spec = spec[goodspec, :]
 
         metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mgalaxy']
+
+        print metadata.colnames
 
         metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
