@@ -118,13 +118,9 @@ class StellarPop_PCA(object):
                 f_lambda = hdulist[3].data[l_raw_good]
                 lib_para[form_data_goodcols][i-1] = \
                     form_data[form_data_goodcols][i]
+                spec[i] = interp1d(l_raw, f_lambda)(l_final)
             finally:
                 hdulist.close()
-
-            if goodspec[i] == False:
-                continue
-
-            spec[i] = interp1d(l_raw, f_lambda)(l_final)
 
         metadata = lib_para
 
@@ -627,6 +623,30 @@ class StellarPop_PCA(object):
                 np.moveaxis(K_PC, [0, 1, 2, 3], [2, 3, 0, 1])),
             [0, 1, 2, 3], [2, 3, 0, 1])
         return P_PC
+
+
+class Bandpass(object):
+    '''
+    class to manage bandpasses for multiple filters
+    '''
+    def __init__(self):
+        self.bands = []
+        self.interps = {}
+
+    def add_bandpass(self, name, l, ff):
+        self.bands.append(name)
+        self.interps[name] = scipy.interpolate.interp1d(
+            x=l, y=ff, kind='linear', bounds_error=False, fill_value=0.)
+
+    def add_bandpass_from_ascii(self, fname, band_name):
+        table = t.Table.read(fname, format='ascii', names=['l', 'ff'])
+        l = np.array(table['l'])
+        ff = np.array(table['ff'])
+        self.add_bandpass(name=band_name, l=l, ff=ff)
+
+    def __call__(flam, l, dl):
+        return {n: flam * dl * interp(l)
+                for n, interp in self.interps.iteritems()}
 
 
 class PCAError(Exception):
