@@ -280,6 +280,7 @@ class StellarPop_PCA(object):
 
         # normalize by average flux density
         a = np.average(f, weights=ivar, axis=1)
+        a[a == 0.] = 1.
         f = f/a[:, np.newaxis]
         # get mean spectrum
         M = np.average(f, weights=ivar, axis=0)
@@ -853,9 +854,6 @@ def qty_fig(pct_map, mask, qty_str, qty_tex, objname='test'):
 
 
 if __name__ == '__main__':
-    dered = MaNGA_deredshift.from_filenames(
-        drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
-        dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     pca = StellarPop_PCA.from_YMC(
         lib_para_file='model_spec_bc03/lib_para',
@@ -863,6 +861,10 @@ if __name__ == '__main__':
         spec_file_dir='model_spec_bc03',
         spec_file_base='modelspec', K_obs=K_obs)
     pca.run_pca_models(q=7)
+
+    dered = MaNGA_deredshift.from_filenames(
+        drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
+        dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
 
     flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
         template_logl=pca.logl, template_dlogl=pca.dlogl)
@@ -873,9 +875,6 @@ if __name__ == '__main__':
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
 
-    print A
-    plt.imshow(a_map, aspect='equal'); plt.colorbar(); plt.show()
-    '''
     mask_map = np.logical_or(
         mask_spax,
         (dered.drp_hdulist['RIMG'].data) == 0.)
@@ -897,9 +896,5 @@ if __name__ == '__main__':
     MWA_pct_map = pca.param_pct_map(
         qty='MWA', W=w, P=np.array([16., 50., 84.]))
 
-    print MWA_pct_map[1, 37, 37]
-    print w[:, 37, 37], (~(w[:, 37, 37] == 0)).sum()
-
     qty_fig(MWA_pct_map, mask=mask_map, qty_str='MWA', qty_tex=r'$MWA$')
-    '''
 
