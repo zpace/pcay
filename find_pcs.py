@@ -643,7 +643,7 @@ class Bandpass(object):
 
     def add_bandpass(self, name, l, ff):
         self.bands.append(name)
-        self.interps[name] = scipy.interpolate.interp1d(
+        self.interps[name] = interp1d(
             x=l, y=ff, kind='linear', bounds_error=False, fill_value=0.)
 
     def add_bandpass_from_ascii(self, fname, band_name):
@@ -652,8 +652,14 @@ class Bandpass(object):
         ff = np.array(table['ff'])
         self.add_bandpass(name=band_name, l=l, ff=ff)
 
-    def __call__(flam, l, dl):
-        return {n: flam * dl * interp(l)
+    def __call__(self, flam, l, dl, units=None):
+        if units == None:
+            units = {}
+            units['flam'] = u.Unit('Lsun AA-1')
+            units['l'] = u.AA
+            units['dl'] = units['l']
+        return {n: (flam * dl * interp(l)).sum() * \
+                (units['flam'] * units['dl']).to('Lsun')
                 for n, interp in self.interps.iteritems()}
 
 def setup_bandpasses():
