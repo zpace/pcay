@@ -124,6 +124,7 @@ class StellarPop_PCA(object):
                     form_data[form_data_goodcols][i]
                 spec[i] = interp1d(l_raw, f_lambda)(l_final)
                 L = BP(flam=spec[i], l=l_final, dl=dl)
+                MLr[i], MLi[i], MLz[i] = L['r'], L['i'], L['z']
 
             finally:
                 hdulist.close()
@@ -278,8 +279,8 @@ class StellarPop_PCA(object):
             ivar *= (~mask_cube).astype(float)
 
         # make f and ivar effectively a list of spectra
-        f = np.transpose(f, (1,2,0)).reshape(-1, f.shape[0])
-        ivar = np.transpose(ivar, (1,2,0)).reshape(-1, ivar.shape[0])
+        f = np.transpose(f, (1,2,0)).reshape(-1, cube_shape[0])
+        ivar = np.transpose(ivar, (1,2,0)).reshape(-1, cube_shape[0])
         ivar[ivar == 0.] = eps
 
         # normalize by average flux density
@@ -295,7 +296,9 @@ class StellarPop_PCA(object):
 
         A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
 
-        return A, M, a.reshape(cube_shape[-2:])
+        O_norm = f.T.reshape((f.shape[1], ) + cube_shape[1:])
+
+        return A, M, a.reshape(cube_shape[-2:]), O_norm
 
     def _compute_i0_map(self, logl, z_map):
         '''
@@ -632,6 +635,21 @@ class StellarPop_PCA(object):
             [0, 1, 2, 3], [2, 3, 0, 1])
         return P_PC
 
+def comparison_plot(pca, A, O, l):
+    '''
+    make plot illustrating fidelity of PCA decomposition in reproducing
+        observed data
+    '''
+
+    plt.figure(figsize=(8, 4), dpi=300)
+    ax = plt.subplot(111)
+    ax.plot(l, O, drawstyle='steps-mid', c='b', label='Orig.')
+    ax.plot(l, A.dot(pca.PCs), drawstyle='steps-mid', c='g', label='Recon.')
+    ax.legend(loc='best')
+    ax.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]', size=8)
+    ax.set_ylabel(r'$F_{\lambda,~\textrm{norm}}$', size=8)
+    plt.tight_layout()
+    plt.savefig('comp_plot.png')
 
 class Bandpass(object):
     '''
@@ -916,7 +934,7 @@ if __name__ == '__main__':
     mask_cube = dered.compute_eline_mask(
         template_logl=pca.logl, template_dlogl=pca.dlogl)
 
-    A, M, a_map = pca.project_cube(
+    A, M, a_map, O_norm = pca.project_cube(
         f=flux_regr, ivar=ivar_regr,
         mask_spax=mask_spax, mask_cube=mask_cube)
 
@@ -942,4 +960,6 @@ if __name__ == '__main__':
         qty='MWA', W=w, P=np.array([16., 50., 84.]))
 
     qty_fig(MWA_pct_map, mask=mask_map, qty_str='MWA', qty_tex=r'$MWA$')
+
+    comparison_plot(pca=pca, A=A, O=O_norm, l=pca.l)
 
