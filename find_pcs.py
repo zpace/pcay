@@ -5,10 +5,12 @@ from matplotlib.colors import Normalize, LogNorm
 
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
+from specutils.extinction import reddening
 
 import os
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
+from scipy.integrate import quad
 from statsmodels.nonparametric.kde import KDEUnivariate
 
 import spec_tools
@@ -83,8 +85,8 @@ class StellarPop_PCA(object):
         dlogl_final = 1.0e-4
         l_final= 10.**np.arange(np.log10(3700.), np.log10(5500.),
                                 dlogl_final)
-        dl = 10.**(np.log10(l_final) + dlogl/2.) - \
-            10.**(np.log10(l_final) - dlogl/2.)
+        dl = 10.**(np.log10(l_final) + dlogl_final/2.) - \
+            10.**(np.log10(l_final) - dlogl_final/2.)
         nl_final = len(l_final)
 
         # load metadata tables
@@ -92,8 +94,8 @@ class StellarPop_PCA(object):
         nspec = len(lib_para)
         form_data = t.Table.read(form_file, format='ascii')
         form_data_goodcols = ['zmet', 'Tau_v', 'mu']
-        for n in form_data_goodcols:
-            lib_para[n] = np.zeros(len(lib_para))
+        #for n in form_data_goodcols:
+        #    lib_para[n] = np.zeros(len(lib_para))
 
         # initialize arrays for more intensely-computed metadata
         MLr = MLi = MLz = np.zeros(nspec)
@@ -123,21 +125,22 @@ class StellarPop_PCA(object):
                 lib_para[form_data_goodcols][i-1] = \
                     form_data[form_data_goodcols][i]
                 spec[i] = interp1d(l_raw, f_lambda)(l_final)
-                L = BP(flam=spec[i], l=l_final, dl=dl)
-                MLr[i], MLi[i], MLz[i] = L['r'], L['i'], L['z']
+                #L = BP(
+                #    flam=hdulist[3].data, l=hdulist[2].data)
+                #MLr[i], MLi[i], MLz[i] = 1./L['r'], 1./L['i'], 1./L['z']
 
             finally:
                 hdulist.close()
 
         metadata = lib_para
 
+        #metadata.add_column(t.Column(data=MLr, name='MLr'))
+
         ixs = np.arange(nspec)
         metadata.remove_rows(ixs[~goodspec])
         spec = spec[goodspec, :]
 
         metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mgalaxy']
-
-        print metadata.colnames
 
         metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
@@ -635,22 +638,6 @@ class StellarPop_PCA(object):
             [0, 1, 2, 3], [2, 3, 0, 1])
         return P_PC
 
-def comparison_plot(pca, A, O, l):
-    '''
-    make plot illustrating fidelity of PCA decomposition in reproducing
-        observed data
-    '''
-
-    plt.figure(figsize=(8, 4), dpi=300)
-    ax = plt.subplot(111)
-    ax.plot(l, O, drawstyle='steps-mid', c='b', label='Orig.')
-    ax.plot(l, A.dot(pca.PCs), drawstyle='steps-mid', c='g', label='Recon.')
-    ax.legend(loc='best')
-    ax.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]', size=8)
-    ax.set_ylabel(r'$F_{\lambda,~\textrm{norm}}$', size=8)
-    plt.tight_layout()
-    plt.savefig('comp_plot.png')
-
 class Bandpass(object):
     '''
     class to manage bandpasses for multiple filters
@@ -670,14 +657,22 @@ class Bandpass(object):
         ff = np.array(table['ff'])
         self.add_bandpass(name=band_name, l=l, ff=ff)
 
-    def __call__(self, flam, l, dl, units=None):
+    def __call__(self, flam, l, units=None):
         if units == None:
             units = {}
             units['flam'] = u.Unit('Lsun AA-1')
             units['l'] = u.AA
             units['dl'] = units['l']
-        return {n: (flam * dl * interp(l)).sum() * \
-                (units['flam'] * units['dl']).to('Lsun')
+
+        lgood = (l >= 2000.) * (l <= 15000.)
+        l, flam = l[lgood], flam[lgood]
+
+        flam_interp = interp1d(
+            x=l, y=flam, kind='linear', bounds_error=False, fill_value=0.)
+        return {n: quad(
+            lambda l: interp(l) * flam_interp(l),
+            a=l.min(), b=l.max(), epsrel=1.0e-5, limit=len(l))[0] * \
+                (units['flam'] * units['l']).to('Lsun')
                 for n, interp in self.interps.iteritems()}
 
 def setup_bandpasses():
@@ -800,7 +795,20 @@ class MaNGA_deredshift(object):
                 :, np.newaxis, np.newaxis], I, J]
 
         self.spax_mask = bad_
-        self.mean_fdens = np.mean(self.flux_regr, axis=0)
+
+        # finally, compute the MW dust attenuation, and apply the inverse
+        r_v = 3.1
+        mpt = [i/2 for i in self.z_map.shape]
+        ix0_mpt = ix_logl0_z[mpt[0], mpt[1]]
+        obs_l = 10.**(template_logl[:len(template_logl)]) * \
+            (1. + z_map[mpt[0], mpt[1]])
+        atten = reddening(
+            wave=obs_l * u.AA, a_v=r_v*self.drp_hdulist[0].header['EBVGAL'],
+            r_v=r_v, model='f99')
+        atten = atten[:, np.newaxis, np.newaxis]
+
+        self.flux_regr /= atten
+        self.ivar_regr *= atten**2.
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -891,27 +899,98 @@ cmap.set_bad('gray')
 cmap.set_under('k')
 cmap.set_over('w')
 
-def qty_fig(pct_map, mask, qty_str, qty_tex, objname='test'):
-    plt.close('all')
-    fig = plt.figure(figsize=(9, 4), dpi=300)
+class PCA_Result(object):
+    '''
+    store results of PCA for one galaxy using this
+    '''
+    def __init__(self, pca, dered, K_obs):
+        self.objname = dered.drp_hdulist[0].header['plateifu']
+        self.pca = pca
+        self.dered = dered
 
-    ax1 = plt.subplot(121) # median
-    ax2 = plt.subplot(122) # half (P86 - P14)
+        flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
+            template_logl=pca.logl, template_dlogl=pca.dlogl)
+        mask_cube = dered.compute_eline_mask(
+            template_logl=pca.logl, template_dlogl=pca.dlogl)
 
-    m = ax1.imshow(
-        np.ma.array(pct_map[1, :, :], mask=mask), aspect='equal')
-    s = ax2.imshow(
-        np.ma.array(
-            np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2., mask=mask),
-        aspect='equal')
+        self.mask_map = np.logical_or(
+            mask_spax, (dered.drp_hdulist['RIMG'].data) == 0.)
 
-    plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
-    plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
+        self.A, self.M, self.a_map, self.O = pca.project_cube(
+            f=flux_regr, ivar=ivar_regr,
+            mask_spax=mask_spax, mask_cube=mask_cube)
 
-    plt.suptitle(objname + ': ' + qty_tex)
+        self.K_PC = pca.build_PC_cov_full_iter(
+            a_map=a_map, z_map=dered.z_map, SB_map=dered.SB_map,
+            obs_logl=dered.drp_logl, K_obs_=K_obs)
 
-    plt.tight_layout()
-    plt.savefig('{}-{}.png'.format(objname, qty_str))
+        self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
+
+        self.map_shape = O.shape[-2:]
+        self.ifu_ctr_ix = [s/2 for s in self.map_shape]
+
+        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
+
+    def comp_plot(self, ix=None):
+        '''
+        make plot illustrating fidelity of PCA decomposition in reproducing
+            observed data
+        '''
+
+        if ix == None:
+            ix = self.ifu_ctr_ix
+
+        plt.close('all')
+        plt.figure(figsize=(8, 4), dpi=300)
+        ax = plt.subplot(211)
+        ax.plot(
+            self.l, self.O[:, ix[0], ix[1]] + self.M[:, ix[0], ix[1]],
+            drawstyle='steps-mid', c='b', label='Orig.')
+        ax.plot(
+            self.l, pca.M + self.A[:, ix[0], ix[1]].dot(pca.PCs),
+            drawstyle='steps-mid', c='g', label='Recon.')
+        ax.legend(loc='best')
+        ax.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]', size=8)
+        ax.set_ylabel(r'$F_{\lambda,~\textrm{norm}}$', size=8)
+
+        ax_res = plt.subplot(212, sharex=ax)
+        ax_res.plot(
+            l,
+            self.A[:, ix[0], ix[1]].dot(pca.PCs) - self.O[:, ix[0], ix[1]],
+            drawstyle='steps-mid', c='r')
+        ax_res.set_yscale('log')
+        ax_res.set_ylabel('Resid.')
+
+        plt.suptitle('{}: ({}, {})'.format(self.objname, ix[0], ix[1]))
+        plt.tight_layout()
+        plt.savefig('comp_plot.png')
+
+    def qty_fig(self, qty_str, qty_tex):
+
+        pct_map = self.pca.param_pct_map(
+            qty_str='MWA', W=self.w, P=np.array([16., 50., 84.]))
+
+        plt.close('all')
+        fig = plt.figure(figsize=(9, 4), dpi=300)
+
+        ax1 = plt.subplot(121) # median
+        ax2 = plt.subplot(122) # half (P86 - P14)
+
+        m = ax1.imshow(
+            np.ma.array(pct_map[1, :, :], mask=self.mask), aspect='equal')
+        s = ax2.imshow(
+            np.ma.array(
+                np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
+                mask=self.mask),
+            aspect='equal')
+
+        plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
+        plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
+
+        plt.suptitle(self.objname + ': ' + qty_tex)
+
+        plt.tight_layout()
+        plt.savefig('{}-{}.png'.format(self.objname, qty_str))
 
 
 if __name__ == '__main__':
@@ -922,44 +1001,16 @@ if __name__ == '__main__':
         lib_para_file='model_spec_bc03/lib_para',
         form_file='model_spec_bc03/input_model_para_for_paper',
         spec_file_dir='model_spec_bc03',
-        spec_file_base='modelspec', K_obs=K_obs)
+        spec_file_base='modelspec', K_obs=K_obs, BP=BP)
     pca.run_pca_models(q=7)
 
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
         dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
 
-    flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
-        template_logl=pca.logl, template_dlogl=pca.dlogl)
-    mask_cube = dered.compute_eline_mask(
-        template_logl=pca.logl, template_dlogl=pca.dlogl)
-
-    A, M, a_map, O_norm = pca.project_cube(
-        f=flux_regr, ivar=ivar_regr,
-        mask_spax=mask_spax, mask_cube=mask_cube)
-
-    mask_map = np.logical_or(
-        mask_spax,
-        (dered.drp_hdulist['RIMG'].data) == 0.)
-
-    K_PC = pca.build_PC_cov_full_iter(
-        a_map=a_map, z_map=dered.z_map, SB_map=dered.SB_map,
-        obs_logl=dered.drp_logl, K_obs_=K_obs)
-
-    P_PC = StellarPop_PCA.P_from_K(K_PC)
-    w = pca.compute_model_weights(P=P_PC, A=A)
-
-    # plt.imshow(
-    #     np.ma.array(
-    #         (np.isclose(w, 0., atol=1.0e-5)).sum(axis=0), mask=mask_map),
-    #     aspect='equal', cmap=cmap)
-    # plt.colorbar()
-    # plt.show()
-
-    MWA_pct_map = pca.param_pct_map(
-        qty='MWA', W=w, P=np.array([16., 50., 84.]))
-
-    qty_fig(MWA_pct_map, mask=mask_map, qty_str='MWA', qty_tex=r'$MWA$')
-
-    comparison_plot(pca=pca, A=A, O=O_norm, l=pca.l)
+    pca_res = PCA_Result(
+        pca=pca, dered=dered, O=O_norm, M=M, A=A, l=pca.l,
+        galname=dered.drp_hdulist['plateifu'])
+    pca_res.comp_plot()
+    pca.qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
 
