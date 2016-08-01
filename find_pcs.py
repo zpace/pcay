@@ -101,9 +101,6 @@ class StellarPop_PCA(object):
             lib_para.add_column(
                 t.Column(data=np.zeros(len(lib_para)), name=n))
 
-        # initialize arrays for more intensely-computed metadata
-        MLr = MLi = MLz = np.zeros(nspec)
-
         # initialize array that resampled spectra will go into
         spec = np.empty((nspec, nl_final))
         goodspec = np.ones(nspec).astype(bool)
@@ -126,28 +123,37 @@ class StellarPop_PCA(object):
                 goodspec[i] = False
             else:
                 f_lambda = hdulist[3].data[l_raw_good]
+                spec[i, :] = interp1d(l_raw, f_lambda)(l_final)
                 for n in form_data_goodcols:
                     lib_para[i-1][n] = form_data[i][n]
-                spec[i] = interp1d(l_raw, f_lambda)(l_final)
-                #L = BP(
-                #    flam=hdulist[3].data, l=hdulist[2].data)
-                #MLr[i], MLi[i], MLz[i] = 1./L['r'], 1./L['i'], 1./L['z']
 
             finally:
                 hdulist.close()
 
         metadata = lib_para
 
-        #metadata.add_column(t.Column(data=MLr, name='MLr'))
-
         ixs = np.arange(nspec)
         metadata.remove_rows(ixs[~goodspec])
         spec = spec[goodspec, :]
+
+        # compute mass to light ratio
+        f_r = BP.interps['r'](l_final)
+        f_i = BP.interps['i'](l_final)
+        f_z = BP.interps['z'](l_final)
+
+        L_r = (f_r * spec).sum(axis=1)
+        L_i = (f_i * spec).sum(axis=1)
+        L_z = (f_z * spec).sum(axis=1)
+
+        MLr, MLi, MLz = 1./L_r, 1./L_i, 1./L_z
 
         metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mgalaxy']
 
         metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
+        metadata.add_column(t.Column(data=MLr, name='MLr'))
+        metadata.add_column(t.Column(data=MLi, name='MLi'))
+        metadata.add_column(t.Column(data=MLz, name='MLz'))
 
         return cls(l=l_final*u.Unit('AA'), trn_spectra=spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
@@ -961,11 +967,9 @@ class PCA_Result(object):
         ax.set_xticklabels([])
         ax_res = plt.subplot(gs[1])
 
-        l = np.ma.array(
-            self.l,
-            mask=self.mask_cube[:, ix[0], ix[1]].astype(bool))
+        l = self.l
         orig = self.O[:, ix[0], ix[1]] + self.M
-        recon = self.M + self.A[:, ix[0], ix[1]].dot(pca.PCs)
+        recon = self.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
 
         # original & reconstructed
         ax.plot(
@@ -1045,7 +1049,7 @@ if __name__ == '__main__':
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
 
-    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True)
+    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=True, pkl=True)
 
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
@@ -1054,4 +1058,3 @@ if __name__ == '__main__':
     pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
     pca_res.comp_plot()
     pca_res.qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
-
