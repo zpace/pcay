@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm as mplcm
 from matplotlib.colors import Normalize, LogNorm
+from matplotlib import gridspec
 
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
@@ -91,11 +92,14 @@ class StellarPop_PCA(object):
 
         # load metadata tables
         lib_para = t.Table.read(lib_para_file, format='ascii')
+
         nspec = len(lib_para)
         form_data = t.Table.read(form_file, format='ascii')
         form_data_goodcols = ['zmet', 'Tau_v', 'mu']
-        #for n in form_data_goodcols:
-        #    lib_para[n] = np.zeros(len(lib_para))
+
+        for n in form_data_goodcols:
+            lib_para.add_column(
+                t.Column(data=np.zeros(len(lib_para)), name=n))
 
         # initialize arrays for more intensely-computed metadata
         MLr = MLi = MLz = np.zeros(nspec)
@@ -122,8 +126,8 @@ class StellarPop_PCA(object):
                 goodspec[i] = False
             else:
                 f_lambda = hdulist[3].data[l_raw_good]
-                lib_para[form_data_goodcols][i-1] = \
-                    form_data[form_data_goodcols][i]
+                for n in form_data_goodcols:
+                    lib_para[i-1][n] = form_data[i][n]
                 spec[i] = interp1d(l_raw, f_lambda)(l_final)
                 #L = BP(
                 #    flam=hdulist[3].data, l=hdulist[2].data)
@@ -634,9 +638,16 @@ class StellarPop_PCA(object):
     def P_from_K(K):
         P_PC = np.moveaxis(
             np.linalg.inv(
-                np.moveaxis(K_PC, [0, 1, 2, 3], [2, 3, 0, 1])),
+                np.moveaxis(K, [0, 1, 2, 3], [2, 3, 0, 1])),
             [0, 1, 2, 3], [2, 3, 0, 1])
         return P_PC
+
+    # =====
+    # under the hood
+    # =====
+
+    def __str__(self):
+        return 'PCA object: q = {0[0]}, nlam = {0[1]}'.format(self.PCs.shape)
 
 class Bandpass(object):
     '''
@@ -910,7 +921,7 @@ class PCA_Result(object):
 
         flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
-        mask_cube = dered.compute_eline_mask(
+        self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
 
         self.mask_map = np.logical_or(
@@ -918,18 +929,20 @@ class PCA_Result(object):
 
         self.A, self.M, self.a_map, self.O = pca.project_cube(
             f=flux_regr, ivar=ivar_regr,
-            mask_spax=mask_spax, mask_cube=mask_cube)
+            mask_spax=mask_spax, mask_cube=self.mask_cube)
 
         self.K_PC = pca.build_PC_cov_full_iter(
-            a_map=a_map, z_map=dered.z_map, SB_map=dered.SB_map,
+            a_map=self.a_map, z_map=dered.z_map, SB_map=dered.SB_map,
             obs_logl=dered.drp_logl, K_obs_=K_obs)
 
         self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
 
-        self.map_shape = O.shape[-2:]
+        self.map_shape = self.O.shape[-2:]
         self.ifu_ctr_ix = [s/2 for s in self.map_shape]
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
+
+        self.l = 10.**self.pca.logl
 
     def comp_plot(self, ix=None):
         '''
@@ -942,24 +955,35 @@ class PCA_Result(object):
 
         plt.close('all')
         plt.figure(figsize=(8, 4), dpi=300)
-        ax = plt.subplot(211)
-        ax.plot(
-            self.l, self.O[:, ix[0], ix[1]] + self.M[:, ix[0], ix[1]],
-            drawstyle='steps-mid', c='b', label='Orig.')
-        ax.plot(
-            self.l, pca.M + self.A[:, ix[0], ix[1]].dot(pca.PCs),
-            drawstyle='steps-mid', c='g', label='Recon.')
-        ax.legend(loc='best')
-        ax.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]', size=8)
-        ax.set_ylabel(r'$F_{\lambda,~\textrm{norm}}$', size=8)
 
-        ax_res = plt.subplot(212, sharex=ax)
+        gs = gridspec.GridSpec(2, 1, hspace=0, height_ratios=[3, 1])
+        ax = plt.subplot(gs[0])
+        ax.set_xticklabels([])
+        ax_res = plt.subplot(gs[1])
+
+        l = np.ma.array(
+            self.l,
+            mask=self.mask_cube[:, ix[0], ix[1]].astype(bool))
+        orig = self.O[:, ix[0], ix[1]] + self.M
+        recon = self.M + self.A[:, ix[0], ix[1]].dot(pca.PCs)
+
+        # original & reconstructed
+        ax.plot(
+            l, orig, drawstyle='steps-mid', c='b', label='Orig.')
+        ax.plot(
+            l, recon, drawstyle='steps-mid', c='g', label='Recon.')
+        ax.legend(loc='best')
+        ax.set_ylabel(r'$F_{\lambda,~\textrm{norm}}$')
+        ax.set_ylim([-0.1, 2.25])
+
+        # residual
         ax_res.plot(
-            l,
-            self.A[:, ix[0], ix[1]].dot(pca.PCs) - self.O[:, ix[0], ix[1]],
-            drawstyle='steps-mid', c='r')
+            l, np.abs((orig - recon)/orig), drawstyle='steps-mid', c='r')
+
         ax_res.set_yscale('log')
+        ax_res.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
         ax_res.set_ylabel('Resid.')
+        ax_res.set_ylim([1.0e-3, 1.0])
 
         plt.suptitle('{}: ({}, {})'.format(self.objname, ix[0], ix[1]))
         plt.tight_layout()
@@ -968,7 +992,7 @@ class PCA_Result(object):
     def qty_fig(self, qty_str, qty_tex):
 
         pct_map = self.pca.param_pct_map(
-            qty_str='MWA', W=self.w, P=np.array([16., 50., 84.]))
+            qty=qty_str, W=self.w, P=np.array([16., 50., 84.]))
 
         plt.close('all')
         fig = plt.figure(figsize=(9, 4), dpi=300)
@@ -977,11 +1001,12 @@ class PCA_Result(object):
         ax2 = plt.subplot(122) # half (P86 - P14)
 
         m = ax1.imshow(
-            np.ma.array(pct_map[1, :, :], mask=self.mask), aspect='equal')
+            np.ma.array(pct_map[1, :, :], mask=self.mask_map),
+            aspect='equal')
         s = ax2.imshow(
             np.ma.array(
                 np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
-                mask=self.mask),
+                mask=self.mask_map),
             aspect='equal')
 
         plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
@@ -992,25 +1017,41 @@ class PCA_Result(object):
         plt.tight_layout()
         plt.savefig('{}-{}.png'.format(self.objname, qty_str))
 
+def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True):
+    import pickle
+    if (fname is None):
+        redo = True
+
+        if pkl == True:
+            fname = 'pca.pkl'
+
+    if redo == True:
+        pca = StellarPop_PCA.from_YMC(
+            lib_para_file='model_spec_bc03/lib_para',
+            form_file='model_spec_bc03/input_model_para_for_paper',
+            spec_file_dir='model_spec_bc03',
+            spec_file_base='modelspec', K_obs=K_obs, BP=BP)
+        pca.run_pca_models(q=7)
+
+        if pkl == True:
+            pickle.dump(pca, open(fname, 'w'))
+
+    else:
+        pca = pickle.load(open(fname, 'r'))
+
+    return pca
 
 if __name__ == '__main__':
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
 
-    pca = StellarPop_PCA.from_YMC(
-        lib_para_file='model_spec_bc03/lib_para',
-        form_file='model_spec_bc03/input_model_para_for_paper',
-        spec_file_dir='model_spec_bc03',
-        spec_file_base='modelspec', K_obs=K_obs, BP=BP)
-    pca.run_pca_models(q=7)
+    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True)
 
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
         dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
 
-    pca_res = PCA_Result(
-        pca=pca, dered=dered, O=O_norm, M=M, A=A, l=pca.l,
-        galname=dered.drp_hdulist['plateifu'])
+    pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
     pca_res.comp_plot()
-    pca.qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
+    pca_res.qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
 
