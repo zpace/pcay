@@ -7,6 +7,7 @@ from matplotlib import gridspec
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
 from specutils.extinction import reddening
+from astropy.cosmology import WMAP9
 
 import os
 from scipy.interpolate import interp1d
@@ -481,7 +482,7 @@ class StellarPop_PCA(object):
 
         return w#/w.max(axis=0)
 
-    def param_pct_map(self, qty, W, P):
+    def param_pct_map(self, qty, W, P, factor=None):
         '''
         This is iteration based, which is not awesome.
 
@@ -491,10 +492,16 @@ class StellarPop_PCA(object):
          - W: cube of shape (nmodels, NX, NY), with weights for each
             combination of spaxel and model
          - P: percentile(s)
+         - factor: array to multiply metadata[qty] by. This basically
+            lets you get M by multiplying M/L by L
         '''
 
         cubeshape = W.shape[-2:]
         Q = self.metadata[qty][np.isfinite(self.metadata[qty])]
+        if factor == None:
+            factor = np.ones_like(Q)
+
+        Q *= factor
 
         W = W[np.isfinite(self.metadata[qty])]
 
@@ -825,7 +832,6 @@ class MaNGA_deredshift(object):
         atten = atten[:, np.newaxis, np.newaxis]
 
         self.flux_regr /= atten
-        self.ivar_regr *= atten**2.
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -950,6 +956,62 @@ class PCA_Result(object):
 
         self.l = 10.**self.pca.logl
 
+    def Mstar(self, BP, cosmo, z, band='i'):
+        '''
+        compute stellar mass
+
+        use stellar mass-to-light ratio PDF
+
+        params:
+         - BP: bandpass object
+         - d: distance to galaxy (must include units)
+         - band: what bandpass to use
+        '''
+
+        f = (BP.interps[band](self.l) * self.flux_regr).sum(axis=0)
+        d = gal_dist(cosmo, z)
+        f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
+
+        M_map = self.pca.param_pct_map(
+            qty_str='ML{}'.format(band),
+            qty_tex=r'$M_{*,{{0}}}$'.format(band),
+            factor=f)
+
+        return M_map
+
+    def Mstar_fig(self, BP, cosmo, z, band='i'):
+        '''
+        make stellar-mass map
+        '''
+
+        qty_str = 'Mstar_{}'.format(band)
+        qty_tex = r'M_{*,{{0}}}'.format(band)
+
+        pct_map = self.Mstar(BP, cosmo, z, band)
+
+        plt.close('all')
+        fig = plt.figure(figsize=(9, 4), dpi=300)
+
+        ax1 = plt.subplot(121) # median
+        ax2 = plt.subplot(122) # half (P86 - P14)
+
+        m = ax1.imshow(
+            np.ma.array(pct_map[1, :, :], mask=self.mask_map),
+            aspect='equal')
+        s = ax2.imshow(
+            np.ma.array(
+                np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
+                mask=self.mask_map),
+            aspect='equal')
+
+        plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
+        plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
+
+        plt.suptitle(self.objname + ': ' + qty_tex)
+
+        plt.tight_layout()
+        plt.savefig('{}-{}.png'.format(self.objname, qty_str))
+
     def comp_plot(self, ix=None):
         '''
         make plot illustrating fidelity of PCA decomposition in reproducing
@@ -962,27 +1024,36 @@ class PCA_Result(object):
         plt.close('all')
         plt.figure(figsize=(8, 4), dpi=300)
 
-        gs = gridspec.GridSpec(2, 1, hspace=0, height_ratios=[3, 1])
+        gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1])
         ax = plt.subplot(gs[0])
         ax.set_xticklabels([])
         ax_res = plt.subplot(gs[1])
 
-        l = self.l
         orig = self.O[:, ix[0], ix[1]] + self.M
         recon = self.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
 
         # original & reconstructed
         ax.plot(
-            l, orig, drawstyle='steps-mid', c='b', label='Orig.')
+            self.l,
+            np.ma.array(orig,
+                        mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
+            drawstyle='steps-mid', c='b', label='Orig.')
         ax.plot(
-            l, recon, drawstyle='steps-mid', c='g', label='Recon.')
+            self.l,
+            np.ma.array(recon,
+                        mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
+            drawstyle='steps-mid', c='g', label='Recon.')
         ax.legend(loc='best')
         ax.set_ylabel(r'$F_{\lambda,~\textrm{norm}}$')
         ax.set_ylim([-0.1, 2.25])
 
         # residual
+        resid = np.abs((orig - recon)/orig)
         ax_res.plot(
-            l, np.abs((orig - recon)/orig), drawstyle='steps-mid', c='r')
+            self.l,
+            np.ma.array(resid,
+                        mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
+            drawstyle='steps-mid', c='r')
 
         ax_res.set_yscale('log')
         ax_res.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
@@ -991,10 +1062,14 @@ class PCA_Result(object):
 
         plt.suptitle('{}: ({}, {})'.format(self.objname, ix[0], ix[1]))
         plt.tight_layout()
+        plt.subplots_adjust(top=0.9)
         plt.savefig('comp_plot.png')
 
     def qty_fig(self, qty_str, qty_tex):
-
+        '''
+        make a map of the quantity of interest, based on the constructed
+            parameter PDF
+        '''
         pct_map = self.pca.param_pct_map(
             qty=qty_str, W=self.w, P=np.array([16., 50., 84.]))
 
@@ -1045,11 +1120,15 @@ def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True):
 
     return pca
 
+def gal_dist(cosmo, z):
+    return cosmo.luminosity_distance(z)
+
 if __name__ == '__main__':
+    cosmo = WMAP9
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
 
-    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=True, pkl=True)
+    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True)
 
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
@@ -1058,3 +1137,8 @@ if __name__ == '__main__':
     pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
     pca_res.comp_plot()
     pca_res.qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
+
+    z_dist = m.get_drpall_val(
+        '{}/drpall-{}.fits'.format(
+            m.drpall_loc, m.MPL_versions['MPL-4']),
+        'nsa_zdist', '8083-12704')[0]
