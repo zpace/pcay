@@ -16,6 +16,8 @@ from astropy import units as u, constants as c, table as t
 
 from conroy_tools import make_conroy_file
 
+import fsps
+
 zsol_padova = .019
 zs_padova = t.Table(
     data=[range(23),
@@ -119,6 +121,32 @@ class FSPS_SFHBuilder(object):
     def from_pickle(cls, fname):
         FSPS_args = pickle.load(open(fname))
         return cls(**FSPS_args)
+
+    def run_fsps(self):
+        '''
+        run FSPS with given CSP parameters, using continuous SFH
+
+        returns:
+         - l: wavelength grid
+         - spec: flux-density (Lsol/AA)
+         - MLr, MLi, MLz: mass-to-light ratios, in r-, i-, and z-band
+        '''
+        sp = fsps.StellarPopulation()
+        sp.params['zcontinuous'] = 1
+        sp.params['imf_type'] = 2
+        sp.params['tage'] = self.time0
+        sp.params['sfh'] = 3
+        sp.params['logzsol'] = self.FSPS_args['zmet']
+        sp.params['sigma_smooth'] = self.FSPS_args['sigma']
+        sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
+
+        l, spec = sp.get_spectrum(tage=self.time0, peraa=True)
+        mstar = sp.stellar_mass
+        Ls = sp.get_mags(
+            bands=['sdss_i', 'sdss_r', 'sdss_z'], tage=self.time0).to('Lsun')
+
+        MLr, MLi, MLz = mstar / Ls
+        return l, spec, MLr, MLi, MLz
 
     def calc_sfh(self, plot=False, saveplot=False, mformed_compare=False):
         '''
