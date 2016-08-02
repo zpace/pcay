@@ -977,7 +977,7 @@ class PCA_Result(object):
 
         m, s, mcb, scb = self.qty_map(
             ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
-            f=f, norm=LogNorm())
+            f=f, norm=[LogNorm(), LogNorm()])
 
         return m, s, mcb, scb
 
@@ -1069,7 +1069,7 @@ class PCA_Result(object):
 
         return fig
 
-    def qty_map(self, qty_str, ax1, ax2, f=None, norm=None):
+    def qty_map(self, qty_str, ax1, ax2, f=None, norm=[None, None]):
         '''
         make a map of the quantity of interest, based on the constructed
             parameter PDF
@@ -1088,13 +1088,13 @@ class PCA_Result(object):
 
         m = ax1.imshow(
             np.ma.array(pct_map[1, :, :], mask=self.mask_map),
-            aspect='equal', norm=norm)
+            aspect='equal', norm=norm[0])
 
         s = ax2.imshow(
             np.ma.array(
                 np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
                 mask=self.mask_map),
-            aspect='equal', norm=norm)
+            aspect='equal', norm=norm[1])
 
         mcb = plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
         scb = plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
