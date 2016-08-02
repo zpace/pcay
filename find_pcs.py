@@ -6,8 +6,10 @@ from matplotlib import gridspec
 
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
+from astropy import wcs
 from specutils.extinction import reddening
 from astropy.cosmology import WMAP9
+import pywcsgrid2 as wg2
 
 import os
 from scipy.interpolate import interp1d
@@ -955,13 +957,14 @@ class PCA_Result(object):
 
         self.l = 10.**self.pca.logl
 
-    def Mstar(self, BP, cosmo, z, band='i'):
+    def Mstar_map(self, ax1, ax2, BP, cosmo, z, band='i'):
         '''
-        compute stellar mass
+        make two-axes stellar-mass map
 
         use stellar mass-to-light ratio PDF
 
         params:
+         - ax1, ax2: axes for median and stdev, passed along
          - BP: bandpass object
          - d: distance to galaxy (must include units)
          - band: what bandpass to use
@@ -972,48 +975,37 @@ class PCA_Result(object):
         d = gal_dist(cosmo, z)
         f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
 
-        M_map = self.pca.param_pct_map(
-            qty='ML{}'.format(band), W=self.w,
-            P=np.array([16., 50., 84.]), factor=f)
+        m, s, mcb, scb = self.qty_map(
+            ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
+            f=f, norm=LogNorm())
 
-        return M_map
+        return m, s, mcb, scb
 
-    def Mstar_fig(self, BP, cosmo, z, band='i'):
+    def make_Mstar_fig(self, BP, cosmo, z, band='i'):
         '''
-        make stellar-mass map
+        make stellar-mass figure
         '''
 
         qty_str = 'Mstar_{}'.format(band)
         qty_tex = r'$M_{{*,{}}}$'.format(band)
 
-        pct_map = self.Mstar(BP, cosmo, z, band)
-
-        plt.close('all')
         fig = plt.figure(figsize=(9, 4), dpi=300)
+        gs = gridspec.GridSpec(1, 2)
+        ax1 = wg2.subplot(gs[0], header=self.wcs_header)
+        ax2 = wg2.subplot(gs[1], header=self.wcs_header)
 
-        ax1 = plt.subplot(121) # median
-        ax2 = plt.subplot(122) # half (P86 - P14)
+        _ = self.Mstar_map(
+            ax1=ax1, ax2=ax2, BP=BP, cosmo=cosmo, z=z, band=band)
+        fig.suptitle(self.objname + ': ' + qty_tex)
 
-        m = ax1.imshow(
-            np.ma.array(pct_map[1, :, :], mask=self.mask_map),
-            aspect='equal', norm=LogNorm())
-        s = ax2.imshow(
-            np.ma.array(
-                np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
-                mask=self.mask_map),
-            norm=LogNorm(), aspect='equal')
-
-        plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
-        plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
-
-        plt.suptitle(self.objname + ': ' + qty_tex)
-
+        self.__fix_im_axs__([ax1, ax2])
         plt.tight_layout()
-        plt.savefig('{}-{}.png'.format(self.objname, qty_str))
 
-        return pct_map[1 , ...]*u.Msun.sum()
+        fig.savefig('{}-{}.png'.format(self.objname, qty_str), dpi=300)
 
-    def comp_plot(self, ix=None):
+        return fig
+
+    def comp_plot(self, ax1, ax2, ix=None):
         '''
         make plot illustrating fidelity of PCA decomposition in reproducing
             observed data
@@ -1022,84 +1014,155 @@ class PCA_Result(object):
         if ix == None:
             ix = self.ifu_ctr_ix
 
-        plt.close('all')
-        plt.figure(figsize=(8, 4), dpi=300)
-
-        gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1])
-        ax = plt.subplot(gs[0])
-        ax.set_xticklabels([])
-        ax_res = plt.subplot(gs[1])
-
         orig = self.O[:, ix[0], ix[1]] + self.M
         recon = self.pca.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
 
         # original & reconstructed
-        ax.plot(
+        orig_ = ax1.plot(
             self.l,
-            np.ma.array(orig,
-                        mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
+            np.ma.array(orig, mask=self.mask_cube[:, ix[0], ix[1]]),
             drawstyle='steps-mid', c='b', label='Orig.')
-        ax.plot(
+        recon_ = ax1.plot(
             self.l,
-            np.ma.array(recon,
-                        mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
+            np.ma.array(recon, mask=self.mask_cube[:, ix[0], ix[1]]),
             drawstyle='steps-mid', c='g', label='Recon.')
-        ax.legend(loc='best')
-        ax.set_ylabel(r'$F_{\lambda,~\textrm{norm}}$')
-        ax.set_ylim([-0.1, 2.25])
+        ax1.legend(loc='best')
+        ax1.set_ylabel(r'$F_{\lambda}$')
+        ax1.set_ylim([-0.1, 2.25])
+        ax1.set_xticklabels([])
 
         # residual
         resid = np.abs((orig - recon)/orig)
-        ax_res.plot(
+        resid_ = ax2.plot(
             self.l,
             np.ma.array(resid,
                         mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
             drawstyle='steps-mid', c='blue')
-        ax_res.axhline(np.ma.array(
+        resid_avg_ = ax2.axhline(np.ma.array(
             resid,
             mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)).mean(),
             linestyle='--', c='salmon')
 
-        ax_res.set_yscale('log')
-        ax_res.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
-        ax_res.set_ylabel('Resid.')
-        ax_res.set_ylim([1.0e-3, 1.0])
+        ax2.set_yscale('log')
+        ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
+        ax2.set_ylabel('Resid.')
+        ax2.set_ylim([1.0e-3, 1.0])
 
-        plt.suptitle('{}: ({}, {})'.format(self.objname, ix[0], ix[1]))
+        return orig_, recon_, resid_, resid_avg_, ix
+
+    def make_comp_fig(self, ix=None):
+        fig = plt.figure(figsize=(8, 3.5), dpi=300)
+
+        gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1])
+        ax = plt.subplot(gs[0])
+        ax_res = plt.subplot(gs[1])
+
+        _, _, _, _, ix = self.comp_plot(ax1=ax, ax2=ax_res, ix=ix)
+
+        fig.suptitle('{0}: ({1[0]}, {1[1]})'.format(self.objname, ix))
+
         plt.tight_layout()
-        plt.subplots_adjust(top=0.9, hspace=.05)
-        plt.savefig('comp_plot.png')
+        plt.subplots_adjust(top=0.9)
 
-    def qty_fig(self, qty_str, qty_tex):
+        fig.savefig('comp_{0}_{1[0]}-{1[1]}.png'.format(
+            self.objname, ix), dpi=300)
+
+        return fig
+
+    def qty_map(self, qty_str, ax1, ax2, f=None, norm=None):
         '''
         make a map of the quantity of interest, based on the constructed
             parameter PDF
+
+        params:
+         - qty_str: string designating which quantity from self.metadata
+            to access
+         - ax1: where median map gets shown
+         - ax2: where sigma map gets shown
+         - f: factor to multiply percentiles by
         '''
+
         pct_map = self.pca.param_pct_map(
-            qty=qty_str, W=self.w, P=np.array([16., 50., 84.]))
-
-        plt.close('all')
-        fig = plt.figure(figsize=(9, 4), dpi=300)
-
-        ax1 = plt.subplot(121) # median
-        ax2 = plt.subplot(122) # half (P86 - P14)
+            qty=qty_str, W=self.w, P=np.array([16., 50., 84.]),
+            factor=f)
 
         m = ax1.imshow(
             np.ma.array(pct_map[1, :, :], mask=self.mask_map),
-            aspect='equal')
+            aspect='equal', norm=norm)
+
         s = ax2.imshow(
             np.ma.array(
                 np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
                 mask=self.mask_map),
-            aspect='equal')
+            aspect='equal', norm=norm)
 
-        plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
-        plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
+        mcb = plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
+        scb = plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
 
-        plt.suptitle(self.objname + ': ' + qty_tex)
+        return m, s, mcb, scb
 
+    def make_qty_fig(self, qty_str, qty_tex, qty_fname=None, f=None):
+        '''
+        make a with a map of the quantity of interest
+
+        params:
+         - qty_str: string designating which quantity from self.metadata
+            to access
+         - qty_tex: valid TeX for plot
+         - qty_fname: override for final filename (usually used when `f` is)
+         - f: factor by which to multiply map
+        '''
+        if qty_fname is None:
+            qty_fname = qty_str
+
+        fig = plt.figure(figsize=(9, 4), dpi=300)
+
+        gs = gridspec.GridSpec(1, 2)
+        ax1 = wg2.subplot(gs[0], header=self.wcs_header)
+        ax2 = wg2.subplot(gs[1], header=self.wcs_header)
+
+        m, s, mcb, scb = self.qty_map(
+            qty_str=qty_str, ax1=ax1, ax2=ax2, f=f)
+
+        fig.suptitle('{}: {}'.format(self.objname, qty_tex))
+
+        self.__fix_im_axs__([ax1, ax2])
         plt.tight_layout()
-        plt.savefig('{}-{}.png'.format(self.objname, qty_str))
+        fig.savefig('{}-{}.png'.format(self.objname, qty_fname), dpi=300)
+
+        return fig
+
+    def qty_hist(self, qty, qty_tex, ix=None, ax=None, f=None):
+        if ix is None:
+            ix = self.ifu_ctr_ix
+
+        if ax is None:
+            ax = plt.gca()
+
+        if f is None:
+            f = np.ones_like(self.pca.metadata[qty])
+
+        h = plt.hist(
+            self.pca.metadata[qty], weights=self.w, bins=100)
+        ax.set_xlabel(qty_tex)
+        return h
+
+    def __fix_im_axs__(self, axs):
+        '''
+        do all the fixes to make quantity maps look nice in pywcsgrid2
+        '''
+        if type(axs) is not list:
+            axs = [axs]
+
+        for ax in axs:
+            ax.set_ticklabel_type('delta', center_pixel=self.ifu_ctr_ix)
+            ax.grid()
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+
+    @property
+    def wcs_header(self):
+        return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
 
 def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True):
     import pickle
@@ -1129,6 +1192,7 @@ def gal_dist(cosmo, z):
     return cosmo.luminosity_distance(z)
 
 if __name__ == '__main__':
+    plateifu = '8083-12704'
     cosmo = WMAP9
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
@@ -1136,17 +1200,18 @@ if __name__ == '__main__':
     pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True)
 
     dered = MaNGA_deredshift.from_filenames(
-        drp_fname='/home/zpace/Downloads/manga-8083-12704-LOGCUBE.fits.gz',
-        dap_fname='/home/zpace/mangadap/default/8083/mangadap-8083-12704-default.fits.gz')
+        drp_fname='/home/zpace/Downloads/manga-{}-LOGCUBE.fits.gz'.format(
+            plateifu),
+        dap_fname='/home/zpace/mangadap/default/8083/mangadap-{}-default.fits.gz'.format(plateifu))
 
     pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
-    pca_res.comp_plot()
-    pca_res.qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
+    pca_res.make_comp_fig()
+    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
 
     z_dist = m.get_drpall_val(
         '{}/drpall-{}.fits'.format(
             m.drpall_loc, m.MPL_versions['MPL-4']),
-        'nsa_zdist', '8083-12704')[0]
+        'nsa_zdist', plateifu)[0]
 
-    Mstar_tot = pca_res.Mstar_fig(BP=BP, cosmo=cosmo, z=z_dist, band='r')
-    print Mstar_tot
+    pca_res.make_Mstar_fig(BP=BP, cosmo=cosmo, z=z_dist, band='r')
+
