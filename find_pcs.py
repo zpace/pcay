@@ -4,6 +4,9 @@ from matplotlib import cm as mplcm
 from matplotlib.colors import Normalize, LogNorm
 from matplotlib import gridspec
 
+import mpld3
+from mpld3 import plugins
+
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
 from astropy import wcs
@@ -1159,6 +1162,37 @@ class PCA_Result(object):
             ax.grid()
             ax.set_xlabel('')
             ax.set_ylabel('')
+
+    def make_full_QA_fig(self):
+        '''
+        use mpld3 to make a full map of the IFU grasp, including
+            diagnostic spectral fits, and histograms of possible
+            parameter values for each spaxel
+        '''
+        fig_height = 15
+        fig_width = 12
+
+        nparams = len(self.pca.metadata.colnames)
+        ncols = 3
+        nrows = nparams//ncols + (nparams%ncols != 0)
+
+        fig = plt.figure(figsize=(fig_width, fig_height), dpi=300)
+
+        gs = gridspec.GridSpec(
+            nrows + 1, ncols,
+            height_ratios=[3, 1].append([3 for _ in range(nrows)]),
+            width_ratios = [1 for _ in range(ncols)])
+
+        im_ax = pywcsgrid2.subplot(gs[0:2, 0], header=self.wcs_header)
+
+        # put the spectrum and residual here!
+        spec_ax = plt.subplot(gs[0, 1:])
+        resid_ax = plt.subplot(gs[1, 1:])
+        self.comp_plot(ax1=spec_ax, ax2=resid_ax)
+
+        for gs_, q, tex in izip(gs[2, :], ):
+            ax = plt.subplot(gs_)
+            self.qty_hist(qty=)
 
     @property
     def wcs_header(self):
