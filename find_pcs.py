@@ -498,10 +498,9 @@ class StellarPop_PCA(object):
 
         cubeshape = W.shape[-2:]
         Q = self.metadata[qty][np.isfinite(self.metadata[qty])]
-        if factor == None:
-            factor = np.ones_like(Q)
 
-        Q *= factor
+        if factor == None:
+            factor = np.ones(cubeshape)
 
         W = W[np.isfinite(self.metadata[qty])]
 
@@ -516,7 +515,7 @@ class StellarPop_PCA(object):
             q, w = q[i_], w[i_]
             A[:, ind[0], ind[1]] = np.interp(P, 100.*w.cumsum()/w.sum(), q)
 
-        return A
+        return A * factor[np.newaxis, ...]
 
     # =====
     # properties
@@ -931,7 +930,7 @@ class PCA_Result(object):
         self.pca = pca
         self.dered = dered
 
-        flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
+        self.flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
         self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
@@ -940,7 +939,7 @@ class PCA_Result(object):
             mask_spax, (dered.drp_hdulist['RIMG'].data) == 0.)
 
         self.A, self.M, self.a_map, self.O = pca.project_cube(
-            f=flux_regr, ivar=ivar_regr,
+            f=self.flux_regr, ivar=ivar_regr,
             mask_spax=mask_spax, mask_cube=self.mask_cube)
 
         self.K_PC = pca.build_PC_cov_full_iter(
@@ -968,14 +967,14 @@ class PCA_Result(object):
          - band: what bandpass to use
         '''
 
-        f = (BP.interps[band](self.l) * self.flux_regr).sum(axis=0)
+        f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
+            self.flux_regr).sum(axis=0)
         d = gal_dist(cosmo, z)
         f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
 
         M_map = self.pca.param_pct_map(
-            qty_str='ML{}'.format(band),
-            qty_tex=r'$M_{*,{{0}}}$'.format(band),
-            factor=f)
+            qty='ML{}'.format(band), W=self.w,
+            P=np.array([16., 50., 84.]), factor=f)
 
         return M_map
 
@@ -985,7 +984,7 @@ class PCA_Result(object):
         '''
 
         qty_str = 'Mstar_{}'.format(band)
-        qty_tex = r'M_{*,{{0}}}'.format(band)
+        qty_tex = r'$M_{{*,{}}}$'.format(band)
 
         pct_map = self.Mstar(BP, cosmo, z, band)
 
@@ -997,12 +996,12 @@ class PCA_Result(object):
 
         m = ax1.imshow(
             np.ma.array(pct_map[1, :, :], mask=self.mask_map),
-            aspect='equal')
+            aspect='equal', norm=LogNorm())
         s = ax2.imshow(
             np.ma.array(
                 np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
                 mask=self.mask_map),
-            aspect='equal')
+            norm=LogNorm(), aspect='equal')
 
         plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
         plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
@@ -1011,6 +1010,8 @@ class PCA_Result(object):
 
         plt.tight_layout()
         plt.savefig('{}-{}.png'.format(self.objname, qty_str))
+
+        return pct_map[1 , ...]*u.Msun.sum()
 
     def comp_plot(self, ix=None):
         '''
@@ -1030,7 +1031,7 @@ class PCA_Result(object):
         ax_res = plt.subplot(gs[1])
 
         orig = self.O[:, ix[0], ix[1]] + self.M
-        recon = self.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
+        recon = self.pca.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
 
         # original & reconstructed
         ax.plot(
@@ -1053,7 +1054,11 @@ class PCA_Result(object):
             self.l,
             np.ma.array(resid,
                         mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
-            drawstyle='steps-mid', c='r')
+            drawstyle='steps-mid', c='blue')
+        ax_res.axhline(np.ma.array(
+            resid,
+            mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)).mean(),
+            linestyle='--', c='salmon')
 
         ax_res.set_yscale('log')
         ax_res.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
@@ -1062,7 +1067,7 @@ class PCA_Result(object):
 
         plt.suptitle('{}: ({}, {})'.format(self.objname, ix[0], ix[1]))
         plt.tight_layout()
-        plt.subplots_adjust(top=0.9)
+        plt.subplots_adjust(top=0.9, hspace=.05)
         plt.savefig('comp_plot.png')
 
     def qty_fig(self, qty_str, qty_tex):
@@ -1142,3 +1147,6 @@ if __name__ == '__main__':
         '{}/drpall-{}.fits'.format(
             m.drpall_loc, m.MPL_versions['MPL-4']),
         'nsa_zdist', '8083-12704')[0]
+
+    Mstar_tot = pca_res.Mstar_fig(BP=BP, cosmo=cosmo, z=z_dist, band='r')
+    print Mstar_tot
