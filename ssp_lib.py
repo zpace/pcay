@@ -219,11 +219,12 @@ class FSPS_SFHBuilder(object):
         with open('.'.join([self.fname, 'sfh']), 'wb') as f:
             pickle.dump(self.FSPS_args, f)
 
-    def to_row(self):
+    def to_table(self):
         names = self.FSPS_args.keys()
         tab = t.Table(data=[[self.FSPS_args[n]] for n in names], names=names)
-        r = tab[0]
-        return r
+        tab.add_column(t.Column(data=[self.Fstar], name='Fstar'))
+        tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
+        return tab
 
     #=====
     # properties
@@ -578,9 +579,37 @@ class FSPS_SFHBuilder(object):
 
 def make_csp():
     sfh = FSPS_SFHBuilder()
-    row = sfh.to_row()
+    tab = sfh.to_table()
     l, spec, MLr, MLi, MLz = sfh.run_fsps()
-    return l, spec, MLr, MLi, MLz, row
+    return l, spec, MLr, MLi, MLz, tab
+
+def make_spectral_library(n=2, pkl=False):
+
+    if pkl == False:
+        # generate CSPs
+        CSPs = [FSPS_SFHBuilder().FSPS_args for _ in range(n)]
+        with open('csps.pkl', 'wb') as f:
+            pickle.dump(f, CSPs)
+    else:
+        with open('csps.pkl', 'r') as f:
+            CSPs = pickle.load(f)
+        n = len(CSPs)
+
+    l_final = 10.**np.arange(np.log10(3700.), np.log10(8900.), 1.0e-4)
+
+    # initialize array to hold the spectra
+    specs = np.nan * np.ones((n, len(l_final)))
+
+    # initialize list to hold all metadata
+    metadata = [None for _ in range(n)]
+
+    for i in range(n):
+        sfh = FSPS_SFHBuilder(**CSPs[i])
+        tab_ = sfh.to_table()
+        l, spec, MLr, MLi, MLz = sfh.run_fsps
+        tab_ = t.hstack(
+            tab_, t.Table(data=[MLr, MLi, MLz], names='MLr', 'MLi', 'MLz')
+        metadata[i] = tab_
 
 # my hobby: needlessly subclassing exceptions
 
