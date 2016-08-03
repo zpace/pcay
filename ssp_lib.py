@@ -131,19 +131,21 @@ class FSPS_SFHBuilder(object):
          - spec: flux-density (Lsol/AA)
          - MLr, MLi, MLz: mass-to-light ratios, in r-, i-, and z-band
         '''
-        sp = fsps.StellarPopulation()
-        sp.params['zcontinuous'] = 1
+        sp = fsps.StellarPopulation(zcontinuous=1)
         sp.params['imf_type'] = 2
         sp.params['tage'] = self.time0
         sp.params['sfh'] = 3
         sp.params['logzsol'] = self.FSPS_args['zmet']
         sp.params['sigma_smooth'] = self.FSPS_args['sigma']
+        sp.params['dust1'] = self.FSPS_args['tau_V']
+        sp.params['dust2'] = self.FSPS_args['tau_V'] * self.FSPS_args['mu']
         sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
 
         l, spec = sp.get_spectrum(tage=self.time0, peraa=True)
-        mstar = sp.stellar_mass
-        Ls = sp.get_mags(
-            bands=['sdss_i', 'sdss_r', 'sdss_z'], tage=self.time0).to('Lsun')
+        mstar = sp.stellar_mass * u.Msun
+        Ms = sp.get_mags(
+            bands=['sdss_i', 'sdss_r', 'sdss_z'], tage=self.time0)
+        Ls = 10.**(-0.4 * (Ms - 4.85)) * u.Lsun
 
         MLr, MLi, MLz = mstar / Ls
         return l, spec, MLr, MLi, MLz
@@ -217,6 +219,12 @@ class FSPS_SFHBuilder(object):
         with open('.'.join([self.fname, 'sfh']), 'wb') as f:
             pickle.dump(self.FSPS_args, f)
 
+    def to_row(self):
+        names = self.FSPS_args.keys()
+        tab = t.Table(data=[[self.FSPS_args[n]] for n in names], names=names)
+        r = tab[0]
+        return r
+
     #=====
     # properties
     #=====
@@ -232,7 +240,7 @@ class FSPS_SFHBuilder(object):
     def ts(self):
         burst_ends = self.FSPS_args['time_burst'] + self.FSPS_args['dt_burst']
         discont = np.append(self.FSPS_args['time_burst'], burst_ends)
-        ts = np.linspace(0., self.time0, 1000)
+        ts = np.linspace(0., self.time0, 100)
         ts = np.append(ts, discont)
         ts.sort()
         return ts
@@ -567,6 +575,12 @@ class FSPS_SFHBuilder(object):
     def __repr__(self):
         return '\n'.join(
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.iteritems()])
+
+def make_csp():
+    sfh = FSPS_SFHBuilder()
+    row = sfh.to_row()
+    l, spec, MLr, MLi, MLz = sfh.run_fsps()
+    return l, spec, MLr, MLi, MLz, row
 
 # my hobby: needlessly subclassing exceptions
 
