@@ -144,22 +144,26 @@ class StellarPop_PCA(object):
 
         # compute mass to light ratio
         f_r = BP.interps['r'](l_final)
-        f_i = BP.interps['i'](l_final)
-        f_z = BP.interps['z'](l_final)
 
         L_r = (f_r * spec).sum(axis=1)
-        L_i = (f_i * spec).sum(axis=1)
-        L_z = (f_z * spec).sum(axis=1)
 
         MLr, MLi, MLz = 1./L_r, 1./L_i, 1./L_z
 
         metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mgalaxy']
 
-        metadata = metadata['MWA', 'LrWA', 'D4000', 'Hdelta_A', 'Fstar',
+        metadata = metadata['MWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
         metadata.add_column(t.Column(data=MLr, name='MLr'))
-        metadata.add_column(t.Column(data=MLi, name='MLi'))
-        metadata.add_column(t.Column(data=MLz, name='MLz'))
+
+        # set metadata to enable plotting later
+        metadata['MWA'].meta['TeX'] = r'MWA'
+        metadata['D4000'].meta['TeX'] = r'D4000'
+        metadata['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
+        metadata['Fstar'].meta['TeX'] = r'$F^*$'
+        metadata['zmet'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
+        metadata['Tau_v'].meta['TeX'] = r'$\tau_V$'
+        metadata['mu'].meta['TeX'] = r'$\mu$'
+        metadata['MLr'].meta['TeX'] = r'$(M/L)^*_r$'
 
         return cls(l=l_final*u.Unit('AA'), trn_spectra=spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
@@ -503,11 +507,10 @@ class StellarPop_PCA(object):
 
         cubeshape = W.shape[-2:]
         Q = self.metadata[qty][np.isfinite(self.metadata[qty])]
-
-        if factor == None:
-            factor = np.ones(cubeshape)
-
         W = W[np.isfinite(self.metadata[qty])]
+
+        if factor is None:
+            factor = np.ones(cubeshape)
 
         inds = np.ndindex(*cubeshape)
 
@@ -973,6 +976,11 @@ class PCA_Result(object):
          - band: what bandpass to use
         '''
 
+        if ax2 is None:
+            # construct dummy subplot to place stdev map in
+            fig_ = plt.figure()
+            ax2 = fig_.add_subplot(111)
+
         f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
             self.flux_regr).sum(axis=0)
         d = gal_dist(cosmo, z)
@@ -1145,8 +1153,19 @@ class PCA_Result(object):
         if f is None:
             f = np.ones_like(self.pca.metadata[qty])
 
-        h = plt.hist(
-            self.pca.metadata[qty], weights=self.w, bins=100)
+        print qty
+        q = self.pca.metadata[qty]
+        w = self.w[:, ix[0], ix[1]]
+        q, w = q[np.isfinite(q)], q[np.isfinite(q)]
+
+        if len(q) == 0:
+            return None
+
+        h = ax.hist(
+            q, weights=w, bins=50, normed=True, histtype='step',
+            color='k')
+        hprior = ax.hist(
+            q, bins=50, normed=True, histtype='step', color='b', alpha=0.5)
         ax.set_xlabel(qty_tex)
         return h
 
@@ -1159,11 +1178,14 @@ class PCA_Result(object):
 
         for ax in axs:
             ax.set_ticklabel_type('delta', center_pixel=self.ifu_ctr_ix)
+            ax.axis['bottom'].major_ticklabels.set(fontsize=10)
+            ax.axis['left'].major_ticklabels.set(fontsize=10)
+            ax.set_aspect('equal')
             ax.grid()
             ax.set_xlabel('')
             ax.set_ylabel('')
 
-    def make_full_QA_fig(self):
+    def make_full_QA_fig(self, BP, cosmo, z, ix=None):
         '''
         use mpld3 to make a full map of the IFU grasp, including
             diagnostic spectral fits, and histograms of possible
@@ -1178,21 +1200,43 @@ class PCA_Result(object):
 
         fig = plt.figure(figsize=(fig_width, fig_height), dpi=300)
 
-        gs = gridspec.GridSpec(
-            nrows + 1, ncols,
-            height_ratios=[3, 1].append([3 for _ in range(nrows)]),
-            width_ratios = [1 for _ in range(ncols)])
+        # gridspec used for map + spec_compare
+        gs1 = gridspec.GridSpec(
+            3, 4, bottom=(nrows-1.)/nrows, top=0.95,
+            height_ratios=[3, 1, 1], width_ratios=[2, 0.5, 2, 2],
+            hspace=0., wspace=.1, left=.05, right=.95)
 
-        im_ax = pywcsgrid2.subplot(gs[0:2, 0], header=self.wcs_header)
+        gs2 = gridspec.GridSpec(
+            nrows, ncols, bottom=.05, top=(nrows-1.)/nrows,
+            left=.05, right=.95, hspace=.25)
+
+        im_ax = wg2.subplot(gs1[:-1, 0], header=self.wcs_header)
+        #_ = self.Mstar_map(
+        #    ax1=im_ax, ax2=None, BP=BP, z=z, cosmo=cosmo, band='r')
+        self.__fix_im_axs__(im_ax)
 
         # put the spectrum and residual here!
-        spec_ax = plt.subplot(gs[0, 1:])
-        resid_ax = plt.subplot(gs[1, 1:])
-        self.comp_plot(ax1=spec_ax, ax2=resid_ax)
+        spec_ax = plt.subplot(gs1[0, 2:])
+        resid_ax = plt.subplot(gs1[1, 2:])
+        spec_ax.tick_params(axis='y', which='major', labelsize=10)
+        resid_ax.tick_params(axis='both', which='major', labelsize=10)
+        orig_, recon_, resid_, resid_avg_, ix_ = self.comp_plot(
+            ax1=spec_ax, ax2=resid_ax, ix=ix)
 
-        for gs_, q, tex in izip(gs[2, :], ):
+        print (self.w < 0.).sum()
+
+        TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
+            for n in self.pca.metadata.colnames]
+
+        for gs_, q, tex in izip(gs2, self.pca.metadata.colnames, TeX_labels):
             ax = plt.subplot(gs_)
-            self.qty_hist(qty=)
+            h_ = self.qty_hist(qty=q, qty_tex=tex, ix=ix, ax=ax)
+            ax.tick_params(axis='both', which='major', labelsize=10)
+
+        plt.suptitle(self.objname)
+
+        plt.savefig('{0}_fulldiag_{1[0]}-{1[1]}.png'.format(
+            self.objname, ix_))
 
     @property
     def wcs_header(self):
@@ -1225,6 +1269,19 @@ def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True):
 def gal_dist(cosmo, z):
     return cosmo.luminosity_distance(z)
 
+def get_col_metadata(col, k, notfound=''):
+    '''
+    Retrieve a specific metadata keyword `k` from the given column `col`.
+        Specify how to behave when the keyword does not exist
+    '''
+
+    try:
+        res = col.meta[k]
+    except KeyError:
+        res = notfound
+
+    return res
+
 if __name__ == '__main__':
     plateifu = '8083-12704'
     cosmo = WMAP9
@@ -1239,8 +1296,8 @@ if __name__ == '__main__':
         dap_fname='/home/zpace/mangadap/default/8083/mangadap-{}-default.fits.gz'.format(plateifu))
 
     pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
-    pca_res.make_comp_fig()
-    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
+    '''pca_res.make_comp_fig()
+    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')'''
 
     z_dist = m.get_drpall_val(
         '{}/drpall-{}.fits'.format(
@@ -1248,4 +1305,5 @@ if __name__ == '__main__':
         'nsa_zdist', plateifu)[0]
 
     pca_res.make_Mstar_fig(BP=BP, cosmo=cosmo, z=z_dist, band='r')
+    pca_res.make_full_QA_fig(BP=BP, cosmo=cosmo, z=z_dist)
 
