@@ -840,6 +840,7 @@ class MaNGA_deredshift(object):
         atten = atten[:, np.newaxis, np.newaxis]
 
         self.flux_regr /= atten
+        self.ivar_regr *= atten**2.
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -948,7 +949,7 @@ class PCA_Result(object):
             mask_spax, (dered.drp_hdulist['RIMG'].data) == 0.)
 
         self.A, self.M, self.a_map, self.O = pca.project_cube(
-            f=self.flux_regr, ivar=ivar_regr,
+            f=self.flux_regr, ivar=self.ivar_regr,
             mask_spax=mask_spax, mask_cube=self.mask_cube)
 
         self.K_PC = pca.build_PC_cov_full_iter(
@@ -1028,7 +1029,8 @@ class PCA_Result(object):
 
         orig = self.O[:, ix[0], ix[1]] + self.M
         recon = self.pca.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
-        ivar = self.ivar[:, ix[0], ix[1]] / self.ivar[:, ix[0], ix[1]].max()
+        ivar = self.ivar_regr[:, ix[0], ix[1]] / \
+            self.ivar_regr[:, ix[0], ix[1]].max()
 
         # original & reconstructed
         orig_ = ax1.plot(
@@ -1159,7 +1161,6 @@ class PCA_Result(object):
         if f is None:
             f = np.ones_like(self.pca.metadata[qty])
 
-        print qty
         q = self.pca.metadata[qty]
         w = self.w[:, ix[0], ix[1]]
         q, w = q[np.isfinite(q)], q[np.isfinite(q)]
