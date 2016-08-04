@@ -147,9 +147,10 @@ class StellarPop_PCA(object):
 
         L_r = (f_r * spec).sum(axis=1)
 
-        MLr, MLi, MLz = 1./L_r, 1./L_i, 1./L_z
+        MLr = metadata['cspm_star']/L_r
 
-        metadata['Fstar'] = metadata['mfb_1e9'] / metadata['mgalaxy']
+        metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9']) / \
+            metadata['mf_all']
 
         metadata = metadata['MWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
@@ -938,7 +939,7 @@ class PCA_Result(object):
         self.pca = pca
         self.dered = dered
 
-        self.flux_regr, ivar_regr, mask_spax = dered.regrid_to_rest(
+        self.flux_regr, self.ivar_regr, mask_spax = dered.regrid_to_rest(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
         self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
@@ -1027,6 +1028,7 @@ class PCA_Result(object):
 
         orig = self.O[:, ix[0], ix[1]] + self.M
         recon = self.pca.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
+        ivar = self.ivar[:, ix[0], ix[1]] / self.ivar[:, ix[0], ix[1]].max()
 
         # original & reconstructed
         orig_ = ax1.plot(
@@ -1037,7 +1039,11 @@ class PCA_Result(object):
             self.l,
             np.ma.array(recon, mask=self.mask_cube[:, ix[0], ix[1]]),
             drawstyle='steps-mid', c='g', label='Recon.')
-        ax1.legend(loc='best')
+        ivar_ = ax1.plot(
+            self.l,
+            np.ma.array(ivar, mask=self.mask_cube[:, ix[0], ix[1]]),
+            drawstyle='steps-mid', c='m', label='ivar')
+        ax1.legend(loc='best', prop={'size':6})
         ax1.set_ylabel(r'$F_{\lambda}$')
         ax1.set_ylim([-0.1, 2.25])
         ax1.set_xticklabels([])
@@ -1059,7 +1065,7 @@ class PCA_Result(object):
         ax2.set_ylabel('Resid.')
         ax2.set_ylim([1.0e-3, 1.0])
 
-        return orig_, recon_, resid_, resid_avg_, ix
+        return orig_, recon_, ivar_, resid_, resid_avg_, ix
 
     def make_comp_fig(self, ix=None):
         fig = plt.figure(figsize=(8, 3.5), dpi=300)
@@ -1068,7 +1074,7 @@ class PCA_Result(object):
         ax = plt.subplot(gs[0])
         ax_res = plt.subplot(gs[1])
 
-        _, _, _, _, ix = self.comp_plot(ax1=ax, ax2=ax_res, ix=ix)
+        _, _, _, _, _, ix = self.comp_plot(ax1=ax, ax2=ax_res, ix=ix)
 
         fig.suptitle('{0}: ({1[0]}, {1[1]})'.format(self.objname, ix))
 
@@ -1143,7 +1149,7 @@ class PCA_Result(object):
 
         return fig
 
-    def qty_hist(self, qty, qty_tex, ix=None, ax=None, f=None):
+    def qty_hist(self, qty, qty_tex, ix=None, ax=None, f=None, bins=50):
         if ix is None:
             ix = self.ifu_ctr_ix
 
@@ -1162,10 +1168,10 @@ class PCA_Result(object):
             return None
 
         h = ax.hist(
-            q, weights=w, bins=50, normed=True, histtype='step',
+            q, weights=w, bins=bins, normed=True, histtype='step',
             color='k')
         hprior = ax.hist(
-            q, bins=50, normed=True, histtype='step', color='b', alpha=0.5)
+            q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5)
         ax.set_xlabel(qty_tex)
         return h
 
@@ -1220,17 +1226,20 @@ class PCA_Result(object):
         resid_ax = plt.subplot(gs1[1, 2:])
         spec_ax.tick_params(axis='y', which='major', labelsize=10)
         resid_ax.tick_params(axis='both', which='major', labelsize=10)
-        orig_, recon_, resid_, resid_avg_, ix_ = self.comp_plot(
+        orig_, recon_, ivar_, resid_, resid_avg_, ix_ = self.comp_plot(
             ax1=spec_ax, ax2=resid_ax, ix=ix)
-
-        print (self.w < 0.).sum()
 
         TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
             for n in self.pca.metadata.colnames]
 
         for gs_, q, tex in izip(gs2, self.pca.metadata.colnames, TeX_labels):
             ax = plt.subplot(gs_)
-            h_ = self.qty_hist(qty=q, qty_tex=tex, ix=ix, ax=ax)
+            if 'ML' in q:
+                bins = np.logspace(-1, 6, 50)
+                ax.set_xscale('log')
+            else:
+                bins = 50
+            h_ = self.qty_hist(qty=q, qty_tex=tex, ix=ix, ax=ax, bins=bins)
             ax.tick_params(axis='both', which='major', labelsize=10)
 
         plt.suptitle(self.objname)
