@@ -353,6 +353,9 @@ class StellarPop_PCA(object):
     def compute_spec_cov_full(self, a_map, z_map, SB_map, obs_logl, K_obs_):
         '''
         DO NOT USE!! Array output too large, raises MemoryError
+        Additionally, this is not up-to-date with the iterative method,
+            in that it does not use the MaNGA covariance matrix to set
+            the scale of the full matrix
 
         compute a full PC covariance matrix for each spaxel
 
@@ -412,7 +415,7 @@ class StellarPop_PCA(object):
 
         return E.dot(K_spec).dot(E.T)
 
-    def _compute_spec_cov_spax(self, K_obs_, i0, a, f):
+    def _compute_spec_cov_spax(self, K_obs_, i0, a, f, ivar):
         '''
         compute the spectral covariance matrix for one spaxel
 
@@ -421,16 +424,33 @@ class StellarPop_PCA(object):
          - i0: starting index of observational covariance matrix
          - f: surface brightness ratio btwn BOSS objects & spaxel
          - a: mean flux-density of original spectra
+         - ivar: inverse-variance of the observed spectrum, used to
+            (1) explicitly specify the main diagonal of the
+                observational covariance matrix
+            (2) scale the rest of the observational covariance matrix
+                by the mean of the ratio between the main diagonal of
+                the BOSS observational covariance matrix and the MaNGA
+                covariance matrix
         '''
 
         K_th = self.cov_th
         nspec = K_th.shape[0]
-        f = np.ones_like(f)
-        K_full = K_obs_.cov[i0:i0+nspec, i0:i0+nspec] * f + K_th * a**2.
+        K_obs = K_obs_.cov[i0:i0+nspec, i0:i0+nspec]
+        var = 1./ivar
+        # scale the full covariance matrix
+        f = np.median(np.abs(var / np.diag(K_obs)))
+        if np.abs(f) >= 1.0e6:
+            f = 1.
+        K_obs *= f
+        # set diagonal equal to MaNGA var
+        #np.einsum('ii->i', K_obs)[:] = var
+
+        K_full = K_obs + K_th * a**2.
 
         return K_full
 
-    def build_PC_cov_full_iter(self, a_map, z_map, SB_map, obs_logl, K_obs_):
+    def build_PC_cov_full_iter(self, a_map, z_map, SB_map, obs_logl, K_obs_,
+                               ivar):
         '''
         for each spaxel, build a PC covariance matrix, and return in array
             of shape (q, q, n, n)
@@ -447,6 +467,13 @@ class StellarPop_PCA(object):
             observational covariance matrix by (wrt to avg SB)
          - obs_logl: log-lambda vector (1D) of datacube
          - K_obs_: observational spectral covariance object
+         - ivar: inverse-variance of the observed spectrum, used to
+            (1) explicitly specify the main diagonal of the
+                observational covariance matrix
+            (2) scale the rest of the observational covariance matrix
+                by the mean of the ratio between the main diagonal of
+                the BOSS observational covariance matrix and the MaNGA
+                covariance matrix
         '''
 
         E = self.PCs
@@ -461,10 +488,12 @@ class StellarPop_PCA(object):
 
         inds = np.ndindex(cubeshape) # iterator over datacube shape
 
-        for ind, i0, SB, a in izip(inds, i0_map.flatten(), SB_map.flatten(),
-                                   a_map.flatten()):
+        for ind in inds:
             K_spec = self._compute_spec_cov_spax(
-                K_obs_=K_obs_, i0=i0, a=a, f=K_obs_.SB_r_mean/SB)
+                K_obs_=K_obs_, i0=i0_map[ind[0], ind[1]],
+                a=a_map[ind[0], ind[1]],
+                f=K_obs_.SB_r_mean/SB_map[ind[0], ind[1]],
+                ivar=ivar[..., ind[0], ind[1]])
             K_PC[..., ind[0], ind[1]] = E.dot(K_spec).dot(E.T)
 
         return K_PC
@@ -954,7 +983,7 @@ class PCA_Result(object):
 
         self.K_PC = pca.build_PC_cov_full_iter(
             a_map=self.a_map, z_map=dered.z_map, SB_map=dered.SB_map,
-            obs_logl=dered.drp_logl, K_obs_=K_obs)
+            obs_logl=dered.drp_logl, K_obs_=K_obs, ivar=self.ivar_regr)
 
         self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
 
@@ -1306,8 +1335,8 @@ if __name__ == '__main__':
         dap_fname='/home/zpace/mangadap/default/8083/mangadap-{}-default.fits.gz'.format(plateifu))
 
     pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
-    '''pca_res.make_comp_fig()
-    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')'''
+    pca_res.make_comp_fig()
+    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
 
     z_dist = m.get_drpall_val(
         '{}/drpall-{}.fits'.format(
