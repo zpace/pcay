@@ -438,10 +438,9 @@ class StellarPop_PCA(object):
         K_obs = K_obs_.cov[i0:i0+nspec, i0:i0+nspec]
         var = 1./ivar
         # scale the full covariance matrix
-        f = np.median(np.abs(var / np.diag(K_obs)))
-        if np.abs(f) >= 1.0e6:
-            f = 1.
-        K_obs *= f
+        #f = np.median(var / np.diag(K_obs))
+        #f = 1.
+        #K_obs *= f
         # set diagonal equal to MaNGA var
         #np.einsum('ii->i', K_obs)[:] = var
 
@@ -1053,7 +1052,7 @@ class PCA_Result(object):
             observed data
         '''
 
-        if ix == None:
+        if ix is None:
             ix = self.ifu_ctr_ix
 
         orig = self.O[:, ix[0], ix[1]] + self.M
@@ -1192,7 +1191,7 @@ class PCA_Result(object):
 
         q = self.pca.metadata[qty]
         w = self.w[:, ix[0], ix[1]]
-        q, w = q[np.isfinite(q)], q[np.isfinite(q)]
+        q, w = q[np.isfinite(q)], w[np.isfinite(q)]
 
         if len(q) == 0:
             return None
@@ -1234,6 +1233,8 @@ class PCA_Result(object):
         ncols = 3
         nrows = nparams//ncols + (nparams%ncols != 0)
 
+        plt.close('all')
+
         fig = plt.figure(figsize=(fig_width, fig_height), dpi=300)
 
         # gridspec used for map + spec_compare
@@ -1272,7 +1273,7 @@ class PCA_Result(object):
             h_ = self.qty_hist(qty=q, qty_tex=tex, ix=ix, ax=ax, bins=bins)
             ax.tick_params(axis='both', which='major', labelsize=10)
 
-        plt.suptitle(self.objname)
+        plt.suptitle('{0}: ({1[0]}-{1[1]})'.format(self.objname, ix_))
 
         plt.savefig('{0}_fulldiag_{1[0]}-{1[1]}.png'.format(
             self.objname, ix_))
