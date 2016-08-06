@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize, LogNorm
 
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
@@ -94,6 +95,19 @@ class Cov_Obs(object):
         hdu.header['SBRMEAN'] = self.SB_r_mean.value
         hdulist = fits.HDUList([hdu_, hdu])
         hdulist.writeto(fname, clobber=True)
+
+    def make_im(self):
+        l = self.l
+        fig = plt.figure(figsize=(6, 6), dpi=300)
+        ax = fig.add_subplot(111)
+        im = ax.imshow(
+            np.abs(self.cov), extent=[l.min(), l.max(), l.min(), l.max()],
+            vmax=np.max(np.abs(self.cov)),
+            aspect='equal', norm=LogNorm())
+        ax.set_xlabel(r'$\lambda$', size=8)
+        ax.set_ylabel(r'$\lambda$', size=8)
+        plt.colorbar(im, ax=ax)
+        plt.savefig('cov_obs.png', dpi=300)
 
     # =====
     # properties
