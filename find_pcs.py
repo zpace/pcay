@@ -1018,7 +1018,7 @@ class PCA_Result(object):
 
         m, s, mcb, scb = self.qty_map(
             ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
-            f=f, norm=[LogNorm(), LogNorm()])
+            f=f, norm=[None, None], log=True)
 
         return m, s, mcb, scb
 
@@ -1116,7 +1116,8 @@ class PCA_Result(object):
 
         return fig
 
-    def qty_map(self, qty_str, ax1, ax2, f=None, norm=[None, None]):
+    def qty_map(self, qty_str, ax1, ax2, f=None, norm=[None, None],
+                log=False):
         '''
         make a map of the quantity of interest, based on the constructed
             parameter PDF
@@ -1127,11 +1128,15 @@ class PCA_Result(object):
          - ax1: where median map gets shown
          - ax2: where sigma map gets shown
          - f: factor to multiply percentiles by
+         - log: whether to take log10 of
         '''
 
         pct_map = self.pca.param_pct_map(
             qty=qty_str, W=self.w, P=np.array([16., 50., 84.]),
             factor=f)
+
+        if log:
+            pct_map = np.log10(pct_map)
 
         m = ax1.imshow(
             np.ma.array(pct_map[1, :, :], mask=self.mask_map),
@@ -1179,7 +1184,8 @@ class PCA_Result(object):
 
         return fig
 
-    def qty_hist(self, qty, qty_tex, ix=None, ax=None, f=None, bins=50):
+    def qty_hist(self, qty, qty_tex, ix=None, ax=None, f=None, bins=50,
+                 legend=False):
         if ix is None:
             ix = self.ifu_ctr_ix
 
@@ -1196,13 +1202,18 @@ class PCA_Result(object):
         if len(q) == 0:
             return None
 
+        # marginalized posterior
         h = ax.hist(
             q, weights=w, bins=bins, normed=True, histtype='step',
-            color='k')
+            color='k', label='posterior')
+        # marginalized prior
         hprior = ax.hist(
-            q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5)
+            q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
+            label='prior')
         ax.set_xlabel(qty_tex)
-        return h
+        if legend:
+            ax.legend(loc='best')
+        return h, hprior
 
     def __fix_im_axs__(self, axs):
         '''
@@ -1263,14 +1274,20 @@ class PCA_Result(object):
         TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
             for n in self.pca.metadata.colnames]
 
-        for gs_, q, tex in izip(gs2, self.pca.metadata.colnames, TeX_labels):
+        for i, (gs_, q, tex) in enumerate(
+            izip(gs2, self.pca.metadata.colnames, TeX_labels)):
             ax = plt.subplot(gs_)
             if 'ML' in q:
                 bins = np.logspace(-1, 6, 50)
                 ax.set_xscale('log')
             else:
                 bins = 50
-            h_ = self.qty_hist(qty=q, qty_tex=tex, ix=ix, ax=ax, bins=bins)
+            if i == 0:
+                legend = True
+            else:
+                legend = False
+            h_, hprior_ = self.qty_hist(
+                qty=q, qty_tex=tex, ix=ix, ax=ax, bins=bins, legend=legend)
             ax.tick_params(axis='both', which='major', labelsize=10)
 
         plt.suptitle('{0}: ({1[0]}-{1[1]})'.format(self.objname, ix_))
