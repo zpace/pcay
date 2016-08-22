@@ -71,6 +71,40 @@ class Cov_Obs(object):
                    SB_r_mean=SB_r_mean)
 
     @classmethod
+    def from_MaNGA_reobs(cls, lllim=3650.059970708618, nspec=4378,
+                         dlogl=1.0e-4, MPL_v='MPL-4'):
+        '''
+        returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
+        '''
+
+        drpall = t.Table.read('drpall-{}.fits'.format(m.MPL_versions[MPL_v]))
+
+        drpall = drpall[drpall['ifudesignsize'] != -9999]
+        objs = drpall.group_by('mangaid')
+
+        start = np.array(objs.groups.indices[:-1])
+        stop = np.array(objs.groups.indices[1:])
+        # use objects with more multiple observations
+        repeat = stop - start > 1
+        repeat_sf_ixs = np.column_stack([start, stop])[stop - start > 1, :]
+        obs_dupl = objs.groups[repeat]
+        objs_dupl = objs_dupl = obs_dupl.group_by('mangaid')
+        mangaids = objs_dupl.groups.keys
+
+        mults_dict = dict(zip(
+            mangaids,
+            objs_dupl['plate', 'ifudsgn', 'plateifu', 'mangaid'].groups))
+
+        dest = os.path.join('calib_MaNGA/', MPL_v)
+
+        mults = np.row_stack(
+            [Cov_Obs.process_mult(t, dest) for t in objs_dupl.groups])
+
+        cov = np.cov(mults)
+
+        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj, SB_r_mean=None)
+
+    @classmethod
     def from_fits(cls, fname):
         hdulist = fits.open(fname)
         cov = hdulist[1].data
@@ -125,6 +159,38 @@ class Cov_Obs(object):
     # =====
     # staticmethods
     # =====
+
+    @staticmethod
+    def process_mult(t, dest):
+        # download all LOGCUBES for a given MaNGA-ID
+        for row in t:
+            m.get_datacube(
+                version=MPL_v, plate=row['plate'], bundle=row['ifudsgn'],
+                dest=dest)
+
+        # load all LOGCUBES for a given MaNGA-ID
+        fnames = [os.path.join(
+            dest, 'manga-{}-LOGUBE.fits.gz'.format(row['plateifu']))
+            for row in t]
+        logcubes = [fits.open(f) for f in fnames]
+
+        # extract & reshape data
+        ivars = [cube['IVAR'].data for cube in logcubes]
+        ivars = np.stack(
+            [ivar.reshape(-1, ivar.shape[-1]) for ivar in ivars])
+        fluxs = [cube['FLUX'].data for cube in logcubes]
+        fluxs = np.stack(
+            [flux.reshape(-1, ivar.shape[-1]) for flux in fluxs])
+
+        # exclude rows where any observation has zero total weight
+        good = np.all(ivars.sum(axis=-1) != 0, axis=0)
+        ivars, fluxs = ivars[good], fluxs[good]
+
+        # mean of each row
+        mean = np.average(fluxs, axis=0, weights=ivars)
+        resids = (fluxs - mean).reshape((-1, mean.shape[1]))
+
+        return resids
 
     @staticmethod
     def _mults(spAll, i_lim=100):
