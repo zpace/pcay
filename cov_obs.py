@@ -77,19 +77,25 @@ class Cov_Obs(object):
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
 
-        drpall = t.Table.read('drpall-{}.fits'.format(m.MPL_versions[MPL_v]))
+        drpall = t.Table.read(os.path.join(
+            m.drpall_loc, 'drpall-{}.fits'.format(m.MPL_versions[MPL_v])))
 
         drpall = drpall[drpall['ifudesignsize'] != -9999]
         objs = drpall.group_by('mangaid')
 
         start = np.array(objs.groups.indices[:-1])
         stop = np.array(objs.groups.indices[1:])
-        # use objects with more multiple observations
+        # only use objects with multiple observations with same IFU size
         repeat = stop - start > 1
         repeat_sf_ixs = np.column_stack([start, stop])[stop - start > 1, :]
-        obs_dupl = objs.groups[repeat]
+        onesize_ = lambda tab: len(np.unique(tab['ifudesignsize'])) == 1
+        onesize = map(onesize_, objs.groups)
+        obs_dupl = objs.groups[repeat * onesize]
+
+        # final grouping
         objs_dupl = objs_dupl = obs_dupl.group_by('mangaid')
         mangaids = objs_dupl.groups.keys
+        #print mangaids
 
         mults_dict = dict(zip(
             mangaids,
@@ -97,8 +103,12 @@ class Cov_Obs(object):
 
         dest = os.path.join('calib_MaNGA/', MPL_v)
 
-        mults = np.row_stack(
-            [Cov_Obs.process_mult(t, dest) for t in objs_dupl.groups])
+        mults = [
+            Cov_Obs.process_mult(tab, dest, MPL_v, nspec)
+            for tab in objs_dupl.groups]
+
+        mults = np.row_stack(mults).T
+        nobj = mults.shape[1]
 
         cov = np.cov(mults)
 
@@ -161,31 +171,48 @@ class Cov_Obs(object):
     # =====
 
     @staticmethod
-    def process_mult(t, dest):
+    def process_mult(tab, dest, MPL_v, nspec):
+        '''
+        download multiply-observed objects, and process them into an array
+            of residuals
+        '''
         # download all LOGCUBES for a given MaNGA-ID
-        for row in t:
-            m.get_datacube(
-                version=MPL_v, plate=row['plate'], bundle=row['ifudsgn'],
-                dest=dest)
+        for row in tab:
+            if not os.path.isfile(
+                os.path.join(dest, 'manga-{}-LOGCUBE.fits.gz'.format(
+                    row['plateifu']))):
+                #print 'retrieving {}'.format(row['plateifu'])
+                m.get_datacube(
+                    version=MPL_v, plate=row['plate'], bundle=row['ifudsgn'],
+                    dest=dest)
 
         # load all LOGCUBES for a given MaNGA-ID
         fnames = [os.path.join(
-            dest, 'manga-{}-LOGUBE.fits.gz'.format(row['plateifu']))
-            for row in t]
+            dest, 'manga-{}-LOGCUBE.fits.gz'.format(row['plateifu']))
+            for row in tab]
         logcubes = [fits.open(f) for f in fnames]
 
         # extract & reshape data
         ivars = [cube['IVAR'].data for cube in logcubes]
+
+        # if LOGCUBEs have different shapes
+        if len(set([i.shape for i in ivars])) > 1:
+            return np.zeros((0, ivars[0].shape[0]))
+
         ivars = np.stack(
-            [ivar.reshape(-1, ivar.shape[-1]) for ivar in ivars])
+            [ivar.reshape(ivar.shape[0], -1).T for ivar in ivars])
         fluxs = [cube['FLUX'].data for cube in logcubes]
         fluxs = np.stack(
-            [flux.reshape(-1, ivar.shape[-1]) for flux in fluxs])
+            [flux.reshape(ivar.shape[0], -1).T for flux in fluxs])
 
         # exclude rows where any observation has zero total weight
         good = np.all(ivars.sum(axis=-1) != 0, axis=0)
-        ivars, fluxs = ivars[good], fluxs[good]
+        # exclude rows where any spectral element has zero total weight
+        ivars = ivars[:, good, :]
+        fluxs = fluxs[:, good, :]
 
+        # account for spectral elements with zero total weights
+        ivars += eps
         # mean of each row
         mean = np.average(fluxs, axis=0, weights=ivars)
         resids = (fluxs - mean).reshape((-1, mean.shape[1]))
