@@ -400,7 +400,7 @@ class StellarPop_PCA(object):
             ix0[..., None, None] + J, ix0[..., None, None] + I]
         SB_BOSS = K_obs_.SB_r_mean
 
-        K_full = a_map * K_th + (SB_map / SB_BOSS).to('').value * K_obs
+        K_full = a_map**2. * K_th + K_obs
 
         return K_full
 
@@ -436,13 +436,6 @@ class StellarPop_PCA(object):
         K_th = self.cov_th
         nspec = K_th.shape[0]
         K_obs = K_obs_.cov[i0:i0+nspec, i0:i0+nspec]
-        var = 1./ivar
-        # scale the full covariance matrix
-        #f = np.median(var / np.diag(K_obs))
-        #f = 1.
-        #K_obs *= f
-        # set diagonal equal to MaNGA var
-        #np.einsum('ii->i', K_obs)[:] = var
 
         K_full = K_obs + K_th * a**2.
 
@@ -872,7 +865,7 @@ class MaNGA_deredshift(object):
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
-    def compute_eline_mask(self, template_logl, template_dlogl, ix_Hb=1,
+    def compute_eline_mask(self, template_logl, template_dlogl, ix_eline=0,
                            half_dv=500.*u.Unit('km/s')):
         '''
         find where EW(Hb) < -5 AA, and return a mask 500 km/s around
@@ -890,43 +883,41 @@ class MaNGA_deredshift(object):
              - [ArIII] 7137/7753
         '''
 
-        EW_Hb = self.eline_EW(ix=ix_Hb)
-        eline_dom = EW_Hb > 5.*u.AA # True if elines dominate
+        from elines import balmer, paschen, helium, bright_metal, faint_metal
+
+        EW = self.eline_EW(ix=ix_eline)
+        add_balmer = EW > 2.*u.AA
+        add_helium = EW > 5.*u.AA
+        add_brightmetal = EW > 3.*u.AA
+        add_faintmetal = EW > 6.*u.AA
+        add_paschen = EW > 5.*u.AA
 
         template_l = 10.**template_logl * u.AA
 
-        line_ctrs = u.Unit('AA') * \
-            np.array([
-                3727.09, 3729.88,
-                #[OII]    [OII]
-                3751.22, 3771.70, 3798.98, 3836.48, 3890.15, 3971.19,
-                #  H12     H11      H10      H9       H8       He
-                4102.92, 4341.69, 4862.69, 6564.61, 5008.24, 4960.30,
-                #  Hd      Hg       Hb       Ha      [OIII]   [OIII]
-                4364.44, 6549.84, 6585.23, 5756.24, 6718.32, 6732.71,
-                # [OIII]  [NII]    [NII]    [NII]    [SII]    [SII]
-                6302.04, 6313.8, 6585.23, 6549.84, 5756.24, 7137.8, 7753.2,
-                # [OI]   [SIII]   [NeII]   [NeII]   [NeII]  [ArIII] [ArIII]
-                9071.1, 9533.2, 3889.75, 5877.30, 6679.996, 5017.08
-                #[SIII] [SIII]    HeI      HeI      HeI      HeII
-            ])
+        line_ctrs = u.Unit('AA') * np.array([20000.])
 
-        # compute mask edges
-        mask_ledges = line_ctrs * (1 - (half_dv / c.c).to(''))
-        mask_uedges = line_ctrs * (1 + (half_dv / c.c).to(''))
+        full_mask = np.zeros((len(template_l),) + EW.shape, dtype=bool)
 
-        # find whether each wavelength bin is used in for each eline's mask
-        antimask = np.row_stack(
-            [~((lo < template_l) * (template_l < up))
-                for lo, up in izip(mask_ledges, mask_uedges)])
-        antimask = np.prod(antimask, axis=0).astype(bool)
+        for (add_, d) in izip([add_balmer, add_helium,
+                               add_brightmetal, add_faintmetal,
+                               add_paschen],
+                              [balmer, paschen, helium, bright_metal,
+                               faint_metal]):
 
-        full_mask = np.zeros(
-            (len(template_l),) + (self.flux.shape[1:])).astype(bool)
+            line_ctrs = np.array(d.values()) * u.AA
 
-        for (i, j) in product(*tuple(map(range, eline_dom.shape))):
-            if eline_dom[i, j] == True:
-                full_mask[:, i, j] = ~antimask
+            # compute mask edges
+            mask_ledges = line_ctrs * (1 - (half_dv / c.c).to(''))
+            mask_uedges = line_ctrs * (1 + (half_dv / c.c).to(''))
+
+            # is a given wavelength bin within half_dv of a line center?
+            mask = np.row_stack(
+                [(lo < template_l) * (template_l < up) for lo, up in izip(
+                    mask_ledges, mask_uedges)])
+            mask = np.any(mask, axis=0) # OR along axis 0
+
+            full_mask += (mask[:, np.newaxis, np.newaxis] * \
+                add_[np.newaxis, ...])
 
         return full_mask
 
