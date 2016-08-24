@@ -415,7 +415,7 @@ class StellarPop_PCA(object):
 
         return E.dot(K_spec).dot(E.T)
 
-    def _compute_spec_cov_spax(self, K_obs_, i0, a, f, ivar):
+    def _compute_spec_cov_spax(self, K_obs_, i0, a):
         '''
         compute the spectral covariance matrix for one spaxel
 
@@ -437,12 +437,11 @@ class StellarPop_PCA(object):
         nspec = K_th.shape[0]
         K_obs = K_obs_.cov[i0:i0+nspec, i0:i0+nspec]
 
-        K_full = K_obs + K_th * a**2.
+        K_full = K_obs / a**2. + K_th * a**2.
 
         return K_full
 
-    def build_PC_cov_full_iter(self, a_map, z_map, SB_map, obs_logl, K_obs_,
-                               ivar):
+    def build_PC_cov_full_iter(self, a_map, z_map, obs_logl, K_obs_):
         '''
         for each spaxel, build a PC covariance matrix, and return in array
             of shape (q, q, n, n)
@@ -483,9 +482,7 @@ class StellarPop_PCA(object):
         for ind in inds:
             K_spec = self._compute_spec_cov_spax(
                 K_obs_=K_obs_, i0=i0_map[ind[0], ind[1]],
-                a=a_map[ind[0], ind[1]],
-                f=K_obs_.SB_r_mean/SB_map[ind[0], ind[1]],
-                ivar=ivar[..., ind[0], ind[1]])
+                a=a_map[ind[0], ind[1]])
             K_PC[..., ind[0], ind[1]] = E.dot(K_spec).dot(E.T)
 
         return K_PC
@@ -861,40 +858,23 @@ class MaNGA_deredshift(object):
         atten = atten[:, np.newaxis, np.newaxis]
 
         self.flux_regr /= atten
-        self.ivar_regr *= atten**2.
+        self.ivar_regr
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
-    def compute_eline_mask(self, template_logl, template_dlogl, ix_eline=0,
+    def compute_eline_mask(self, template_logl, template_dlogl, ix_eline=7,
                            half_dv=500.*u.Unit('km/s')):
-        '''
-        find where EW(Hb) < -5 AA, and return a mask 500 km/s around
-            each of the following emission lines:
-
-             - Ha - H11
-             - HeI/II 4388/5048/5016
-             - [NeIII] 3868/3968
-             - [OIII] 4363/4959/5007
-             - [NII] 5754/6549/6583
-             - [SII] 6717/6731
-             - [NeII] 6583/6548/5754
-             - [OI] 5577/6300
-             - [SIII] 6313/9071/9533
-             - [ArIII] 7137/7753
-        '''
 
         from elines import balmer, paschen, helium, bright_metal, faint_metal
 
         EW = self.eline_EW(ix=ix_eline)
         add_balmer = EW > 2.*u.AA
-        add_helium = EW > 5.*u.AA
-        add_brightmetal = EW > 3.*u.AA
-        add_faintmetal = EW > 6.*u.AA
-        add_paschen = EW > 5.*u.AA
+        add_helium = EW > 3.*u.AA
+        add_brightmetal = EW > 2.*u.AA
+        add_faintmetal = EW > 3.*u.AA
+        add_paschen = EW > 10.*u.AA
 
         template_l = 10.**template_logl * u.AA
-
-        line_ctrs = u.Unit('AA') * np.array([20000.])
 
         full_mask = np.zeros((len(template_l),) + EW.shape, dtype=bool)
 
@@ -972,8 +952,8 @@ class PCA_Result(object):
             mask_spax=mask_spax, mask_cube=self.mask_cube)
 
         self.K_PC = pca.build_PC_cov_full_iter(
-            a_map=self.a_map, z_map=dered.z_map, SB_map=dered.SB_map,
-            obs_logl=dered.drp_logl, K_obs_=K_obs, ivar=self.ivar_regr)
+            a_map=self.a_map, z_map=dered.z_map,
+            obs_logl=dered.drp_logl, K_obs_=K_obs)
 
         self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
 
@@ -1290,7 +1270,7 @@ class PCA_Result(object):
     def wcs_header(self):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
 
-def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True):
+def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True, q=7):
     import pickle
     if (fname is None):
         redo = True
@@ -1304,7 +1284,7 @@ def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True):
             form_file='model_spec_bc03/input_model_para_for_paper',
             spec_file_dir='model_spec_bc03',
             spec_file_base='modelspec', K_obs=K_obs, BP=BP)
-        pca.run_pca_models(q=7)
+        pca.run_pca_models(q=q)
 
         if pkl == True:
             pickle.dump(pca, open(fname, 'w'))
@@ -1336,7 +1316,7 @@ if __name__ == '__main__':
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
 
-    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True)
+    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True, q=15)
 
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='/home/zpace/Downloads/manga-{}-LOGCUBE.fits.gz'.format(
