@@ -131,7 +131,7 @@ class StellarPop_PCA(object):
                 f_lambda = hdulist[3].data[l_raw_good]
                 spec[i, :] = interp1d(l_raw, f_lambda)(l_final)
                 for n in form_data_goodcols:
-                    lib_para[i-1][n] = form_data[i][n]
+                    lib_para[i-1][n] = float(form_data[i][n])
 
             finally:
                 hdulist.close()
@@ -149,8 +149,8 @@ class StellarPop_PCA(object):
 
         MLr = metadata['cspm_star']/L_r
 
-        metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9']) / \
-            metadata['mf_all']
+        metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9'].astype(
+            float)) / metadata['mf_all']
 
         metadata = metadata['MWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
@@ -786,6 +786,28 @@ class MaNGA_deredshift(object):
         dap_hdulist = fits.open(dap_fname)
         return cls(drp_hdulist, dap_hdulist)
 
+    @classmethod
+    def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC'):
+        '''
+        load a MaNGA galaxy from a plateifu specification
+        '''
+        drp_fname = 'manga-{}-{}-LOGCUBE.fits.gz'.format(plate, ifu)
+        drp_fname = os.path.join(
+            '/media/zpace/BACKUP', MPL_v, str(plate), 'stack', drp_fname)
+        dap_fname = 'manga-{}-{}-MAPS-{}.fits.gz'.format(plate, ifu, kind)
+        dap_fname = os.path.join(
+            '/home/zpace/mangadap', MPL_v, kind, str(plate), str(ifu),
+            dap_fname)
+
+        if not os.path.isfile(drp_fname):
+            raise m.DRP_IFU_DNE_Error(plate, ifu)
+        if not os.path.isfile(dap_fname):
+            raise m.DAP_IFU_DNE_Error(plate, ifu)
+
+        drp_hdulist = fits.open(drp_fname)
+        dap_hdulist = fits.open(dap_fname)
+        return cls(drp_hdulist, dap_hdulist)
+
     def regrid_to_rest(self, template_logl, template_dlogl=None):
         '''
         regrid flux density measurements from MaNGA DRP logcube results
@@ -858,7 +880,7 @@ class MaNGA_deredshift(object):
         atten = atten[:, np.newaxis, np.newaxis]
 
         self.flux_regr /= atten
-        self.ivar_regr
+        self.ivar_regr *= atten**2.
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -902,7 +924,7 @@ class MaNGA_deredshift(object):
         return full_mask
 
     def eline_EW(self, ix):
-        return self.dap_hdulist['EMLINE_EW'].data[ix] * u.Unit('AA')
+        return self.dap_hdulist['EMLINE_SEW'].data[ix] * u.Unit('AA')
 
     # =====
     # properties
@@ -1270,7 +1292,7 @@ class PCA_Result(object):
     def wcs_header(self):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
 
-def setup_pca(K_obs, BP, fname=None, redo=True, pkl=True, q=7):
+def setup_pca(K_obs, BP, fname=None, redo=False, pkl=True, q=7):
     import pickle
     if (fname is None):
         redo = True
@@ -1311,27 +1333,23 @@ def get_col_metadata(col, k, notfound=''):
     return res
 
 if __name__ == '__main__':
-    plateifu = '8083-12704'
     cosmo = WMAP9
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
 
-    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True, q=15)
+    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=True, pkl=True, q=7)
 
-    dered = MaNGA_deredshift.from_filenames(
-        drp_fname='/home/zpace/Downloads/manga-{}-LOGCUBE.fits.gz'.format(
-            plateifu),
-        dap_fname='/home/zpace/mangadap/default/8083/mangadap-{}-default.fits.gz'.format(plateifu))
+    plateifu = '8083-12704'
+
+    dered = MaNGA_deredshift.from_plateifu(
+        plate=8083, ifu=12704, MPL_v='MPL-5')
 
     pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
-    pca_res.make_comp_fig()
     pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
 
     z_dist = m.get_drpall_val(
         '{}/drpall-{}.fits'.format(
-            m.drpall_loc, m.MPL_versions['MPL-4']),
+            m.drpall_loc, m.MPL_versions['MPL-5']),
         'nsa_zdist', plateifu)[0]
 
     pca_res.make_Mstar_fig(BP=BP, cosmo=cosmo, z=z_dist, band='r')
-    pca_res.make_full_QA_fig(BP=BP, cosmo=cosmo, z=z_dist)
-
