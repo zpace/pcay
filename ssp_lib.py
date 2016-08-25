@@ -147,8 +147,8 @@ class FSPS_SFHBuilder(object):
             bands=['sdss_i', 'sdss_r', 'sdss_z'], tage=self.time0)
         Ls = 10.**(-0.4 * (Ms - 4.85)) * u.Lsun
 
-        MLr, MLi, MLz = mstar / Ls
-        return l, spec, MLr, MLi, MLz
+        MLs = mstar / Ls
+        return l, spec, MLs.value
 
     def calc_sfh(self, plot=False, saveplot=False, mformed_compare=False):
         '''
@@ -259,13 +259,14 @@ class FSPS_SFHBuilder(object):
     @property
     def mformed_integration(self):
         FSPS_args = self.FSPS_args
-        integrate.quad(
+        mf = integrate.quad(
             self.all_sf, 0., self.time0, args=(
                 FSPS_args['time_form'], FSPS_args['eftu'],
                 FSPS_args['time_cut'], FSPS_args['eftc'],
                 FSPS_args['time_burst'], FSPS_args['dt_burst'],
                 FSPS_args['A'], self.time0),
             points=self.disconts, epsrel=5.0e-3)[0]
+        return mf
 
     @property
     def mass_weighted_age(self):
@@ -580,22 +581,24 @@ class FSPS_SFHBuilder(object):
 def make_csp():
     sfh = FSPS_SFHBuilder()
     tab = sfh.to_table()
-    l, spec, MLr, MLi, MLz = sfh.run_fsps()
-    return l, spec, MLr, MLi, MLz, tab
+    l, spec, MLs = sfh.run_fsps()
+    MLs = t.Table(
+            rows=np.atleast_2d(MLs), names=['MLr', 'MLi', 'MLz'])
+    print MLs
+    tab = t.hstack([tab, MLs])
+    return l, spec, tab
 
-def make_spectral_library(n=2, pkl=False):
+def make_spectral_library(n=2, pkl=False, lllim=3700., lulim=8700.):
 
     if pkl == False:
-        # generate CSPs
+        # generate CSPs and cache them
         CSPs = [FSPS_SFHBuilder().FSPS_args for _ in range(n)]
-        with open('csps.pkl', 'wb') as f:
-            pickle.dump(f, CSPs)
+        pickle.dump(CSPs, open('csps.pkl', 'wb'))
     else:
-        with open('csps.pkl', 'r') as f:
-            CSPs = pickle.load(f)
+        CSPs = pickle.load(open('csps.pkl', 'wb'))
         n = len(CSPs)
 
-    l_final = 10.**np.arange(np.log10(3700.), np.log10(8900.), 1.0e-4)
+    l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), 1.0e-4)
 
     # initialize array to hold the spectra
     specs = np.nan * np.ones((n, len(l_final)))
@@ -603,13 +606,29 @@ def make_spectral_library(n=2, pkl=False):
     # initialize list to hold all metadata
     metadata = [None for _ in range(n)]
 
+    # build each entry individually
     for i in range(n):
         sfh = FSPS_SFHBuilder(**CSPs[i])
-        tab_ = sfh.to_table()
-        l, spec, MLr, MLi, MLz = sfh.run_fsps
-        tab_ = t.hstack(
-            tab_, t.Table(data=[MLr, MLi, MLz], names='MLr', 'MLi', 'MLz')
+        l, spec, tab_ = make_csp()
         metadata[i] = tab_
+        specs[i, :] = np.interp(x=l_final, xp=l, fp=spec)
+
+    # assemble the full table
+    metadata = t.vstack(metadata)
+
+    # initialize FITS HDUList
+    hdulist = fits.HDUList(
+        [fits.BinTableHDU(np.array(metadata)), fits.ImageHDU(l),
+        fits.ImageHDU(specs)])
+    '''
+    extension list:
+     - [0], 'meta': FITS table equal to `metadata`
+     - [1], 'loglam': array with log-lambda, and dlogl header keyword
+     - [2], 'flam': array with flux-densities for each CSP on same
+        wavelength grid
+    '''
+
+    hdulist.writeto('CSP_spectra.fits', clobber=True)
 
 # my hobby: needlessly subclassing exceptions
 
