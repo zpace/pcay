@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 
 from astropy.cosmology import WMAP9
 from astropy import units as u, constants as c, table as t
+from astropy.io import fits
 
 from conroy_tools import make_conroy_file
 
@@ -220,10 +221,10 @@ class FSPS_SFHBuilder(object):
             pickle.dump(self.FSPS_args, f)
 
     def to_table(self):
-        names = self.FSPS_args.keys()
-        tab = t.Table(data=[[self.FSPS_args[n]] for n in names], names=names)
+        tab = t.Table(rows=[self.FSPS_args])
         tab.add_column(t.Column(data=[self.Fstar], name='Fstar'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
+        print tab.colnames
         return tab
 
     #=====
@@ -301,15 +302,16 @@ class FSPS_SFHBuilder(object):
         mass fraction formed in last Gyr
         '''
         FSPS_args = self.FSPS_args
+        disconts = self.disconts[self.time0 - 1. < self.disconts < self.time0]
         mformed_lastGyr = integrate.quad(
             self.all_sf, self.time0 - 1., self.time0, args=(
                 FSPS_args['time_form'], FSPS_args['eftu'],
                 FSPS_args['time_cut'], FSPS_args['eftc'],
                 FSPS_args['time_burst'], FSPS_args['dt_burst'],
                 FSPS_args['A'], self.time0),
-            points=self.disconts, epsrel=5.0e-3)[0]
-
-        return mformed_lastGyr / self.mformed_integration
+            points=disconts, epsrel=5.0e-3)[0]
+        F = mformed_lastGyr / self.mformed_integration
+        return F
 
     #=====
     # static methods
@@ -581,10 +583,10 @@ class FSPS_SFHBuilder(object):
 def make_csp():
     sfh = FSPS_SFHBuilder()
     tab = sfh.to_table()
+    print tab.dtype
     l, spec, MLs = sfh.run_fsps()
     MLs = t.Table(
             rows=np.atleast_2d(MLs), names=['MLr', 'MLi', 'MLz'])
-    print MLs
     tab = t.hstack([tab, MLs])
     return l, spec, tab
 
