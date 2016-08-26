@@ -224,8 +224,10 @@ class FSPS_SFHBuilder(object):
         tab = t.Table(rows=[self.FSPS_args])
         tab.add_column(t.Column(data=[self.Fstar], name='Fstar'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
-        print tab.colnames
-        return tab
+
+        goodcolumns = [n for n in tab.colnames if tab[n].dtype is float]
+
+        return tab[goodcolumns]
 
     #=====
     # properties
@@ -302,7 +304,8 @@ class FSPS_SFHBuilder(object):
         mass fraction formed in last Gyr
         '''
         FSPS_args = self.FSPS_args
-        disconts = self.disconts[self.time0 - 1. < self.disconts < self.time0]
+        disconts = self.disconts[
+            (self.time0 - 1. < self.disconts) * (self.disconts < self.time0)]
         mformed_lastGyr = integrate.quad(
             self.all_sf, self.time0 - 1., self.time0, args=(
                 FSPS_args['time_form'], FSPS_args['eftu'],
