@@ -1226,7 +1226,7 @@ class PCA_Result(object):
 
     def make_full_QA_fig(self, BP, cosmo, z, ix=None):
         '''
-        use mpld3 to make a full map of the IFU grasp, including
+        use matplotlib to make a full map of the IFU grasp, including
             diagnostic spectral fits, and histograms of possible
             parameter values for each spaxel
         '''
@@ -1267,6 +1267,8 @@ class PCA_Result(object):
         TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
             for n in self.pca.metadata.colnames]
 
+        # loop through parameters of interest, and make a weighted
+        # histogram for each parameter
         for i, (gs_, q, tex) in enumerate(
             izip(gs2, self.pca.metadata.colnames, TeX_labels)):
             ax = plt.subplot(gs_)
