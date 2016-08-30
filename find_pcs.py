@@ -193,6 +193,7 @@ class StellarPop_PCA(object):
 
         self.normed_trn = self.trn_spectra/self.a[:, np.newaxis]
         self.M = np.mean(self.normed_trn, axis=0)
+        self.S = self.normed_trn - self.M
 
         # if user asks to test param reconstruction from PCs over range
         # of # of PCs kept
@@ -200,17 +201,16 @@ class StellarPop_PCA(object):
         if max_q is not None:
             res_q = [None, ] * max_q
             for dim_pc_subspace in range(1, max_q):
-                PCs = self.PCA(
-                    self.normed_trn - self.M, dims=dim_pc_subspace)
+                PCs = self.PCA(self.S, dims=dim_pc_subspace)
                 # transformation matrix: spectra -> PC amplitudes
                 tfm_sp2PC = PCs.T
 
                 # project back onto the PCs to get the weight vectors
-                trn_PC_wts = (self.normed_trn - self.M).dot(tfm_sp2PC)
-                # and reconstruct the best approximation for the spectra from PCs
+                trn_PC_wts = (self.S).dot(tfm_sp2PC)
+                # and reconstruct the best approximation spectra from PCs
                 trn_recon = trn_PC_wts.dot(PCs)
                 # residuals
-                trn_resid = self.normed_trn - (self.M + trn_recon)
+                trn_resid = self.S - trn_recon
 
                 cov_th = np.cov(trn_resid.T)
 
@@ -246,11 +246,11 @@ class StellarPop_PCA(object):
             self.tfm_sp2PC = self.PCs.T
 
             # project back onto the PCs to get the weight vectors
-            self.trn_PC_wts = (self.normed_trn - self.M).dot(self.tfm_sp2PC)
+            self.trn_PC_wts = (self.S).dot(self.tfm_sp2PC)
             # and reconstruct the best approximation for the spectra from PCs
             self.trn_recon = self.trn_PC_wts.dot(self.PCs)
             # residuals
-            self.trn_resid = self.normed_trn - (self.M + self.trn_recon)
+            self.trn_resid = self.S - self.trn_recon
 
             self.cov_th = np.cov(self.trn_resid.T)
 
@@ -309,20 +309,20 @@ class StellarPop_PCA(object):
 
         # normalize by average flux density
         a = np.average(f, weights=ivar, axis=1)
-        a[a == 0.] = 1.
+        a[a == 0.] = np.mean(a[a != 0.])
         f = f/a[:, np.newaxis]
         # get mean spectrum
         M = np.average(f, weights=ivar, axis=0)
-        f = f - M[np.newaxis, :]
+        S = f - self.M[np.newaxis, :]
 
         # need to do some reshaping
-        A = self.robust_project_onto_PCs(e=self.PCs, f=f, w=ivar)
+        A = self.robust_project_onto_PCs(e=self.PCs, f=S, w=ivar)
 
         A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
 
-        O_norm = f.T.reshape((f.shape[1], ) + cube_shape[1:])
+        O_norm = S.T.reshape((f.shape[1], ) + cube_shape[1:])
 
-        return A, M, a.reshape(cube_shape[-2:]), O_norm
+        return A, self.M, a.reshape(cube_shape[-2:]), O_norm
 
     def _compute_i0_map(self, logl, z_map):
         '''
@@ -1337,19 +1337,23 @@ if __name__ == '__main__':
     K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
 
-    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=True, pkl=True, q=7)
+    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True, q=7)
 
     plateifu = '8083-12704'
 
-    dered = MaNGA_deredshift.from_plateifu(
-        plate=8083, ifu=12704, MPL_v='MPL-5')
-
-    pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
-    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
+    #dered = MaNGA_deredshift.from_plateifu(
+    #    plate=8083, ifu=12704, MPL_v='MPL-5')
+    dered = MaNGA_deredshift.from_filenames(
+        drp_fname='manga-8083-12704-LOGCUBE.fits.gz',
+        dap_fname='manga-8083-12704-MAPS-SPX-GAU-MILESHC.fits.gz')
 
     z_dist = m.get_drpall_val(
         '{}/drpall-{}.fits'.format(
             m.drpall_loc, m.MPL_versions['MPL-5']),
         'nsa_zdist', plateifu)[0]
+
+    pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
+    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
+    pca_res.make_full_QA_fig(BP=BP, cosmo=cosmo, z=z_dist)
 
     pca_res.make_Mstar_fig(BP=BP, cosmo=cosmo, z=z_dist, band='r')
