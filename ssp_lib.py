@@ -586,6 +586,11 @@ class FSPS_SFHBuilder(object):
 def make_csp():
     sfh = FSPS_SFHBuilder()
     tab = sfh.to_table()
+    del tab['A']
+    del tab['dt_burst']
+    del tab['time_burst']
+    del tab['eftc']
+    del tab['time_cut']
     print tab.dtype
     l, spec, MLs = sfh.run_fsps()
     MLs = t.Table(
@@ -593,7 +598,7 @@ def make_csp():
     tab = t.hstack([tab, MLs])
     return l, spec, tab
 
-def make_spectral_library(n=2, pkl=False, lllim=3700., lulim=8700.):
+def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700.):
 
     if pkl == False:
         # generate CSPs and cache them
