@@ -933,11 +933,12 @@ class PCA_Result(object):
     '''
     store results of PCA for one galaxy using this
     '''
-    def __init__(self, pca, dered, K_obs, cosmo):
+    def __init__(self, pca, dered, K_obs, z, cosmo):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
         self.cosmo = cosmo
+        self.z = z
 
         self.E = pca.PCs
 
@@ -988,7 +989,6 @@ class PCA_Result(object):
         params:
          - ax1, ax2: axes for median and stdev, passed along
          - BP: bandpass object
-         - d: distance to galaxy (must include units)
          - band: what bandpass to use
         '''
 
@@ -1209,7 +1209,7 @@ class PCA_Result(object):
             ax.set_xlabel('')
             ax.set_ylabel('')
 
-    def make_full_QA_fig(self, BP, cosmo, z, ix=None):
+    def make_full_QA_fig(self, BP, ix=None):
         '''
         use matplotlib to make a full map of the IFU grasp, including
             diagnostic spectral fits, and histograms of possible
@@ -1280,6 +1280,7 @@ class PCA_Result(object):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
 
     def Mstar(self, band='r'):
+        qty_str = 'ML{}'.format(band)
         f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
             self.O).sum(axis=0)
         d = self.dist
@@ -1298,8 +1299,9 @@ class PCA_Result(object):
     def Mstar_surf(self, band='r'):
         spaxel_psize = (self.dered.spaxel_side * self.dist).to(
             'kpc', equivalencies=u.dimensionless_angles())
-        sig = self.Mstar / spaxel_psize**2.
-        return sig.to('Msun kpc-2')
+        print spaxel_psize
+        sig = self.Mstar(band=band) * u.Msun / spaxel_psize**2.
+        return sig.to('Msun kpc-2').value
 
 def setup_pca(K_obs, BP, fname=None, redo=False, pkl=True, q=7):
     import pickle
