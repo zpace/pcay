@@ -347,7 +347,7 @@ class StellarPop_PCA(object):
 
         return i0_map
 
-    def compute_spec_cov_full(self, a_map, z_map, SB_map, obs_logl, K_obs_):
+    def compute_spec_cov_full(self, a_map, z_map, obs_logl, K_obs_):
         '''
         DO NOT USE!! Array output too large, raises MemoryError
         Additionally, this is not up-to-date with the iterative method,
@@ -359,8 +359,6 @@ class StellarPop_PCA(object):
         params:
          - a_map: mean flux-density of original spectra (n by n)
          - z_map: spaxel redshift map (get this from an dered instance)
-         - SB_map: r-band surface brightness map (nMgy/arcsec2) to scale
-            observational covariance matrix by (wrt to avg SB)
          - obs_logl: log-lambda vector (1D) of datacube
          - K_obs_: observational spectral covariance
 
@@ -390,14 +388,14 @@ class StellarPop_PCA(object):
         i0_map = self._compute_i0_map(
             tem_logl0=tem_logl0, logl=cov_logl, z_map=z_map)
 
+        # dummy matrix for figuring out starting indices
         N = np.arange(nlam)
         I, J = np.meshgrid(N, N)
 
         K_obs = K_obs_.cov[
             ix0[..., None, None] + J, ix0[..., None, None] + I]
-        SB_BOSS = K_obs_.SB_r_mean
 
-        K_full = a_map**2. * K_th + K_obs
+        K_full = a_map**2. * K_th + K_obs / a_map**2.
 
         return K_full
 
@@ -935,10 +933,11 @@ class PCA_Result(object):
     '''
     store results of PCA for one galaxy using this
     '''
-    def __init__(self, pca, dered, K_obs):
+    def __init__(self, pca, dered, K_obs, cosmo):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
+        self.cosmo = cosmo
 
         self.E = pca.PCs
 
@@ -980,7 +979,7 @@ class PCA_Result(object):
 
         self.l = 10.**self.pca.logl
 
-    def Mstar_map(self, ax1, ax2, BP, cosmo, z, band='i'):
+    def Mstar_map(self, ax1, ax2, BP, band='i'):
         '''
         make two-axes stellar-mass map
 
@@ -1000,7 +999,7 @@ class PCA_Result(object):
 
         f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
             self.O).sum(axis=0)
-        d = gal_dist(cosmo, z)
+        d = self.dist
         f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
 
         m, s, mcb, scb = self.qty_map(
@@ -1009,7 +1008,7 @@ class PCA_Result(object):
 
         return m, s, mcb, scb
 
-    def make_Mstar_fig(self, BP, cosmo, z, band='i'):
+    def make_Mstar_fig(self, BP, band='i'):
         '''
         make stellar-mass figure
         '''
@@ -1023,7 +1022,7 @@ class PCA_Result(object):
         ax2 = wg2.subplot(gs[1], header=self.wcs_header)
 
         _ = self.Mstar_map(
-            ax1=ax1, ax2=ax2, BP=BP, cosmo=cosmo, z=z, band=band)
+            ax1=ax1, ax2=ax2, BP=BP, band=band)
         fig.suptitle(self.objname + ': ' + qty_tex)
 
         self.__fix_im_axs__([ax1, ax2])
@@ -1280,6 +1279,28 @@ class PCA_Result(object):
     def wcs_header(self):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
 
+    def Mstar(self, band='r'):
+        f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
+            self.O).sum(axis=0)
+        d = self.dist
+        f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
+
+        pct_map = self.pca.param_pct_map(
+            qty=qty_str, W=self.w, P=np.array([50.]),
+            factor=f)
+
+        return pct_map
+
+    @property
+    def dist(self):
+        return gal_dist(self.cosmo, self.z)
+
+    def Mstar_surf(self, band='r'):
+        spaxel_psize = (self.dered.spaxel_side * self.dist).to(
+            'kpc', equivalencies=u.dimensionless_angles())
+        sig = self.Mstar / spaxel_psize**2.
+        return sig.to('Msun kpc-2')
+
 def setup_pca(K_obs, BP, fname=None, redo=False, pkl=True, q=7):
     import pickle
     if (fname is None):
@@ -1340,8 +1361,9 @@ if __name__ == '__main__':
             m.drpall_loc, m.MPL_versions['MPL-5']),
         'nsa_zdist', plateifu)[0]
 
-    pca_res = PCA_Result(pca=pca, dered=dered, K_obs=K_obs)
+    pca_res = PCA_Result(
+        pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
     pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
-    pca_res.make_full_QA_fig(BP=BP, cosmo=cosmo, z=z_dist)
+    pca_res.make_full_QA_fig(BP=BP)
 
-    pca_res.make_Mstar_fig(BP=BP, cosmo=cosmo, z=z_dist, band='r')
+    pca_res.make_Mstar_fig(BP=BP, band='r')
