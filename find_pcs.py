@@ -1200,7 +1200,7 @@ class PCA_Result(object):
         return self.O_recon[:, ixx, ixy]
 
     def param_vals_wts(self, ixx, ixy, pname):
-        return np.array(self.pca.metadata['pname']), self.w[:, ixx, ixy]
+        return np.array(self.pca.metadata[pname]), self.w[:, ixx, ixy]
 
     def __fix_im_axs__(self, axs):
         '''
