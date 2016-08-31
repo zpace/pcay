@@ -1193,6 +1193,15 @@ class PCA_Result(object):
             ax.legend(loc='best')
         return h, hprior
 
+    def orig(self, ixx, ixy):
+        return self.O[:, ixx, ixy]
+
+    def recon(self, ixx, ixy):
+        return self.O_recon[:, ixx, ixy]
+
+    def param_vals_wts(self, ixx, ixy, pname):
+        return np.array(self.pca.metadata['pname']), self.w[:, ixx, ixy]
+
     def __fix_im_axs__(self, axs):
         '''
         do all the fixes to make quantity maps look nice in pywcsgrid2
