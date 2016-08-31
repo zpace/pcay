@@ -4,9 +4,6 @@ from matplotlib import cm as mplcm
 from matplotlib.colors import Normalize, LogNorm
 from matplotlib import gridspec
 
-import mpld3
-from mpld3 import plugins
-
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
 from astropy import wcs
@@ -422,15 +419,7 @@ class StellarPop_PCA(object):
         params:
          - K_obs_: observational covariance object
          - i0: starting index of observational covariance matrix
-         - f: surface brightness ratio btwn BOSS objects & spaxel
          - a: mean flux-density of original spectra
-         - ivar: inverse-variance of the observed spectrum, used to
-            (1) explicitly specify the main diagonal of the
-                observational covariance matrix
-            (2) scale the rest of the observational covariance matrix
-                by the mean of the ratio between the main diagonal of
-                the BOSS observational covariance matrix and the MaNGA
-                covariance matrix
         '''
 
         K_th = self.cov_th
@@ -451,20 +440,10 @@ class StellarPop_PCA(object):
             too much memory!
 
         params:
-         - E: eigenvectors of PC basis
          - a_map: mean flux-density of original spectra (n by n)
          - z_map: spaxel redshift map (get this from an dered instance)
-         - SB_map: r-band surface brightness map (nMgy/arcsec2) to scale
-            observational covariance matrix by (wrt to avg SB)
          - obs_logl: log-lambda vector (1D) of datacube
          - K_obs_: observational spectral covariance object
-         - ivar: inverse-variance of the observed spectrum, used to
-            (1) explicitly specify the main diagonal of the
-                observational covariance matrix
-            (2) scale the rest of the observational covariance matrix
-                by the mean of the ratio between the main diagonal of
-                the BOSS observational covariance matrix and the MaNGA
-                covariance matrix
         '''
 
         E = self.PCs
@@ -961,7 +940,9 @@ class PCA_Result(object):
         self.pca = pca
         self.dered = dered
 
-        self.flux_regr, self.ivar_regr, mask_spax = dered.regrid_to_rest(
+        self.E = pca.PCs
+
+        self.O, self.ivar, mask_spax = dered.regrid_to_rest(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
         self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
@@ -969,9 +950,22 @@ class PCA_Result(object):
         self.mask_map = np.logical_or(
             mask_spax, (dered.drp_hdulist['RIMG'].data) == 0.)
 
-        self.A, self.M, self.a_map, self.O = pca.project_cube(
-            f=self.flux_regr, ivar=self.ivar_regr,
-            mask_spax=mask_spax, mask_cube=self.mask_cube)
+        self.A, self.M, self.a_map, O_norm = pca.project_cube(
+            f=self.O, ivar=self.ivar, mask_spax=mask_spax,
+            mask_cube=self.mask_cube)
+
+        # original spectrum
+        self.O = np.ma.array(self.O, mask=self.mask_cube)
+        self.ivar = np.ma.array(self.ivar, mask=self.mask_cube)
+
+        # how to reconstruct datacube from PC weights cube and PC
+        # ij are IFU index, n is eigenspectrum index, l is wavelength index
+        self.O_recon = np.ma.array(
+            (self.M[:, np.newaxis, np.newaxis] + np.einsum(
+                'nij,nl->lij', self.A, self.E)) * self.a_map[np.newaxis, ...],
+            mask=self.mask_cube)
+
+        self.resid = np.abs((self.O - self.O_recon) / self.O)
 
         self.K_PC = pca.build_PC_cov_full_iter(
             a_map=self.a_map, z_map=dered.z_map,
@@ -1005,7 +999,7 @@ class PCA_Result(object):
             ax2 = fig_.add_subplot(111)
 
         f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
-            self.flux_regr).sum(axis=0)
+            self.O).sum(axis=0)
         d = gal_dist(cosmo, z)
         f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
 
@@ -1048,40 +1042,32 @@ class PCA_Result(object):
         if ix is None:
             ix = self.ifu_ctr_ix
 
-        orig = self.O[:, ix[0], ix[1]] + self.M
-        recon = self.pca.M + self.A[:, ix[0], ix[1]].dot(self.pca.PCs)
-        ivar = self.ivar_regr[:, ix[0], ix[1]] / \
-            self.ivar_regr[:, ix[0], ix[1]].max()
-
         # original & reconstructed
         orig_ = ax1.plot(
-            self.l,
-            np.ma.array(orig, mask=self.mask_cube[:, ix[0], ix[1]]),
-            drawstyle='steps-mid', c='b', label='Orig.')
+            self.l, self.O[:, ix[0], ix[1]], drawstyle='steps-mid',
+            c='b', label='Orig.')
         recon_ = ax1.plot(
-            self.l,
-            np.ma.array(recon, mask=self.mask_cube[:, ix[0], ix[1]]),
-            drawstyle='steps-mid', c='g', label='Recon.')
-        ivar_ = ax1.plot(
-            self.l,
-            np.ma.array(ivar, mask=self.mask_cube[:, ix[0], ix[1]]),
-            drawstyle='steps-mid', c='m', label='ivar')
-        ax1.legend(loc='best', prop={'size':6})
+            self.l, self.O_recon[:, ix[0], ix[1]], drawstyle='steps-mid',
+            c='g', label='Recon.')
+        ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
-        ax1.set_ylim([-0.1, 2.25])
+        ax1.set_ylim([-0.1*self.O[:, ix[0], ix[1]].mean(),
+                      2.25*self.O[:, ix[0], ix[1]].mean()])
         ax1.set_xticklabels([])
 
+        # inverse-variance (weight) plot
+        ax1_ivar = ax1.twinx()
+        ax1_ivar.set_yticklabels([])
+        ivar_ = ax1_ivar.plot(
+            self.l, self.ivar[:, ix[0], ix[1]], drawstyle='steps-mid',
+            c='m', label='Wt.')
+
         # residual
-        resid = np.abs((orig - recon)/orig)
         resid_ = ax2.plot(
-            self.l,
-            np.ma.array(resid,
-                        mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)),
-            drawstyle='steps-mid', c='blue')
-        resid_avg_ = ax2.axhline(np.ma.array(
-            resid,
-            mask=self.mask_cube[:, ix[0], ix[1]].astype(bool)).mean(),
-            linestyle='--', c='salmon')
+            self.l, self.resid[:, ix[0], ix[1]], drawstyle='steps-mid',
+            c='blue')
+        resid_avg_ = ax2.axhline(
+            self.resid[:, ix[0], ix[1]].mean(), linestyle='--', c='salmon')
 
         ax2.set_yscale('log')
         ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
