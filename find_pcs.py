@@ -84,14 +84,20 @@ class StellarPop_PCA(object):
         l_raw = hdulist[2].data
         hdulist.close()
 
-        l_raw_good = (3700. <= l_raw) * (l_raw <= 5500.)
+        l_raw_good = (3700. <= l_raw) * (l_raw <= 8700.)
         l_raw = l_raw[l_raw_good]
         dlogl_final = 1.0e-4
         l_final= 10.**np.arange(np.log10(3700.), np.log10(5500.),
                                 dlogl_final)
-        dl = 10.**(np.log10(l_final) + dlogl_final/2.) - \
-            10.**(np.log10(l_final) - dlogl_final/2.)
+        l_full = 10.**np.arange(np.log10(3700.), np.log10(8700.),
+                                dlogl_final)
+
+        dl_final = 10.**(np.log10(l_final) + dlogl_final/2.) - \
+                   10.**(np.log10(l_final) - dlogl_final/2.)
+        dl_full = 10.**(np.log10(l_full) + dlogl_final/2.) - \
+                  10.**(np.log10(l_full) - dlogl_final/2.)
         nl_final = len(l_final)
+        nl_full = len(l_full)
 
         # load metadata tables
         lib_para = t.Table.read(lib_para_file, format='ascii')
@@ -105,7 +111,7 @@ class StellarPop_PCA(object):
                 t.Column(data=np.zeros(len(lib_para)), name=n))
 
         # initialize array that resampled spectra will go into
-        spec = np.empty((nspec, nl_final))
+        spec = np.empty((nspec, nl_full))
         goodspec = np.ones(nspec).astype(bool)
         # and fill it
         for i in range(nspec):
@@ -126,7 +132,7 @@ class StellarPop_PCA(object):
                 goodspec[i] = False
             else:
                 f_lambda = hdulist[3].data[l_raw_good]
-                spec[i, :] = interp1d(l_raw, f_lambda)(l_final)
+                spec[i, :] = interp1d(l_raw, f_lambda)(l_full)
                 for n in form_data_goodcols:
                     lib_para[i-1][n] = float(form_data[i][n])
 
@@ -140,9 +146,11 @@ class StellarPop_PCA(object):
         spec = spec[goodspec, :]
 
         # compute mass to light ratio
-        f_r = BP.interps['r'](l_final)
+        f_r = BP.interps['r'](l_full)
 
-        L_r = (f_r * spec).sum(axis=1)
+        L_r = (f_r * spec * dl_full).sum(axis=1)
+        # reduce wavelength range
+        spec = spec[:, :nl_final]
 
         MLr = metadata['cspm_star']/L_r
 
@@ -1193,11 +1201,14 @@ class PCA_Result(object):
             ax.legend(loc='best')
         return h, hprior
 
-    def orig(self, ixx, ixy):
+    def orig_spax(self, ixx, ixy):
         return self.O[:, ixx, ixy]
 
-    def recon(self, ixx, ixy):
+    def recon_spax(self, ixx, ixy):
         return self.O_recon[:, ixx, ixy]
+
+    def ivar_spax(self, ixx, ixy):
+        return self.ivar[:, ixx, ixy]
 
     def param_vals_wts(self, ixx, ixy, pname):
         return np.array(self.pca.metadata[pname]), self.w[:, ixx, ixy]
@@ -1308,11 +1319,11 @@ class PCA_Result(object):
     def Mstar_surf(self, band='r'):
         spaxel_psize = (self.dered.spaxel_side * self.dist).to(
             'kpc', equivalencies=u.dimensionless_angles())
-        print spaxel_psize
+        #print spaxel_psize
         sig = self.Mstar(band=band) * u.Msun / spaxel_psize**2.
-        return sig.to('Msun kpc-2').value
+        return sig.to('Msun pc-2').value
 
-def setup_pca(K_obs, BP, fname=None, redo=False, pkl=True, q=7):
+def setup_pca(BP, fname=None, redo=False, pkl=True, q=7):
     import pickle
     if (fname is None):
         redo = True
@@ -1321,6 +1332,7 @@ def setup_pca(K_obs, BP, fname=None, redo=False, pkl=True, q=7):
             fname = 'pca.pkl'
 
     if redo == True:
+        K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
         pca = StellarPop_PCA.from_YMC(
             lib_para_file='model_spec_bc03/lib_para',
             form_file='model_spec_bc03/input_model_para_for_paper',
@@ -1332,9 +1344,10 @@ def setup_pca(K_obs, BP, fname=None, redo=False, pkl=True, q=7):
             pickle.dump(pca, open(fname, 'w'))
 
     else:
+        K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
         pca = pickle.load(open(fname, 'r'))
 
-    return pca
+    return pca, K_obs
 
 def gal_dist(cosmo, z):
     return cosmo.luminosity_distance(z)
@@ -1354,10 +1367,9 @@ def get_col_metadata(col, k, notfound=''):
 
 if __name__ == '__main__':
     cosmo = WMAP9
-    K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
     BP = setup_bandpasses()
 
-    pca = setup_pca(K_obs, BP, fname='pca.pkl', redo=False, pkl=True, q=7)
+    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=True, pkl=True, q=7)
 
     plateifu = '8083-12704'
 
