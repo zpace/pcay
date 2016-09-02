@@ -739,7 +739,7 @@ class MaNGA_deredshift(object):
 
     def __init__(self, drp_hdulist, dap_hdulist,
                  max_vel_unc=500.*u.Unit('km/s'), drp_dlogl=None,
-                 MPL_v='MPL-4'):
+                 MPL_v='MPL-5'):
         self.drp_hdulist = drp_hdulist
         self.dap_hdulist = dap_hdulist
         self.plateifu = self.drp_hdulist[0].header['PLATEIFU']
