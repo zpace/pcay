@@ -1349,6 +1349,51 @@ def setup_pca(BP, fname=None, redo=False, pkl=True, q=7):
 
     return pca, K_obs
 
+class Test_PCA_Result(PCA_Result):
+    def __init__(self, pca, K_obs, cosmo, fake_ifu, objname=''):
+        self.objname = objname
+        self.pca = pca
+        self.cosmo = cosmo
+        self.z = z
+
+        self.E = pca.PCs
+
+        self.O = fake_ifu.make_datacube()
+        self.ivar = fake_ifu.ivar
+
+        self.mask_map = np.zeros_like(self.ivar, dtype=bool)
+        mask_spax = np.zeros_like(self.ivar[0, ...])
+
+        self.A, self.M, self.a_map, O_norm = pca.project_cube(
+            f=self.O, ivar=self.ivar, mask_spax=mask_spax,
+            mask_cube=self.mask_cube)
+
+        # original spectrum
+        self.O = np.ma.array(self.O, mask=self.mask_cube)
+        self.ivar = np.ma.array(self.ivar, mask=self.mask_cube)
+
+        # how to reconstruct datacube from PC weights cube and PC
+        # ij are IFU index, n is eigenspectrum index, l is wavelength index
+        self.O_recon = np.ma.array(
+            (self.M[:, np.newaxis, np.newaxis] + np.einsum(
+                'nij,nl->lij', self.A, self.E)) * self.a_map[np.newaxis, ...],
+            mask=self.mask_cube)
+
+        self.resid = np.abs((self.O - self.O_recon) / self.O)
+
+        self.K_PC = pca.build_PC_cov_full_iter(
+            a_map=self.a_map, z_map=dered.z_map,
+            obs_logl=dered.drp_logl, K_obs_=K_obs)
+
+        self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
+
+        self.map_shape = self.O.shape[-2:]
+        self.ifu_ctr_ix = [s/2 for s in self.map_shape]
+
+        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
+
+        self.l = 10.**self.pca.logl
+
 def gal_dist(cosmo, z):
     return cosmo.luminosity_distance(z)
 
