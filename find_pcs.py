@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm as mplcm
-from matplotlib.colors import Normalize, LogNorm
 from matplotlib import gridspec
 
 from astropy import constants as c, units as u, table as t
@@ -15,23 +14,23 @@ import os
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from scipy.integrate import quad
-from statsmodels.nonparametric.kde import KDEUnivariate
 
 import spec_tools
 import ssp_lib
 import manga_tools as m
 import cov_obs
 
-from itertools import izip, product
-from glob import glob
-from copy import copy
+from itertools import izip  # , product
 
 eps = np.finfo(float).eps
 
+
 class StellarPop_PCA(object):
+
     '''
     class for determining PCs of a library of synthetic spectra
     '''
+
     def __init__(self, l, trn_spectra, gen_dicts, metadata, K_obs,
                  dlogl=None):
         '''
@@ -52,8 +51,9 @@ class StellarPop_PCA(object):
 
         self.l = l
         self.logl = np.log10(l.to('AA').value)
-        if dlogl is None:
-            dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
+        if not dlogl:
+            dlogl = np.round(np.mean(self.logl[1:] - self.logl[:-1]), 8)
+
         self.dlogl = dlogl
 
         self.trn_spectra = trn_spectra
@@ -87,15 +87,15 @@ class StellarPop_PCA(object):
         l_raw_good = (3700. <= l_raw) * (l_raw <= 8700.)
         l_raw = l_raw[l_raw_good]
         dlogl_final = 1.0e-4
-        l_final= 10.**np.arange(np.log10(3700.), np.log10(5500.),
-                                dlogl_final)
+
+        l_final = 10.**np.arange(
+            np.log10(3700.), np.log10(5500.), dlogl_final)
+
         l_full = 10.**np.arange(np.log10(3700.), np.log10(8700.),
                                 dlogl_final)
 
-        dl_final = 10.**(np.log10(l_final) + dlogl_final/2.) - \
-                   10.**(np.log10(l_final) - dlogl_final/2.)
-        dl_full = 10.**(np.log10(l_full) + dlogl_final/2.) - \
-                  10.**(np.log10(l_full) - dlogl_final/2.)
+        dl_full = (10.**(np.log10(l_full) + dlogl_final / 2.) -
+                   10.**(np.log10(l_full) - dlogl_final / 2.))
         nl_final = len(l_final)
         nl_full = len(l_full)
 
@@ -128,13 +128,13 @@ class StellarPop_PCA(object):
                 hdulist = fits.open(fname)
             # if there's another issue...
             except IOError:
-                #print 'bad!', fname
+                # print 'bad!', fname
                 goodspec[i] = False
             else:
                 f_lambda = hdulist[3].data[l_raw_good]
                 spec[i, :] = interp1d(l_raw, f_lambda)(l_full)
                 for n in form_data_goodcols:
-                    lib_para[i-1][n] = float(form_data[i][n])
+                    lib_para[i - 1][n] = float(form_data[i][n])
 
             finally:
                 hdulist.close()
@@ -152,7 +152,7 @@ class StellarPop_PCA(object):
         # reduce wavelength range
         spec = spec[:, :nl_final]
 
-        MLr = metadata['cspm_star']/L_r
+        MLr = metadata['cspm_star'] / L_r
 
         metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9'].astype(
             float)) / metadata['mf_all']
@@ -171,7 +171,7 @@ class StellarPop_PCA(object):
         metadata['mu'].meta['TeX'] = r'$\mu$'
         metadata['MLr'].meta['TeX'] = r'$(M/L)^*_r$'
 
-        return cls(l=l_final*u.Unit('AA'), trn_spectra=spec,
+        return cls(l=l_final * u.Unit('AA'), trn_spectra=spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
                    K_obs=K_obs)
 
@@ -179,7 +179,7 @@ class StellarPop_PCA(object):
     # methods
     # =====
 
-    def run_pca_models(self, mask_half_dv=500.*u.Unit('km/s'),
+    def run_pca_models(self, mask_half_dv=500. * u.Unit('km/s'),
                        q=None, max_q=None):
         '''
         run PCA on library of model spectra
@@ -191,12 +191,11 @@ class StellarPop_PCA(object):
 
         # find lower and upper edges of each wavelength bin,
         # and compute width of bins
-        dl = self.dl
 
         # normalize each spectrum to the mean flux density
         self.a = np.mean(self.trn_spectra, axis=1)
 
-        self.normed_trn = self.trn_spectra/self.a[:, np.newaxis]
+        self.normed_trn = self.trn_spectra / self.a[:, np.newaxis]
         self.M = np.mean(self.normed_trn, axis=0)
         self.S = self.normed_trn - self.M
 
@@ -217,7 +216,7 @@ class StellarPop_PCA(object):
                 # residuals
                 trn_resid = self.S - trn_recon
 
-                cov_th = np.cov(trn_resid.T)
+                self.cov_th = np.cov(trn_resid.T)
 
                 # find weights of each PC in determining parameters in metadata
                 (n_, p_, q_) = (self.trn_spectra.shape[0],
@@ -232,7 +231,7 @@ class StellarPop_PCA(object):
 
                 plt.scatter(
                     dim_pc_subspace,
-                    res_q[dim_pc_subspace].fun/dim_pc_subspace,
+                    res_q[dim_pc_subspace].fun / dim_pc_subspace,
                     c='b', marker='x')
 
             plt.yscale('log')
@@ -297,7 +296,6 @@ class StellarPop_PCA(object):
 
         assert ivar.shape == f.shape, 'cube shapes must be equal'
         cube_shape = f.shape
-        dl = self.dl
 
         # manage masks
         if mask_spax is not None:
@@ -308,16 +306,15 @@ class StellarPop_PCA(object):
             ivar *= (~mask_cube).astype(float)
 
         # make f and ivar effectively a list of spectra
-        f = np.transpose(f, (1,2,0)).reshape(-1, cube_shape[0])
-        ivar = np.transpose(ivar, (1,2,0)).reshape(-1, cube_shape[0])
+        f = np.transpose(f, (1, 2, 0)).reshape(-1, cube_shape[0])
+        ivar = np.transpose(ivar, (1, 2, 0)).reshape(-1, cube_shape[0])
         ivar[ivar == 0.] = eps
 
         # normalize by average flux density
         a = np.average(f, weights=ivar, axis=1)
         a[a == 0.] = np.mean(a[a != 0.])
-        f = f/a[:, np.newaxis]
+        f = f / a[:, None]
         # get mean spectrum
-        M = np.average(f, weights=ivar, axis=0)
         S = f - self.M[np.newaxis, :]
 
         # need to do some reshaping
@@ -393,7 +390,7 @@ class StellarPop_PCA(object):
         nlam = K_th.shape[0]
         tem_logl0 = self.logl[0]
 
-        i0_map = self._compute_i0_map(
+        ix0 = self._compute_i0_map(
             tem_logl0=tem_logl0, logl=cov_logl, z_map=z_map)
 
         # dummy matrix for figuring out starting indices
@@ -430,7 +427,7 @@ class StellarPop_PCA(object):
 
         K_th = self.cov_th
         nspec = K_th.shape[0]
-        K_obs = K_obs_.cov[i0:i0+nspec, i0:i0+nspec]
+        K_obs = K_obs_.cov[i0:(i0 + nspec), i0:(i0 + nspec)]
 
         K_full = K_obs / a**2. + K_th * a**2.
 
@@ -462,7 +459,7 @@ class StellarPop_PCA(object):
         # compute starting indices for covariance matrix
         i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
 
-        inds = np.ndindex(cubeshape) # iterator over datacube shape
+        inds = np.ndindex(cubeshape)  # iterator over datacube shape
 
         for ind in inds:
             K_spec = self._compute_spec_cov_spax(
@@ -484,16 +481,16 @@ class StellarPop_PCA(object):
             shape (q, NX, NY)
         '''
 
-        C = self.trn_PC_wts # shape (nmodel, q)
+        C = self.trn_PC_wts  # shape (nmodel, q)
         D = np.abs(C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...])
         # D goes [MODELNUM, PCNUM, XNUM, YNUM]
 
-        #print D.shape, P.shape
+        # print(D.shape, P.shape)
 
         chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
-        w = np.exp(-chi2/2.)
+        w = np.exp(-chi2 / 2.)
 
-        return w#/w.max(axis=0)
+        return w  # /w.max(axis=0)
 
     def param_pct_map(self, qty, W, P, factor=None):
         '''
@@ -525,7 +522,8 @@ class StellarPop_PCA(object):
             w = W[:, ind[0], ind[1]]
             i_ = np.argsort(q, axis=0)
             q, w = q[i_], w[i_]
-            A[:, ind[0], ind[1]] = np.interp(P, 100.*w.cumsum()/w.sum(), q)
+            A[:, ind[0], ind[1]] = np.interp(
+                P, 100. * w.cumsum() / w.sum(), q)
 
         return A * factor[np.newaxis, ...]
 
@@ -542,11 +540,11 @@ class StellarPop_PCA(object):
 
     @property
     def l_lower(self):
-        return 10.**(self.logl - self.dlogl/2.)
+        return 10.**(self.logl - self.dlogl / 2)
 
     @property
     def l_upper(self):
-        return 10.**(self.logl + self.dlogl/2.)
+        return 10.**(self.logl + self.dlogl / 2)
 
     @property
     def dl(self):
@@ -645,7 +643,7 @@ class StellarPop_PCA(object):
 
         # sort eigenvalue in decreasing order
         idx = np.argsort(evals)[::-1]
-        evecs = evecs[:,idx]
+        evecs = evecs[:, idx]
 
         # sort eigenvectors according to same index
         evals = evals[idx]
@@ -673,10 +671,13 @@ class StellarPop_PCA(object):
     def __str__(self):
         return 'PCA object: q = {0[0]}, nlam = {0[1]}'.format(self.PCs.shape)
 
+
 class Bandpass(object):
+
     '''
     class to manage bandpasses for multiple filters
     '''
+
     def __init__(self):
         self.bands = []
         self.interps = {}
@@ -693,7 +694,7 @@ class Bandpass(object):
         self.add_bandpass(name=band_name, l=l, ff=ff)
 
     def __call__(self, flam, l, units=None):
-        if units == None:
+        if not units:
             units = {}
             units['flam'] = u.Unit('Lsun AA-1')
             units['l'] = u.AA
@@ -706,9 +707,10 @@ class Bandpass(object):
             x=l, y=flam, kind='linear', bounds_error=False, fill_value=0.)
         return {n: quad(
             lambda l: interp(l) * flam_interp(l),
-            a=l.min(), b=l.max(), epsrel=1.0e-5, limit=len(l))[0] * \
-                (units['flam'] * units['l']).to('Lsun')
-                for n, interp in self.interps.iteritems()}
+            a=l.min(), b=l.max(), epsrel=1.0e-5,
+            limit=len(l))[0] * (units['flam'] * units['l']).to('Lsun')
+            for n, interp in self.interps.iteritems()}
+
 
 def setup_bandpasses():
     BP = Bandpass()
@@ -720,11 +722,13 @@ def setup_bandpasses():
         fname='filters/z_SDSS.res', band_name='z')
     return BP
 
+
 class PCAError(Exception):
     '''
     general error for PCA
     '''
     pass
+
 
 class MaNGA_deredshift(object):
     '''
@@ -738,7 +742,7 @@ class MaNGA_deredshift(object):
     spaxel_side = 0.5 * u.arcsec
 
     def __init__(self, drp_hdulist, dap_hdulist,
-                 max_vel_unc=500.*u.Unit('km/s'), drp_dlogl=None,
+                 max_vel_unc=500. * u.Unit('km/s'), drp_dlogl=None,
                  MPL_v='MPL-5'):
         self.drp_hdulist = drp_hdulist
         self.dap_hdulist = dap_hdulist
@@ -754,7 +758,7 @@ class MaNGA_deredshift(object):
             ['nsa_redshift'], self.plateifu)[0]['nsa_redshift']
 
         # mask all the spaxels that have high stellar velocity uncertainty
-        self.vel_ivar_mask = 1./np.sqrt(self.vel_ivar) > max_vel_unc
+        self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
         self.vel_mask = self.dap_hdulist['STELLAR_VEL_MASK'].data
 
         self.drp_logl = np.log10(drp_hdulist['WAVE'].data)
@@ -809,14 +813,14 @@ class MaNGA_deredshift(object):
 
         if template_dlogl != self.drp_dlogl:
             raise ssp_lib.TemplateCoverageError(
-                'template and input spectra must have same dlogl: ' +\
+                'template and input spectra must have same dlogl: ' +
                 'template\'s is {}; input spectra\'s is {}'.format(
                     template_dlogl, self.drp_dlogl))
 
         # determine starting index for each of the spaxels
 
         template_logl0 = template_logl[0]
-        z_map = (self.vel/c.c).to('').value + self.z
+        z_map = (self.vel / c.c).to('').value + self.z
         self.z_map = z_map
         template_logl0_z = np.log10(10.**(template_logl0) * (1. + z_map))
         drp_logl_tiled = np.tile(
@@ -855,14 +859,13 @@ class MaNGA_deredshift(object):
 
         # finally, compute the MW dust attenuation, and apply the inverse
         r_v = 3.1
-        mpt = [i/2 for i in self.z_map.shape]
-        ix0_mpt = ix_logl0_z[mpt[0], mpt[1]]
-        obs_l = 10.**(template_logl[:len(template_logl)]) * \
-            (1. + z_map[mpt[0], mpt[1]])
+        mpt = [i // 2 for i in self.z_map.shape]
+        obs_l = 10.**(
+            template_logl[:len(template_logl)]) * (1. + z_map[mpt[0], mpt[1]])
         atten = reddening(
-            wave=obs_l * u.AA, a_v=r_v*self.drp_hdulist[0].header['EBVGAL'],
+            wave=obs_l * u.AA, a_v=r_v * self.drp_hdulist[0].header['EBVGAL'],
             r_v=r_v, model='f99')
-        atten = atten[:, np.newaxis, np.newaxis]
+        atten = atten[:, None, None]
 
         self.flux_regr /= atten
         self.ivar_regr *= atten**2.
@@ -870,16 +873,16 @@ class MaNGA_deredshift(object):
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
     def compute_eline_mask(self, template_logl, template_dlogl, ix_eline=7,
-                           half_dv=500.*u.Unit('km/s')):
+                           half_dv=500. * u.Unit('km/s')):
 
         from elines import balmer, paschen, helium, bright_metal, faint_metal
 
         EW = self.eline_EW(ix=ix_eline)
-        add_balmer = EW > 2.*u.AA
-        add_helium = EW > 3.*u.AA
-        add_brightmetal = EW > 2.*u.AA
-        add_faintmetal = EW > 3.*u.AA
-        add_paschen = EW > 10.*u.AA
+        add_balmer = EW > 2. * u.AA
+        add_helium = EW > 3. * u.AA
+        add_brightmetal = EW > 2. * u.AA
+        add_faintmetal = EW > 3. * u.AA
+        add_paschen = EW > 10. * u.AA
 
         template_l = 10.**template_logl * u.AA
 
@@ -901,10 +904,10 @@ class MaNGA_deredshift(object):
             mask = np.row_stack(
                 [(lo < template_l) * (template_l < up) for lo, up in izip(
                     mask_ledges, mask_uedges)])
-            mask = np.any(mask, axis=0) # OR along axis 0
+            mask = np.any(mask, axis=0)  # OR along axis 0
 
-            full_mask += (mask[:, np.newaxis, np.newaxis] * \
-                add_[np.newaxis, ...])
+            full_mask += (mask[:, np.newaxis, np.newaxis] *
+                          add_[np.newaxis, ...])
 
         return full_mask
 
@@ -927,20 +930,23 @@ class MaNGA_deredshift(object):
 
     @staticmethod
     def a_map(f, logl, dlogl):
-        lllims = 10.**(logl - 0.5*dlogl)
-        lulims = 10.**(logl + 0.5*dlogl)
+        lllims = 10.**(logl - 0.5 * dlogl)
+        lulims = 10.**(logl + 0.5 * dlogl)
         dl = (lulims - lllims)[:, np.newaxis, np.newaxis]
-        return np.mean(f*dl, axis=0)
+        return np.mean(f * dl, axis=0)
 
 cmap = mplcm.get_cmap('cubehelix')
 cmap.set_bad('gray')
 cmap.set_under('k')
 cmap.set_over('w')
 
+
 class PCA_Result(object):
+
     '''
     store results of PCA for one galaxy using this
     '''
+
     def __init__(self, pca, dered, K_obs, z, cosmo):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
@@ -982,7 +988,7 @@ class PCA_Result(object):
         self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
 
         self.map_shape = self.O.shape[-2:]
-        self.ifu_ctr_ix = [s/2 for s in self.map_shape]
+        self.ifu_ctr_ix = [s / 2 for s in self.map_shape]
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
 
@@ -1005,8 +1011,8 @@ class PCA_Result(object):
             fig_ = plt.figure()
             ax2 = fig_.add_subplot(111)
 
-        f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
-            self.O).sum(axis=0)
+        f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] *
+             self.O).sum(axis=0)
         d = self.dist
         f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
 
@@ -1029,7 +1035,7 @@ class PCA_Result(object):
         ax1 = wg2.subplot(gs[0], header=self.wcs_header)
         ax2 = wg2.subplot(gs[1], header=self.wcs_header)
 
-        _ = self.Mstar_map(
+        self.Mstar_map(
             ax1=ax1, ax2=ax2, BP=BP, band=band)
         fig.suptitle(self.objname + ': ' + qty_tex)
 
@@ -1058,8 +1064,8 @@ class PCA_Result(object):
             c='g', label='Recon.')
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
-        ax1.set_ylim([-0.1*self.O[:, ix[0], ix[1]].mean(),
-                      2.25*self.O[:, ix[0], ix[1]].mean()])
+        ax1.set_ylim([-0.1 * self.O[:, ix[0], ix[1]].mean(),
+                      2.25 * self.O[:, ix[0], ix[1]].mean()])
         ax1.set_xticklabels([])
 
         # inverse-variance (weight) plot
@@ -1130,7 +1136,7 @@ class PCA_Result(object):
 
         s = ax2.imshow(
             np.ma.array(
-                np.abs(pct_map[2, :, :] - pct_map[0, :, :])/2.,
+                np.abs(pct_map[2, :, :] - pct_map[0, :, :]) / 2.,
                 mask=self.mask_map),
             aspect='equal', norm=norm[1])
 
@@ -1240,7 +1246,7 @@ class PCA_Result(object):
 
         nparams = len(self.pca.metadata.colnames)
         ncols = 3
-        nrows = nparams//ncols + (nparams%ncols != 0)
+        nrows = nparams // ncols + (nparams % ncols != 0)
 
         plt.close('all')
 
@@ -1248,16 +1254,16 @@ class PCA_Result(object):
 
         # gridspec used for map + spec_compare
         gs1 = gridspec.GridSpec(
-            3, 4, bottom=(nrows-1.)/nrows, top=0.95,
+            3, 4, bottom=(nrows - 1.) / nrows, top=0.95,
             height_ratios=[3, 1, 1], width_ratios=[2, 0.5, 2, 2],
             hspace=0., wspace=.1, left=.05, right=.95)
 
         gs2 = gridspec.GridSpec(
-            nrows, ncols, bottom=.05, top=(nrows-1.)/nrows,
+            nrows, ncols, bottom=.05, top=(nrows - 1.) / nrows,
             left=.05, right=.95, hspace=.25)
 
         im_ax = wg2.subplot(gs1[:-1, 0], header=self.wcs_header)
-        #_ = self.Mstar_map(
+        # _ = self.Mstar_map(
         #    ax1=im_ax, ax2=None, BP=BP, z=z, cosmo=cosmo, band='r')
         self.__fix_im_axs__(im_ax)
 
@@ -1270,12 +1276,12 @@ class PCA_Result(object):
             ax1=spec_ax, ax2=resid_ax, ix=ix)
 
         TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
-            for n in self.pca.metadata.colnames]
+                      for n in self.pca.metadata.colnames]
 
         # loop through parameters of interest, and make a weighted
         # histogram for each parameter
-        for i, (gs_, q, tex) in enumerate(
-            izip(gs2, self.pca.metadata.colnames, TeX_labels)):
+        enum_ = enumerate(izip(gs2, self.pca.metadata.colnames, TeX_labels))
+        for i, (gs_, q, tex) in enum_:
             ax = plt.subplot(gs_)
             if 'ML' in q:
                 bins = np.logspace(-1, 6, 50)
@@ -1301,8 +1307,8 @@ class PCA_Result(object):
 
     def Mstar(self, band='r'):
         qty_str = 'ML{}'.format(band)
-        f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] * \
-            self.O).sum(axis=0)
+        f = (BP.interps[band](self.l)[:, None, None] *
+             self.O).sum(axis=0)
         d = self.dist
         f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
 
@@ -1319,19 +1325,20 @@ class PCA_Result(object):
     def Mstar_surf(self, band='r'):
         spaxel_psize = (self.dered.spaxel_side * self.dist).to(
             'kpc', equivalencies=u.dimensionless_angles())
-        #print spaxel_psize
+        # print spaxel_psize
         sig = self.Mstar(band=band) * u.Msun / spaxel_psize**2.
         return sig.to('Msun pc-2').value
+
 
 def setup_pca(BP, fname=None, redo=False, pkl=True, q=7):
     import pickle
     if (fname is None):
         redo = True
 
-        if pkl == True:
+        if pkl:
             fname = 'pca.pkl'
 
-    if redo == True:
+    if redo:
         K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
         pca = StellarPop_PCA.from_YMC(
             lib_para_file='model_spec_bc03/lib_para',
@@ -1340,7 +1347,7 @@ def setup_pca(BP, fname=None, redo=False, pkl=True, q=7):
             spec_file_base='modelspec', K_obs=K_obs, BP=BP)
         pca.run_pca_models(q=q)
 
-        if pkl == True:
+        if pkl:
             pickle.dump(pca, open(fname, 'w'))
 
     else:
@@ -1349,8 +1356,9 @@ def setup_pca(BP, fname=None, redo=False, pkl=True, q=7):
 
     return pca, K_obs
 
+
 class Test_PCA_Result(PCA_Result):
-    def __init__(self, pca, K_obs, cosmo, fake_ifu, objname=''):
+    def __init__(self, pca, K_obs, cosmo, fake_ifu, objname='', z=0.):
         self.objname = objname
         self.pca = pca
         self.cosmo = cosmo
@@ -1388,14 +1396,16 @@ class Test_PCA_Result(PCA_Result):
         self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
 
         self.map_shape = self.O.shape[-2:]
-        self.ifu_ctr_ix = [s/2 for s in self.map_shape]
+        self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
 
         self.l = 10.**self.pca.logl
 
+
 def gal_dist(cosmo, z):
     return cosmo.luminosity_distance(z)
+
 
 def get_col_metadata(col, k, notfound=''):
     '''
@@ -1418,7 +1428,7 @@ if __name__ == '__main__':
 
     plateifu = '8083-12704'
 
-    #dered = MaNGA_deredshift.from_plateifu(
+    # dered = MaNGA_deredshift.from_plateifu(
     #    plate=8083, ifu=12704, MPL_v='MPL-5')
     dered = MaNGA_deredshift.from_filenames(
         drp_fname='manga-8083-12704-LOGCUBE.fits.gz',

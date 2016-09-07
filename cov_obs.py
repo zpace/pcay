@@ -1,30 +1,26 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize, LogNorm
+from matplotlib.colors import LogNorm
 
-from astropy import constants as c, units as u, table as t
+from astropy import units as u, table as t  # , constants as c
 from astropy.io import fits
-from astropy import coordinates as coords
 
 import os
-import sys
-import cPickle as pkl
 
-import spec_tools
-import ssp_lib
 import manga_tools as m
 
-from itertools import izip, product
-from glob import glob
+from itertools import izip  # , product
 
 eps = np.finfo(float).eps
 
 # =====
 
+
 class Cov_Obs(object):
     '''
     a class to precompute observational spectral covariance matrices
     '''
+
     def __init__(self, cov, lllim, dlogl, nobj, SB_r_mean):
         self.cov = cov
         self.nspec = len(cov)
@@ -47,16 +43,16 @@ class Cov_Obs(object):
 
         # dict of multiply-observed objects
         mults, SB_r_mean = Cov_Obs._mults(spAll)
-        del spAll # clean up!
+        del spAll  # clean up!
 
         stack = [
-                 Cov_Obs.load_zeronormed_obj_spec(
-                     *Cov_Obs.download_obj_specs(obj),
-                     lllim=lllim, nspec=nspec, i=i)
-                 for i, (k, obj) in enumerate(mults.iteritems())]
+            Cov_Obs.load_zeronormed_obj_spec(
+                *Cov_Obs.download_obj_specs(obj),
+                lllim=lllim, nspec=nspec, i=i)
+            for i, (k, obj) in enumerate(mults.iteritems())]
 
-        resids = np.concatenate([s[:len(s)/2] for s in stack], axis=0)
-        ivars = np.concatenate([s[len(s)/2:] for s in stack], axis=0)
+        resids = np.concatenate([s[:len(s) / 2] for s in stack], axis=0)
+        ivars = np.concatenate([s[len(s) / 2:] for s in stack], axis=0)
 
         # filter out bad rows
         bad_rows = (np.isnan(resids).sum(axis=1) > 0)
@@ -64,8 +60,8 @@ class Cov_Obs(object):
         ivars = ivars[~bad_rows, :]
         nobj, nspec = resids.shape
 
-        qw = resids*ivars
-        cov = qw.T.dot(qw)/ivars.T.dot(ivars)
+        qw = resids * ivars
+        cov = qw.T.dot(qw) / ivars.T.dot(ivars)
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
                    SB_r_mean=SB_r_mean)
@@ -87,19 +83,17 @@ class Cov_Obs(object):
         stop = np.array(objs.groups.indices[1:])
         # only use objects with multiple observations with same IFU size
         repeat = stop - start > 1
-        repeat_sf_ixs = np.column_stack([start, stop])[stop - start > 1, :]
-        onesize_ = lambda tab: len(np.unique(tab['ifudesignsize'])) == 1
+
+        def onesize_(tab):
+            return len(np.unique(tab['ifudesignsize'])) == 1
+
         onesize = map(onesize_, objs.groups)
         obs_dupl = objs.groups[repeat * onesize]
 
         # final grouping
         objs_dupl = objs_dupl = obs_dupl.group_by('mangaid')
-        mangaids = objs_dupl.groups.keys
-        #print mangaids
-
-        mults_dict = dict(zip(
-            mangaids,
-            objs_dupl['plate', 'ifudsgn', 'plateifu', 'mangaid'].groups))
+        # mangaids = objs_dupl.groups.keys
+        # print mangaids
 
         dest = os.path.join('calib_MaNGA/', MPL_v)
 
@@ -160,7 +154,7 @@ class Cov_Obs(object):
     @property
     def logl(self):
         return self.loglllim + np.linspace(
-            0., self.dlogl*self.nspec, self.nspec)
+            0., self.dlogl * self.nspec, self.nspec)
 
     @property
     def l(self):
@@ -181,7 +175,7 @@ class Cov_Obs(object):
             if not os.path.isfile(
                 os.path.join(dest, 'manga-{}-LOGCUBE.fits.gz'.format(
                     row['plateifu']))):
-                #print 'retrieving {}'.format(row['plateifu'])
+                # print 'retrieving {}'.format(row['plateifu'])
                 m.get_datacube(
                     version=MPL_v, plate=row['plate'], bundle=row['ifudsgn'],
                     dest=dest)
@@ -200,10 +194,10 @@ class Cov_Obs(object):
             return np.zeros((0, ivars[0].shape[0]))
 
         ivars = np.stack(
-            [ivar.reshape(ivar.shape[0], -1).T for ivar in ivars])
+            [ivars.reshape(ivar.shape[0], -1).T for ivar in ivars])
         fluxs = [cube['FLUX'].data for cube in logcubes]
         fluxs = np.stack(
-            [flux.reshape(ivar.shape[0], -1).T for flux in fluxs])
+            [flux.reshape(ivars.shape[0], -1).T for flux in fluxs])
 
         # exclude rows where any observation has zero total weight
         good = np.all(ivars.sum(axis=-1) != 0, axis=0)
@@ -247,7 +241,6 @@ class Cov_Obs(object):
         stop = np.array(objs.groups.indices[1:])
         # use objects with more than two observations
         repeat = stop - start > 2
-        repeat_sf_ixs = np.column_stack([start, stop])[stop - start > 1, :]
         obs_dupl = objs.groups[repeat]
         objs_dupl = objs_dupl = obs_dupl.group_by('objid')
         objids = objs_dupl.groups.keys
@@ -264,8 +257,8 @@ class Cov_Obs(object):
         for all objects in a `mults`-style dict, download their FITS spectra
         '''
 
-        make_full_fname = lambda row: '{0}/spec-{0}-{1}-{2:04d}.fits'.format(
-            *row)
+        def make_full_fname(row):
+            return '{0}/spec-{0}-{1}-{2:04d}.fits'.format(*row)
         full_fnames = map(make_full_fname, tab)
 
         success = [False, ] * len(full_fnames)
@@ -277,21 +270,22 @@ class Cov_Obs(object):
 
             # if not, retrieve it over rsync!
             q = 'rsync -raz --password-file={0} rsync://sdss@{1} {2}'.format(
-                os.path.join(m.drpall_loc, m.pw_loc), # password file
+                os.path.join(m.drpall_loc, m.pw_loc),  # password file
                 os.path.join(
                     m.base_url,
                     'ebosswork/eboss/spectro/redux/v5_9_0/spectra/lite',
                     fname),
                 'calib')
-            s_ = os.system(q) # os.system() returns 0 on success
+            s_ = os.system(q)  # os.system() returns 0 on success
             if s_ == 0:
                 success[i] = True
             elif s_ == 2:
                 raise KeyboardInterrupt
 
-        make_final_fname = lambda row: os.path.join(
-            base_dir, 'spec-{0}-{1}-{2:04d}.fits'.format(
-                *row))
+        def make_final_fname(row):
+            return os.path.join(
+                base_dir, 'spec-{0}-{1}-{2:04d}.fits'.format(*row))
+
         final_fnames = map(make_final_fname, tab)
 
         return base_dir, final_fnames, success
@@ -309,7 +303,7 @@ class Cov_Obs(object):
                     for f, s in izip(fnames, success) if s]
         else:
             try:
-                data = [fits.open(f)['COADD'].data[data_name][i0 : i0 + nspec]
+                data = [fits.open(f)['COADD'].data[data_name][i0: i0 + nspec]
                         for f, s, i0 in izip(fnames, success, lam_ix0s) if s]
             # handle cases where wavelength solution is outside bounds
             # shouldn't just throw out individual spectra, since that
