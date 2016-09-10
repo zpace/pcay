@@ -6,14 +6,24 @@ from astropy import units as u, table as t  # , constants as c
 from astropy.io import fits
 
 import os
+import sys
 
+# add manga RC location to path, and import config
+if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
+    sys.path.append(os.environ['MANGA_CONFIG_LOC'])
+
+print(sys.path)
+
+import mangarc
 import manga_tools as m
 
-from itertools import izip  # , product
-
+mpl_v = 'MPL-5'
 eps = np.finfo(float).eps
 
 # =====
+
+print('MaNGA data location:', mangarc.manga_data_loc)
+print('MaNGA data-product info:', mpl_v, '({})'.format(m.MPL_versions[mpl_v]))
 
 
 class Cov_Obs(object):
@@ -51,8 +61,8 @@ class Cov_Obs(object):
                 lllim=lllim, nspec=nspec, i=i)
             for i, (k, obj) in enumerate(mults.iteritems())]
 
-        resids = np.concatenate([s[:len(s) / 2] for s in stack], axis=0)
-        ivars = np.concatenate([s[len(s) / 2:] for s in stack], axis=0)
+        resids = np.concatenate([s[:len(s) // 2] for s in stack], axis=0)
+        ivars = np.concatenate([s[len(s) // 2:] for s in stack], axis=0)
 
         # filter out bad rows
         bad_rows = (np.isnan(resids).sum(axis=1) > 0)
@@ -68,43 +78,45 @@ class Cov_Obs(object):
 
     @classmethod
     def from_MaNGA_reobs(cls, lllim=3650.059970708618, nspec=4378,
-                         dlogl=1.0e-4, MPL_v='MPL-4'):
+                         dlogl=1.0e-4, MPL_v=mpl_v):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
 
         drpall = t.Table.read(os.path.join(
-            m.drpall_loc, 'drpall-{}.fits'.format(m.MPL_versions[MPL_v])))
+            mangarc.manga_data_loc,
+            'drpall-{}.fits'.format(m.MPL_versions[MPL_v])))
 
         drpall = drpall[drpall['ifudesignsize'] != -9999]
         objs = drpall.group_by('mangaid')
 
         start = np.array(objs.groups.indices[:-1])
         stop = np.array(objs.groups.indices[1:])
-        # only use objects with multiple observations with same IFU size
+
         repeat = stop - start > 1
 
+        # only use objects with multiple observations with same IFU size
         def onesize_(tab):
             return len(np.unique(tab['ifudesignsize'])) == 1
-
         onesize = map(onesize_, objs.groups)
-        obs_dupl = objs.groups[repeat * onesize]
+
+        # grouped filter
+        obs_dupl = objs.groups[repeat & onesize]
 
         # final grouping
         objs_dupl = objs_dupl = obs_dupl.group_by('mangaid')
         # mangaids = objs_dupl.groups.keys
         # print mangaids
 
-        dest = os.path.join('calib_MaNGA/', MPL_v)
+        # process multiply-observed datacubes
 
         mults = [
-            Cov_Obs.process_mult(tab, dest, MPL_v, nspec)
-            for tab in objs_dupl.groups]
+            Cov_Obs.process_MaNGA_mult(tab, nspec) for tab in objs_dupl.groups]
 
-        mults = np.row_stack(mults).T
-        nobj = mults.shape[1]
+        mults = np.row_stack(mults)
+        nobj = mults.shape[0]
 
-        cov = np.cov(mults)
+        cov = np.cov(mults.T)
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj, SB_r_mean=None)
 
@@ -165,34 +177,41 @@ class Cov_Obs(object):
     # =====
 
     @staticmethod
-    def process_mult(tab, dest, MPL_v, nspec):
+    def process_MaNGA_mult(tab, nspec):
         '''
-        download multiply-observed objects, and process them into an array
-            of residuals
+        check for presence of datacubes for a single multiply-observed
+            MaNGA object, and (if the data exists) process the observations
+            into an array of residuals
+
+        Note: this assumes that all data is present at the correct location.
+            Missing data (such that zero or one observations are available)
+            will result in an empty array (with correct dimensions)
+            being returned
         '''
-        # download all LOGCUBES for a given MaNGA-ID
-        for row in tab:
-            if not os.path.isfile(
-                os.path.join(dest, 'manga-{}-LOGCUBE.fits.gz'.format(
-                    row['plateifu']))):
-                # print 'retrieving {}'.format(row['plateifu'])
-                m.get_datacube(
-                    version=MPL_v, plate=row['plate'], bundle=row['ifudsgn'],
-                    dest=dest)
 
         # load all LOGCUBES for a given MaNGA-ID
-        fnames = [os.path.join(
-            dest, 'manga-{}-LOGCUBE.fits.gz'.format(row['plateifu']))
-            for row in tab]
+        # files have form 'manga-<PLATE>-<IFU>-LOGCUBE.fits.gz'
+        fnames = [os.path.join(mangarc.manga_data_loc,
+                               'drp/', plate, 'stack/',
+                               '-'.join(('manga', plate, ifu,
+                                         'LOGCUBE.fits.gz')))
+                  for plate, ifu in zip(tab['plate'], tab['ifudsgn'])]
+
+        # handle the case where there aren't enough observations loaded
+        if sum(map(os.path.exists, fnames)) < 2:
+            return np.zeros((0, nspec))
+
+        # otherwise, move forward and load all files
         logcubes = [fits.open(f) for f in fnames]
 
         # extract & reshape data
         ivars = [cube['IVAR'].data for cube in logcubes]
 
-        # if LOGCUBEs have different shapes
+        # handle the case where LOGCUBEs have different shapes
         if len(set([i.shape for i in ivars])) > 1:
-            return np.zeros((0, ivars[0].shape[0]))
+            return np.zeros((0, nspec))
 
+        # rearrange datacube into faux RSS
         ivars = np.stack(
             [ivars.reshape(ivar.shape[0], -1).T for ivar in ivars])
         fluxs = [cube['FLUX'].data for cube in logcubes]
@@ -201,7 +220,6 @@ class Cov_Obs(object):
 
         # exclude rows where any observation has zero total weight
         good = np.all(ivars.sum(axis=-1) != 0, axis=0)
-        # exclude rows where any spectral element has zero total weight
         ivars = ivars[:, good, :]
         fluxs = fluxs[:, good, :]
 
@@ -300,11 +318,11 @@ class Cov_Obs(object):
         # handle cacse that we want everything
         if (lam_ix0s is None) or (nspec is None):
             data = [fits.open(f)['COADD'].data[data_name]
-                    for f, s in izip(fnames, success) if s]
+                    for f, s in zip(fnames, success) if s]
         else:
             try:
                 data = [fits.open(f)['COADD'].data[data_name][i0: i0 + nspec]
-                        for f, s, i0 in izip(fnames, success, lam_ix0s) if s]
+                        for f, s, i0 in zip(fnames, success, lam_ix0s) if s]
             # handle cases where wavelength solution is outside bounds
             # shouldn't just throw out individual spectra, since that
             # could list bring down to length-one and mess up statistics
@@ -343,6 +361,13 @@ class Cov_Obs(object):
         return np.concatenate([normed, ivar], axis=0)
 
 if __name__ == '__main__':
-    spAll = fits.open('spAll-v5_9_0.fits', memmap=True)
-    Cov = Cov_Obs.from_spAll(spAll=spAll)
-    Cov.write_fits()
+    spAll_loc = os.path.join(mangarc.zpace_sdss_data_loc,
+                             'boss', 'spAll-v5_9_0.fits')
+    spAll = fits.open(spAll_loc, memmap=True)
+    Cov_boss = Cov_Obs.from_spAll(spAll=spAll)
+    Cov_boss.write_fits('boss_Kspec.fits')
+
+    # =====
+
+    Cov_manga = Cov_Obs.from_MaNGA_reobs()
+    Cov_manga.write_fits('manga_Kspec.fits')
