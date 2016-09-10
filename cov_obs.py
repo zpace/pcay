@@ -12,9 +12,11 @@ import sys
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
     sys.path.append(os.environ['MANGA_CONFIG_LOC'])
 
-print(sys.path)
-
 import mangarc
+
+if mangarc.tools_loc not in sys.path:
+    sys.path.append(mangarc.tools_loc)
+
 import manga_tools as m
 
 mpl_v = 'MPL-5'
@@ -22,8 +24,8 @@ eps = np.finfo(float).eps
 
 # =====
 
-print('MaNGA data location:', mangarc.manga_data_loc)
 print('MaNGA data-product info:', mpl_v, '({})'.format(m.MPL_versions[mpl_v]))
+print('MaNGA data location:', mangarc.manga_data_loc[mpl_v])
 
 
 class Cov_Obs(object):
@@ -259,12 +261,13 @@ class Cov_Obs(object):
         stop = np.array(objs.groups.indices[1:])
         # use objects with more than two observations
         repeat = stop - start > 2
-        obs_dupl = objs.groups[repeat]
-        objs_dupl = objs_dupl = obs_dupl.group_by('objid')
-        objids = objs_dupl.groups.keys
+        obs_dupl = objs.groups[repeat]  # duplicate OBSERVATIONS
+        objs_dupl = obs_dupl.group_by('objid')  # the OBJECTS corresponding
+        objids = list(objs_dupl.groups.keys['objid'])
 
-        mults_dict = dict(zip(
-            objids, objs_dupl['plate', 'mjd', 'fiberid'].groups)[:i_lim])
+        mults_dict = {objids[i]: t.Table(objs_dupl.groups[i])
+                      for i in range(i_lim)}
+
         SB_r_mean = np.mean(obs['SB_r']) * 1.0e-9 * m.Mgy / (u.arcsec)**2.
 
         return mults_dict, SB_r_mean
