@@ -27,6 +27,8 @@ eps = np.finfo(float).eps
 print('MaNGA data-product info:', mpl_v, '({})'.format(m.MPL_versions[mpl_v]))
 print('MaNGA data location:', mangarc.manga_data_loc[mpl_v])
 
+boss_calib_dir = os.path.join(mangarc.zpace_sdss_data_loc, 'boss/calib')
+
 
 class Cov_Obs(object):
     '''
@@ -61,7 +63,7 @@ class Cov_Obs(object):
             Cov_Obs.load_zeronormed_obj_spec(
                 *Cov_Obs.download_obj_specs(obj),
                 lllim=lllim, nspec=nspec, i=i)
-            for i, (k, obj) in enumerate(mults.iteritems())]
+            for i, (k, obj) in enumerate(mults.items())]
 
         resids = np.concatenate([s[:len(s) // 2] for s in stack], axis=0)
         ivars = np.concatenate([s[len(s) // 2:] for s in stack], axis=0)
@@ -86,8 +88,8 @@ class Cov_Obs(object):
         '''
 
         drpall = t.Table.read(os.path.join(
-            mangarc.manga_data_loc,
-            'drpall-{}.fits'.format(m.MPL_versions[MPL_v])))
+            mangarc.manga_data_loc[mpl_v],
+            'drpall-{}.fits'.format(m.MPL_versions[mpl_v])))
 
         drpall = drpall[drpall['ifudesignsize'] != -9999]
         objs = drpall.group_by('mangaid')
@@ -100,7 +102,7 @@ class Cov_Obs(object):
         # only use objects with multiple observations with same IFU size
         def onesize_(tab):
             return len(np.unique(tab['ifudesignsize'])) == 1
-        onesize = map(onesize_, objs.groups)
+        onesize = np.array(list(map(onesize_, objs.groups)))
 
         # grouped filter
         obs_dupl = objs.groups[repeat & onesize]
@@ -234,7 +236,7 @@ class Cov_Obs(object):
         return resids
 
     @staticmethod
-    def _mults(spAll, i_lim=100):
+    def _mults(spAll, i_lim=10):
         '''
         return a dict of duplicate observations of the same object, using
             astropy table grouping
@@ -265,7 +267,8 @@ class Cov_Obs(object):
         objs_dupl = obs_dupl.group_by('objid')  # the OBJECTS corresponding
         objids = list(objs_dupl.groups.keys['objid'])
 
-        mults_dict = {objids[i]: t.Table(objs_dupl.groups[i])
+        mults_dict = {objids[i]:
+                      t.Table(objs_dupl['plate', 'mjd', 'fiberid'].groups[i])
                       for i in range(i_lim)}
 
         SB_r_mean = np.mean(obs['SB_r']) * 1.0e-9 * m.Mgy / (u.arcsec)**2.
@@ -273,43 +276,45 @@ class Cov_Obs(object):
         return mults_dict, SB_r_mean
 
     @staticmethod
-    def download_obj_specs(tab, base_dir='calib/'):
+    def download_obj_specs(tab):
         '''
         for all objects in a `mults`-style dict, download their FITS spectra
         '''
 
-        def make_full_fname(row):
+        def make_remote_fname(row):
             return '{0}/spec-{0}-{1}-{2:04d}.fits'.format(*row)
-        full_fnames = map(make_full_fname, tab)
+        remote_fnames = list(map(make_remote_fname, tab))
 
-        success = [False, ] * len(full_fnames)
-        for i, fname in enumerate(full_fnames):
+        def make_local_fname(row):
+            return os.path.join(
+                boss_calib_dir, 'spec-{0}-{1}-{2:04d}.fits'.format(*row))
+        local_fnames = list(map(make_local_fname, tab))
+
+        success = [False, ] * len(remote_fnames)
+        for i, (fname_r, fname_l) in enumerate(zip(remote_fnames,
+                                                   local_fnames)):
             # if file has already been downloaded, move on
-            if os.path.isfile(os.path.join(base_dir, fname)):
+            if os.path.isfile(fname_l):
                 success[i] = True
                 continue
 
             # if not, retrieve it over rsync!
+            print('Downloading remote file:', fname_r)
             q = 'rsync -raz --password-file={0} rsync://sdss@{1} {2}'.format(
-                os.path.join(m.drpall_loc, m.pw_loc),  # password file
-                os.path.join(
+                mangarc.password_file,  # SAS password
+                os.path.join(  # what file we're looking for
                     m.base_url,
                     'ebosswork/eboss/spectro/redux/v5_9_0/spectra/lite',
-                    fname),
-                'calib')
+                    fname_r),
+                boss_calib_dir)  # where to put it
+            # print(q)
             s_ = os.system(q)  # os.system() returns 0 on success
             if s_ == 0:
                 success[i] = True
             elif s_ == 2:
                 raise KeyboardInterrupt
 
-        def make_final_fname(row):
-            return os.path.join(
-                base_dir, 'spec-{0}-{1}-{2:04d}.fits'.format(*row))
-
-        final_fnames = map(make_final_fname, tab)
-
-        return base_dir, final_fnames, success
+        return boss_calib_dir, local_fnames, success
 
     @staticmethod
     def load_obj_spec(base_dir, fnames, success, data_name,
@@ -332,7 +337,7 @@ class Cov_Obs(object):
             except IndexError:
                 return None
             # if things have different lengths
-            if True in map(lambda x: len(x) != nspec, data):
+            if True in list(map(lambda x: len(x) != nspec, data)):
                 return None
 
         return data
