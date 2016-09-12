@@ -875,24 +875,30 @@ class MaNGA_deredshift(object):
     def compute_eline_mask(self, template_logl, template_dlogl, ix_eline=7,
                            half_dv=500. * u.Unit('km/s')):
 
-        from elines import balmer, paschen, helium, bright_metal, faint_metal
+        from elines import (balmer_low, balmer_high, paschen, helium,
+                            bright_metal, faint_metal)
 
         EW = self.eline_EW(ix=ix_eline)
-        add_balmer = EW > 2. * u.AA
-        add_helium = EW > 3. * u.AA
-        add_brightmetal = EW > 2. * u.AA
-        add_faintmetal = EW > 3. * u.AA
-        add_paschen = EW > 10. * u.AA
+        # thresholds are set very aggressively for debugging, but should be
+        # revisited in the future
+        # proposed values... balmer_low: 0, balmer_high: 2, helium: 2
+        #                    brightmetal: 0, faintmetal: 5, paschen: 10
+        add_balmer_low = EW > 0. * u.AA
+        add_balmer_high = EW > 0. * u.AA
+        add_helium = EW > 0. * u.AA
+        add_brightmetal = EW > 0. * u.AA
+        add_faintmetal = EW > 0. * u.AA
+        add_paschen = EW > 0. * u.AA
 
         template_l = 10.**template_logl * u.AA
 
         full_mask = np.zeros((len(template_l),) + EW.shape, dtype=bool)
 
-        for (add_, d) in izip([add_balmer, add_helium,
+        for (add_, d) in izip([add_balmer_low, add_balmer_high, add_helium,
                                add_brightmetal, add_faintmetal,
                                add_paschen],
-                              [balmer, paschen, helium, bright_metal,
-                               faint_metal]):
+                              [balmer_low, balmer_high, paschen,
+                               helium, bright_metal, faint_metal]):
 
             line_ctrs = np.array(d.values()) * u.AA
 
@@ -902,8 +908,8 @@ class MaNGA_deredshift(object):
 
             # is a given wavelength bin within half_dv of a line center?
             mask = np.row_stack(
-                [(lo < template_l) * (template_l < up) for lo, up in izip(
-                    mask_ledges, mask_uedges)])
+                [(lo < template_l) * (template_l < up)
+                 for lo, up in zip(mask_ledges, mask_uedges)])
             mask = np.any(mask, axis=0)  # OR along axis 0
 
             full_mask += (mask[:, np.newaxis, np.newaxis] *
