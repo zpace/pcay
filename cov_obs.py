@@ -237,7 +237,7 @@ class Cov_Obs(object):
         return resids
 
     @staticmethod
-    def _mults(spAll, i_lim=10):
+    def _mults(spAll, i_lim=None):
         '''
         return a dict of duplicate observations of the same object, using
             astropy table grouping
@@ -245,6 +245,7 @@ class Cov_Obs(object):
         also return a mean object surface brightness (nMgy/arcsec2) to aid
             in scaling the covariance matrix against MaNGA spaxels
         '''
+
         (objid, plate, mjd, fiberid) = (
             spAll[1].data['OBJID'], spAll[1].data['PLATE'],
             spAll[1].data['MJD'], spAll[1].data['FIBERID'])
@@ -268,9 +269,12 @@ class Cov_Obs(object):
         objs_dupl = obs_dupl.group_by('objid')  # the OBJECTS corresponding
         objids = list(objs_dupl.groups.keys['objid'])
 
+        if i_lim is None:
+            i_lim = len(objids)
+
         mults_dict = {objids[i]:
                       t.Table(objs_dupl['plate', 'mjd', 'fiberid'].groups[i])
-                      for i in range(i_lim)}
+                      for i in range(i_lim - 1)}
 
         SB_r_mean = np.mean(obs['SB_r']) * 1.0e-9 * m.Mgy / (u.arcsec)**2.
 
