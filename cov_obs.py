@@ -81,7 +81,7 @@ class Cov_Obs(object):
                    SB_r_mean=SB_r_mean)
 
     @classmethod
-    def from_MaNGA_reobs(cls, lllim=3650.059970708618, nspec=4378,
+    def from_MaNGA_reobs(cls, lllim=3650.059970708618, nspec=4563,
                          dlogl=1.0e-4, MPL_v=mpl_v):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
@@ -122,7 +122,8 @@ class Cov_Obs(object):
 
         cov = np.cov(mults.T)
 
-        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj, SB_r_mean=None)
+        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
+                   SB_r_mean=0. * m.Mgy)
 
     @classmethod
     def from_fits(cls, fname):
@@ -181,7 +182,7 @@ class Cov_Obs(object):
     # =====
 
     @staticmethod
-    def process_MaNGA_mult(tab, nspec):
+    def process_MaNGA_mult(tab, nspec=4563):
         '''
         check for presence of datacubes for a single multiply-observed
             MaNGA object, and (if the data exists) process the observations
@@ -195,9 +196,9 @@ class Cov_Obs(object):
 
         # load all LOGCUBES for a given MaNGA-ID
         # files have form 'manga-<PLATE>-<IFU>-LOGCUBE.fits.gz'
-        fnames = [os.path.join(mangarc.manga_data_loc,
-                               'drp/', plate, 'stack/',
-                               '-'.join(('manga', plate, ifu,
+        fnames = [os.path.join(mangarc.manga_data_loc[mpl_v],
+                               'drp/', str(plate), 'stack/',
+                               '-'.join(('manga', str(plate), str(ifu),
                                          'LOGCUBE.fits.gz')))
                   for plate, ifu in zip(tab['plate'], tab['ifudsgn'])]
 
@@ -217,10 +218,10 @@ class Cov_Obs(object):
 
         # rearrange datacube into faux RSS
         ivars = np.stack(
-            [ivars.reshape(ivar.shape[0], -1).T for ivar in ivars])
+            [ivar.reshape(ivar.shape[0], -1).T for ivar in ivars])
         fluxs = [cube['FLUX'].data for cube in logcubes]
         fluxs = np.stack(
-            [flux.reshape(ivars.shape[0], -1).T for flux in fluxs])
+            [flux.reshape(flux.shape[0], -1).T for flux in fluxs])
 
         # exclude rows where any observation has zero total weight
         good = np.all(ivars.sum(axis=-1) != 0, axis=0)
