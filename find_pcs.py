@@ -1,26 +1,42 @@
 import numpy as np
+
+# plotting
 import matplotlib.pyplot as plt
 from matplotlib import cm as mplcm
 from matplotlib import gridspec
 
+# astropy ecosystem
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
 from astropy import wcs
 from specutils.extinction import reddening
 from astropy.cosmology import WMAP9
-import pywcsgrid2 as wg2
+import wcsaxes
 
 import os
+import sys
+
+# scipy
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from scipy.integrate import quad
 
-import spec_tools
+# local
 import ssp_lib
-import manga_tools as m
 import cov_obs
 
-from itertools import izip  # , product
+# add manga RC location to path, and import config
+if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
+    sys.path.append(os.environ['MANGA_CONFIG_LOC'])
+
+import mangarc
+
+if mangarc.tools_loc not in sys.path:
+    sys.path.append(mangarc.tools_loc)
+
+# personal
+import manga_tools as m
+import spec_tools
 
 eps = np.finfo(float).eps
 
@@ -71,16 +87,21 @@ class StellarPop_PCA(object):
             raise PCAError('non-matching log-lambda spacing!')
 
     @classmethod
-    def from_YMC(cls, lib_para_file, form_file,
-                 spec_file_dir, spec_file_base, K_obs, BP):
+    def from_YMC(cls, base_dir, lib_para_file, form_file,
+                 spec_file_base, K_obs, BP):
         '''
         initialize object from CSP library provided by Y-M Chen, which is
             based on a BC03 model library
         '''
 
+        # first figure out full paths
+        form_file_full = os.path.join(base_dir, form_file)
+        lib_para_file_full = os.path.join(base_dir, lib_para_file)
+
         # get wavelength grid, and prepare for interpolation of model
-        hdulist = fits.open(os.path.join(spec_file_dir, '{}_1.fits'.format(
-            spec_file_base)))
+        test_spec_fname = os.path.join(
+            base_dir, '{}_1.fits'.format(spec_file_base))
+        hdulist = fits.open(test_spec_fname)
         l_raw = hdulist[2].data
         hdulist.close()
 
@@ -100,10 +121,10 @@ class StellarPop_PCA(object):
         nl_full = len(l_full)
 
         # load metadata tables
-        lib_para = t.Table.read(lib_para_file, format='ascii')
+        lib_para = t.Table.read(lib_para_file_full, format='ascii')
 
         nspec = len(lib_para)
-        form_data = t.Table.read(form_file, format='ascii')
+        form_data = t.Table.read(form_file_full, format='ascii')
         form_data_goodcols = ['zmet', 'Tau_v', 'mu']
 
         for n in form_data_goodcols:
@@ -116,8 +137,8 @@ class StellarPop_PCA(object):
         # and fill it
         for i in range(nspec):
             # create a hypothetical filename
-            fname = os.path.join(spec_file_dir, '{}_{}.fits'.format(
-                spec_file_base, i))
+            fname = os.path.join(
+                base_dir, '{}_{}.fits'.format(spec_file_base, i))
 
             # handle file-DNE case exception-less-ly
             if not os.path.exists(fname):
@@ -754,8 +775,9 @@ class MaNGA_deredshift(object):
 
         self.z = m.get_drpall_val(
             os.path.join(
-                m.drpall_loc, 'drpall-{}.fits'.format(m.MPL_versions[MPL_v])),
-            ['nsa_redshift'], self.plateifu)[0]['nsa_redshift']
+                mangarc.manga_data_loc[MPL_v],
+                'drpall-{}.fits'.format(m.MPL_versions[MPL_v])),
+            ['nsa_z'], self.plateifu)[0]['nsa_z']
 
         # mask all the spaxels that have high stellar velocity uncertainty
         self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
@@ -780,13 +802,13 @@ class MaNGA_deredshift(object):
         '''
         load a MaNGA galaxy from a plateifu specification
         '''
-        drp_fname = 'manga-{}-{}-LOGCUBE.fits.gz'.format(plate, ifu)
         drp_fname = os.path.join(
-            '/media/zpace/BACKUP', MPL_v, str(plate), 'stack', drp_fname)
-        dap_fname = 'manga-{}-{}-MAPS-{}.fits.gz'.format(plate, ifu, kind)
+            mangarc.manga_data_loc[MPL_v], 'drp/', str(plate), 'stack/',
+            '-'.join(('manga', str(plate), str(ifu), 'LOGCUBE.fits.gz')))
         dap_fname = os.path.join(
-            '/home/zpace/mangadap', MPL_v, kind, str(plate), str(ifu),
-            dap_fname)
+            mangarc.manga_data_loc[MPL_v], 'dap/', kind, str(plate), str(ifu),
+            '-'.join(('manga', str(plate), str(ifu), 'MAPS',
+                      '{}.fits.gz'.format(kind))))
 
         if not os.path.isfile(drp_fname):
             raise m.DRP_IFU_DNE_Error(plate, ifu)
@@ -894,11 +916,11 @@ class MaNGA_deredshift(object):
 
         full_mask = np.zeros((len(template_l),) + EW.shape, dtype=bool)
 
-        for (add_, d) in izip([add_balmer_low, add_balmer_high, add_helium,
-                               add_brightmetal, add_faintmetal,
-                               add_paschen],
-                              [balmer_low, balmer_high, paschen,
-                               helium, bright_metal, faint_metal]):
+        for (add_, d) in zip([add_balmer_low, add_balmer_high, add_helium,
+                              add_brightmetal, add_faintmetal,
+                              add_paschen],
+                             [balmer_low, balmer_high, paschen,
+                              helium, bright_metal, faint_metal]):
 
             line_ctrs = np.array(d.values()) * u.AA
 
@@ -1286,7 +1308,7 @@ class PCA_Result(object):
 
         # loop through parameters of interest, and make a weighted
         # histogram for each parameter
-        enum_ = enumerate(izip(gs2, self.pca.metadata.colnames, TeX_labels))
+        enum_ = enumerate(zip(gs2, self.pca.metadata.colnames, TeX_labels))
         for i, (gs_, q, tex) in enum_:
             ax = plt.subplot(gs_)
             if 'ML' in q:
@@ -1345,20 +1367,20 @@ def setup_pca(BP, fname=None, redo=False, pkl=True, q=7):
             fname = 'pca.pkl'
 
     if redo:
-        K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
+        K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         pca = StellarPop_PCA.from_YMC(
-            lib_para_file='model_spec_bc03/lib_para',
-            form_file='model_spec_bc03/input_model_para_for_paper',
-            spec_file_dir='model_spec_bc03',
+            base_dir=mangarc.BC03_CSP_loc,
+            lib_para_file='lib_para',
+            form_file='input_model_para_for_paper',
             spec_file_base='modelspec', K_obs=K_obs, BP=BP)
         pca.run_pca_models(q=q)
 
         if pkl:
-            pickle.dump(pca, open(fname, 'w'))
+            pickle.dump(pca, open(fname, 'wb'))
 
     else:
-        K_obs = cov_obs.Cov_Obs.from_fits('cov.fits')
-        pca = pickle.load(open(fname, 'r'))
+        K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
+        pca = pickle.load(open(fname, 'rb'))
 
     return pca, K_obs
 
@@ -1430,20 +1452,23 @@ if __name__ == '__main__':
     cosmo = WMAP9
     BP = setup_bandpasses()
 
+    mpl_v = 'MPL-5'
+
     pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=True, pkl=True, q=7)
 
     plateifu = '8083-12704'
 
-    # dered = MaNGA_deredshift.from_plateifu(
-    #    plate=8083, ifu=12704, MPL_v='MPL-5')
-    dered = MaNGA_deredshift.from_filenames(
-        drp_fname='manga-8083-12704-LOGCUBE.fits.gz',
-        dap_fname='manga-8083-12704-MAPS-SPX-GAU-MILESHC.fits.gz')
+    dered = MaNGA_deredshift.from_plateifu(
+        plate=8083, ifu=12704, MPL_v=mpl_v)
+    # dered = MaNGA_deredshift.from_filenames(
+    #    drp_fname='manga-8083-12704-LOGCUBE.fits.gz',
+    #    dap_fname='manga-8083-12704-MAPS-SPX-GAU-MILESHC.fits.gz')
 
     z_dist = m.get_drpall_val(
-        '{}/drpall-{}.fits'.format(
-            m.drpall_loc, m.MPL_versions['MPL-5']),
-        'nsa_zdist', plateifu)[0]
+        os.path.join(
+            mangarc.manga_data_loc[mpl_v],
+            'drpall-{}.fits'.format(m.MPL_versions[mpl_v])),
+        ['nsa_zdist'], plateifu)[0]['nsa_zdist']
 
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
