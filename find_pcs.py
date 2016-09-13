@@ -11,7 +11,7 @@ from astropy.io import fits
 from astropy import wcs
 from specutils.extinction import reddening
 from astropy.cosmology import WMAP9
-import wcsaxes
+from astropy import coordinates as coord
 
 import os
 import sys
@@ -24,6 +24,7 @@ from scipy.integrate import quad
 # local
 import ssp_lib
 import cov_obs
+import figures_tools
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -922,7 +923,7 @@ class MaNGA_deredshift(object):
                              [balmer_low, balmer_high, paschen,
                               helium, bright_metal, faint_metal]):
 
-            line_ctrs = np.array(d.values()) * u.AA
+            line_ctrs = np.array(list(d.values())) * u.AA
 
             # compute mask edges
             mask_ledges = line_ctrs * (1 - (half_dv / c.c).to(''))
@@ -1060,8 +1061,8 @@ class PCA_Result(object):
 
         fig = plt.figure(figsize=(9, 4), dpi=300)
         gs = gridspec.GridSpec(1, 2)
-        ax1 = wg2.subplot(gs[0], header=self.wcs_header)
-        ax2 = wg2.subplot(gs[1], header=self.wcs_header)
+        ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
+        ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
         self.Mstar_map(
             ax1=ax1, ax2=ax2, BP=BP, band=band)
@@ -1121,8 +1122,8 @@ class PCA_Result(object):
         fig = plt.figure(figsize=(8, 3.5), dpi=300)
 
         gs = gridspec.GridSpec(2, 1, height_ratios=[3, 1])
-        ax = plt.subplot(gs[0])
-        ax_res = plt.subplot(gs[1])
+        ax = fig.add_subplot(gs[0])
+        ax_res = fig.add_subplot(gs[1])
 
         _, _, _, _, _, ix = self.comp_plot(ax1=ax, ax2=ax_res, ix=ix)
 
@@ -1190,8 +1191,8 @@ class PCA_Result(object):
         fig = plt.figure(figsize=(9, 4), dpi=300)
 
         gs = gridspec.GridSpec(1, 2)
-        ax1 = wg2.subplot(gs[0], header=self.wcs_header)
-        ax2 = wg2.subplot(gs[1], header=self.wcs_header)
+        ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
+        ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
         m, s, mcb, scb = self.qty_map(
             qty_str=qty_str, ax1=ax1, ax2=ax2, f=f)
@@ -1290,14 +1291,15 @@ class PCA_Result(object):
             nrows, ncols, bottom=.05, top=(nrows - 1.) / nrows,
             left=.05, right=.95, hspace=.25)
 
-        im_ax = wg2.subplot(gs1[:-1, 0], header=self.wcs_header)
+        im_ax = fig.add_subplot(gs1[:-1, 0],
+                                projection=self.wcs_header_offset)
         # _ = self.Mstar_map(
         #    ax1=im_ax, ax2=None, BP=BP, z=z, cosmo=cosmo, band='r')
         self.__fix_im_axs__(im_ax)
 
         # put the spectrum and residual here!
-        spec_ax = plt.subplot(gs1[0, 2:])
-        resid_ax = plt.subplot(gs1[1, 2:])
+        spec_ax = fig.add_subplot(gs1[0, 2:])
+        resid_ax = fig.add_subplot(gs1[1, 2:])
         spec_ax.tick_params(axis='y', which='major', labelsize=10)
         resid_ax.tick_params(axis='both', which='major', labelsize=10)
         orig_, recon_, ivar_, resid_, resid_avg_, ix_ = self.comp_plot(
@@ -1310,7 +1312,7 @@ class PCA_Result(object):
         # histogram for each parameter
         enum_ = enumerate(zip(gs2, self.pca.metadata.colnames, TeX_labels))
         for i, (gs_, q, tex) in enum_:
-            ax = plt.subplot(gs_)
+            ax = fig.add_subplot(gs_)
             if 'ML' in q:
                 bins = np.logspace(-1, 6, 50)
                 ax.set_xscale('log')
@@ -1332,6 +1334,12 @@ class PCA_Result(object):
     @property
     def wcs_header(self):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
+
+    @property
+    def wcs_header_offset(self):
+        return figures_tools.linear_offset_coordinates(
+            self.wcs_header, coord.SkyCoord(
+                *(self.wcs_header.wcs.crval * u.deg)))
 
     def Mstar(self, band='r'):
         qty_str = 'ML{}'.format(band)
