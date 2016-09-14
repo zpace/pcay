@@ -1017,11 +1017,54 @@ class PCA_Result(object):
         self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
 
         self.map_shape = self.O.shape[-2:]
-        self.ifu_ctr_ix = [s / 2 for s in self.map_shape]
+        self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
 
         self.l = 10.**self.pca.logl
+
+    def flux(self, band='i'):
+        '''
+        return spaxel map of flux in the specified bandpass
+        '''
+
+        l_ctr = {'r': 6231. * u.AA, 'i': 7625. * u.AA, 'z': 9134. * u.AA}
+
+        flux_im = (self.dered.drp_hdulist[
+            '{}IMG'.format(band)].data * 3.631e-6 * u.Jy).to('erg s-1 cm-2',
+            equivalencies=u.spectral_density(l_ctr[band]))
+
+        return flux_im
+
+    def lum(self, band='i'):
+        '''
+        return spaxel map estimate of luminosity, in Lsun
+
+        Retrieves the correct bandpass image, and converts to Lsun assuming
+            some cosmology and redshift
+        '''
+
+        flux = self.flux(band=band)
+
+        stellum = (4 * np.pi * flux * (self.dist)**2.).to('Lsun')
+
+        return stellum.value
+
+    def lum_plot(self, ax, band='i'):
+
+        im = ax.imshow(
+            np.log10(np.ma.array(self.lum(band=band), mask=self.mask_map)),
+            aspect='equal')
+
+        cb = plt.colorbar(im, ax=ax, pad=0.)
+        cb.set_label(r'$\log{\mathcal{L}}$ [$L_{\odot}$]', size=8)
+        cb.ax.tick_params(labelsize=8)
+
+        ax.set_title('{}-band luminosity'.format(band), size=8)
+
+        self.__fix_im_axs__(ax)
+
+        return im, cb
 
     def Mstar_map(self, ax1, ax2, BP, band='i'):
         '''
@@ -1035,19 +1078,18 @@ class PCA_Result(object):
          - band: what bandpass to use
         '''
 
-        if ax2 is None:
-            # construct dummy subplot to place stdev map in
-            fig_ = plt.figure()
-            ax2 = fig_.add_subplot(111)
-
-        f = (BP.interps[band](self.l)[:, np.newaxis, np.newaxis] *
-             self.O).sum(axis=0)
-        d = self.dist
-        f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
+        f = self.lum(band=band)
 
         m, s, mcb, scb = self.qty_map(
             ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
             f=f, norm=[None, None], log=True)
+
+        mstar_tot = np.ma.array(
+            self.Mstar_tot(band=band), mask=self.mask_map).sum()
+
+        ax1.text(x=0.2, y=0.2,
+                 s=''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
+                            '{:.2f}'.format(np.log10(mstar_tot)))))
 
         return m, s, mcb, scb
 
@@ -1069,7 +1111,6 @@ class PCA_Result(object):
         fig.suptitle(self.objname + ': ' + qty_tex)
 
         self.__fix_im_axs__([ax1, ax2])
-        plt.tight_layout()
 
         fig.savefig('{}-{}.png'.format(self.objname, qty_str), dpi=300)
 
@@ -1091,6 +1132,10 @@ class PCA_Result(object):
         recon_ = ax1.plot(
             self.l, self.O_recon[:, ix[0], ix[1]], drawstyle='steps-mid',
             c='g', label='Recon.')
+        bestfit = self.pca.trn_spectra[np.argmax(self.w[:, ix[0], ix[1]]), :]
+        bestfit_ = ax1.plot(
+            self.l, 0.5 * bestfit / bestfit.mean(),
+            drawstyle='steps-mid', c='c', label='Best Model')
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
         ax1.set_ylim([-0.1 * self.O[:, ix[0], ix[1]].mean(),
@@ -1116,7 +1161,7 @@ class PCA_Result(object):
         ax2.set_ylabel('Resid.')
         ax2.set_ylim([1.0e-3, 1.0])
 
-        return orig_, recon_, ivar_, resid_, resid_avg_, ix
+        return orig_, recon_, bestfit_, ivar_, resid_, resid_avg_, ix
 
     def make_comp_fig(self, ix=None):
         fig = plt.figure(figsize=(8, 3.5), dpi=300)
@@ -1169,8 +1214,13 @@ class PCA_Result(object):
                 mask=self.mask_map),
             aspect='equal', norm=norm[1])
 
-        mcb = plt.colorbar(m, ax=ax1, shrink=0.6, label='median')
-        scb = plt.colorbar(s, ax=ax2, shrink=0.6, label=r'$\sigma$')
+        mcb = plt.colorbar(m, ax=ax1, pad=0.)
+        mcb.set_label('med.', size=8)
+        mcb.ax.tick_params(labelsize=8)
+
+        scb = plt.colorbar(s, ax=ax2, pad=0.)
+        scb.set_label('unc.', size=8)
+        scb.ax.tick_params(labelsize=8)
 
         return m, s, mcb, scb
 
@@ -1200,7 +1250,7 @@ class PCA_Result(object):
         fig.suptitle('{}: {}'.format(self.objname, qty_tex))
 
         self.__fix_im_axs__([ax1, ax2])
-        plt.tight_layout()
+        # plt.tight_layout()
         fig.savefig('{}-{}.png'.format(self.objname, qty_fname), dpi=300)
 
         return fig
@@ -1250,19 +1300,18 @@ class PCA_Result(object):
 
     def __fix_im_axs__(self, axs):
         '''
-        do all the fixes to make quantity maps look nice in pywcsgrid2
+        do all the fixes to make quantity maps look nice in wcsaxes
         '''
         if type(axs) is not list:
             axs = [axs]
 
+        # over ax objects
         for ax in axs:
-            ax.set_ticklabel_type('delta', center_pixel=self.ifu_ctr_ix)
-            ax.axis['bottom'].major_ticklabels.set(fontsize=10)
-            ax.axis['left'].major_ticklabels.set(fontsize=10)
-            ax.set_aspect('equal')
-            ax.grid()
-            ax.set_xlabel('')
-            ax.set_ylabel('')
+            # over XOFFSET & YOFFSET
+            for i in range(2):
+                ax.coords[i].set_major_formatter('x')
+                ax.coords[i].set_ticks(spacing=5.*u.arcsec)
+                ax.coords[i].set_format_unit(u.arcsec)
 
     def make_full_QA_fig(self, BP, ix=None):
         '''
@@ -1293,17 +1342,15 @@ class PCA_Result(object):
 
         im_ax = fig.add_subplot(gs1[:-1, 0],
                                 projection=self.wcs_header_offset)
-        # _ = self.Mstar_map(
-        #    ax1=im_ax, ax2=None, BP=BP, z=z, cosmo=cosmo, band='r')
-        self.__fix_im_axs__(im_ax)
+        lumim, lcb = self.lum_plot(im_ax, band='r')
 
         # put the spectrum and residual here!
         spec_ax = fig.add_subplot(gs1[0, 2:])
         resid_ax = fig.add_subplot(gs1[1, 2:])
         spec_ax.tick_params(axis='y', which='major', labelsize=10)
         resid_ax.tick_params(axis='both', which='major', labelsize=10)
-        orig_, recon_, ivar_, resid_, resid_avg_, ix_ = self.comp_plot(
-            ax1=spec_ax, ax2=resid_ax, ix=ix)
+        orig_, recon_, bestfit_, ivar_, resid_, resid_avg_, ix_ = \
+            self.comp_plot(ax1=spec_ax, ax2=resid_ax, ix=ix)
 
         TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
                       for n in self.pca.metadata.colnames]
@@ -1341,16 +1388,13 @@ class PCA_Result(object):
             self.wcs_header, coord.SkyCoord(
                 *(self.wcs_header.wcs.crval * u.deg)))
 
-    def Mstar(self, band='r'):
+    def Mstar_tot(self, band='r'):
         qty_str = 'ML{}'.format(band)
-        f = (BP.interps[band](self.l)[:, None, None] *
-             self.O).sum(axis=0)
-        d = self.dist
-        f *= (1.0e-17 * u.Unit('erg s-1 cm-2') * d**2.).to('Lsun').value
+        f = self.lum(band=band)
 
         pct_map = self.pca.param_pct_map(
             qty=qty_str, W=self.w, P=np.array([50.]),
-            factor=f)
+            factor=f)[0, ...]
 
         return pct_map
 
@@ -1462,7 +1506,7 @@ if __name__ == '__main__':
 
     mpl_v = 'MPL-5'
 
-    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=True, pkl=True, q=7)
+    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=False, pkl=True, q=7)
 
     plateifu = '8083-12704'
 
