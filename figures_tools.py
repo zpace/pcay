@@ -1,6 +1,6 @@
 from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel, proj_plane_pixel_scales
-import astropy.coords as coords
+import astropy.coordinates as coords
 
 import warnings
 
@@ -20,7 +20,7 @@ def linear_offset_coordinates(wcs, center):
     '''
     assert isinstance(center, coords.SkyCoord), \
         '`center` must by of type `SkyCoord`'
-    assert len(center) == 1, '`center` must have length 1'
+    assert center.isscalar, '`center` must be scalar'
     # Convert center to pixel coordinates
     xp, yp = skycoord_to_pixel(center, wcs)
 
