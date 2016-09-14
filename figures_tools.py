@@ -20,7 +20,7 @@ def linear_offset_coordinates(wcs, center):
     '''
     assert isinstance(center, coords.SkyCoord), \
         '`center` must by of type `SkyCoord`'
-    assert center.isscalar, '`center` must be scalar'
+    assert center.isscalar, '`center` must have length 1'
     # Convert center to pixel coordinates
     xp, yp = skycoord_to_pixel(center, wcs)
 
