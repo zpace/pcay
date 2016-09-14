@@ -15,9 +15,7 @@ from astropy.cosmology import WMAP9
 from astropy import units as u, constants as c, table as t
 from astropy.io import fits
 
-from conroy_tools import make_conroy_file
-
-import fsps
+# import fsps
 
 zsol_padova = .019
 zs_padova = t.Table(
@@ -31,6 +29,7 @@ zs_padova = t.Table(
     names=['zmet', 'Z', 'logZ_Zsol'])
 # logs are base-10
 
+
 class FSPS_SFHBuilder(object):
     '''
     programmatically generate lots of SSP characteristics
@@ -43,7 +42,6 @@ class FSPS_SFHBuilder(object):
     __version__ = '0.1'
 
     def __init__(self, **kwargs):
-
         '''
         set up star formation history generation to use with FSPS
 
@@ -83,7 +81,7 @@ class FSPS_SFHBuilder(object):
         self.FSPS_args.update(kwargs)
 
         self.FSPS_args['time_form'] = self.time_form_gen(
-            override = self.FSPS_args['time_form'])
+            override=self.FSPS_args['time_form'])
 
         self.FSPS_args['eftu'] = self.eftu_gen(
             override=self.FSPS_args['eftu'])
@@ -98,8 +96,8 @@ class FSPS_SFHBuilder(object):
             self.FSPS_args['A'] = self.burst_gen(
                 self.FSPS_args['time_form'], self.time0,
                 self.FSPS_args['time_cut'],
-                override=(self.FSPS_args['time_burst'], \
-                          self.FSPS_args['dt_burst'], \
+                override=(self.FSPS_args['time_burst'],
+                          self.FSPS_args['dt_burst'],
                           self.FSPS_args['A']))
         self.nburst = len(self.FSPS_args['time_burst'])
 
@@ -173,9 +171,9 @@ class FSPS_SFHBuilder(object):
         ts = self.ts
 
         if mformed_compare:
-            print 'Total mass formed'
-            print '\tintegral:', self.mformed_integration
-            print '\tsummation:', self.sfrs.sum() * (ts[1] - ts[0])
+            print('Total mass formed')
+            print('\tintegral:', self.mformed_integration)
+            print('\tsummation:', self.sfrs.sum() * (ts[1] - ts[0]))
 
         if plot:
             self.plot_sfh(ts=ts, sfrs=sfrs, save=saveplot)
@@ -203,7 +201,7 @@ class FSPS_SFHBuilder(object):
         ylim_cont = [5.0e-3, 1.25]
         ylim = ylim_cont
         if self.nburst > 0:
-            ylim[1] = 1.25*sfrs.max()
+            ylim[1] = 1.25 * sfrs.max()
 
         ax.set_ylim(ylim)
 
@@ -229,15 +227,15 @@ class FSPS_SFHBuilder(object):
 
         return tab[goodcolumns]
 
-    #=====
+    # =====
     # properties
-    #=====
+    # =====
 
     @property
     def all_sf_v(self):
         return np.vectorize(
             self.all_sf,
-            excluded=set(self.FSPS_args.keys() + ['time0',]),
+            excluded=set(self.FSPS_args.keys() + ['time0', ]),
             cache=True)
 
     @property
@@ -296,7 +294,7 @@ class FSPS_SFHBuilder(object):
         denom = integrate.quad(
             denom_integrand, 0., self.time0, args=(mtot_cont),
             points=disconts, epsrel=5.0e-3)[0]
-        return num/denom
+        return num / denom
 
     @property
     def Fstar(self):
@@ -316,10 +314,10 @@ class FSPS_SFHBuilder(object):
         F = mformed_lastGyr / self.mformed_integration
         return F
 
-    #=====
+    # =====
     # static methods
     # (allow master overrides)
-    #=====
+    # =====
 
     @staticmethod
     def time_form_gen(override):
@@ -333,7 +331,7 @@ class FSPS_SFHBuilder(object):
         if not np.isnan(override):
             return override
 
-        return 1./np.random.rand()
+        return 1. / np.random.rand()
 
     @staticmethod
     def time_cut_gen(time_form, time0, override):
@@ -410,13 +408,13 @@ class FSPS_SFHBuilder(object):
         # =====
 
         # handle the case that no burst information is given (3 NaNs)
-        if ((np.isnan(time_burst).sum() * \
-             np.isnan(dt_burst).sum() * \
+        if ((np.isnan(time_burst).sum() *
+             np.isnan(dt_burst).sum() *
              np.isnan(A).sum()) == 1) and \
-            (np.ndarray not in map(type, override)):
+                (np.ndarray not in map(type, override)):
 
             # number of bursts
-            nburst = stats.poisson.rvs(dt/time0)
+            nburst = stats.poisson.rvs(dt / time0)
             # when they occur
             time_burst = FSPS_SFHBuilder.time_burst_gen(time_form, dt, nburst)
             # how long they last
@@ -470,9 +468,9 @@ class FSPS_SFHBuilder(object):
             return override
 
         if np.random.rand() < .95:
-            return np.random.uniform(0.2*zsol, 2.5*zsol)
+            return np.random.uniform(0.2 * zsol, 2.5 * zsol)
 
-        return np.random.uniform(.02*zsol, .2*zsol)
+        return np.random.uniform(.02 * zsol, .2 * zsol)
 
     @staticmethod
     def tau_V_gen(override):
@@ -480,7 +478,7 @@ class FSPS_SFHBuilder(object):
             return override
 
         mu_tau_V = 1.2
-        std_tau_V = 1.272 # set to ensure 68% of prob mass lies < 2
+        std_tau_V = 1.272  # set to ensure 68% of prob mass lies < 2
         lclip_tau_V, uclip_tau_V = 0., 6.
         a_tau_V = (lclip_tau_V - mu_tau_V) / std_tau_V
         b_tau_V = (uclip_tau_V - mu_tau_V) / std_tau_V
@@ -527,7 +525,7 @@ class FSPS_SFHBuilder(object):
             return 0.
 
         return FSPS_SFHBuilder.cut_modifier(
-            t, time_cut, eftc) * np.exp(-(t - time_form)/eftu)
+            t, time_cut, eftc) * np.exp(-(t - time_form) / eftu)
 
     @staticmethod
     def cut_modifier(t, time_cut, eftc):
@@ -539,7 +537,7 @@ class FSPS_SFHBuilder(object):
         if t < time_cut:
             return 1.
 
-        return np.exp(-(t - time_cut)/eftc)
+        return np.exp(-(t - time_cut) / eftc)
 
     @staticmethod
     def mtot_cont(time_form, time0, eftu, time_cut, eftc):
@@ -551,7 +549,7 @@ class FSPS_SFHBuilder(object):
 
     @staticmethod
     def all_sf(t, time_form, eftu, time_cut, eftc, time_burst,
-                dt_burst, A, time0, mtot_cont=None, **kwargs):
+               dt_burst, A, time0, mtot_cont=None, **kwargs):
         '''
         eval the full SF at some time
 
@@ -568,20 +566,21 @@ class FSPS_SFHBuilder(object):
         if len(time_burst) == 0:
             return continuous
 
-        t_a = t*np.ones_like(time_burst)
+        t_a = t * np.ones_like(time_burst)
         in_burst = (t_a > time_burst) * (t_a < time_burst + dt_burst)
 
         burst = (mtot_cont * A / dt_burst).dot(in_burst)
 
         return continuous + burst
 
-    #=====
+    # =====
     # utility methods
-    #=====
+    # =====
 
     def __repr__(self):
         return '\n'.join(
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.iteritems()])
+
 
 def make_csp():
     sfh = FSPS_SFHBuilder()
@@ -591,16 +590,17 @@ def make_csp():
     del tab['time_burst']
     del tab['eftc']
     del tab['time_cut']
-    print tab.dtype
+    print(tab.dtype)
     l, spec, MLs = sfh.run_fsps()
     MLs = t.Table(
-            rows=np.atleast_2d(MLs), names=['MLr', 'MLi', 'MLz'])
+        rows=np.atleast_2d(MLs), names=['MLr', 'MLi', 'MLz'])
     tab = t.hstack([tab, MLs])
     return l, spec, tab
 
+
 def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700.):
 
-    if pkl == False:
+    if not pkl:
         # generate CSPs and cache them
         CSPs = [FSPS_SFHBuilder().FSPS_args for _ in range(n)]
         pickle.dump(CSPs, open('csps.pkl', 'wb'))
@@ -629,7 +629,7 @@ def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700.):
     # initialize FITS HDUList
     hdulist = fits.HDUList(
         [fits.BinTableHDU(np.array(metadata)), fits.ImageHDU(l),
-        fits.ImageHDU(specs)])
+         fits.ImageHDU(specs)])
     '''
     extension list:
      - [0], 'meta': FITS table equal to `metadata`
@@ -642,10 +642,12 @@ def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700.):
 
 # my hobby: needlessly subclassing exceptions
 
+
 class TemplateError(Exception):
     '''
     when there's something wrong with a template
     '''
+
 
 class TemplateCoverageError(TemplateError):
     '''

@@ -237,7 +237,7 @@ class Cov_Obs(object):
         return resids
 
     @staticmethod
-    def _mults(spAll, i_lim=None):
+    def _mults(spAll, i_lim=10):
         '''
         return a dict of duplicate observations of the same object, using
             astropy table grouping
