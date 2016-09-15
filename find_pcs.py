@@ -502,21 +502,29 @@ class StellarPop_PCA(object):
         E = self.PCs
         q, l = E.shape
         mapshape = a_map.shape
-        K_PC = np.empty((q, q) + cubeshape)
-        i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
-        inds = np.ndindex(mapshape)  # iterator over physical shape of cube
 
-        # set up iterators over the map-like dimensions of all the arrays
-        map_iter = np.nditer((), flags)
+        inds = np.ndindex(mapshape)  # iterator over physical shape of cube
+        i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
+
+        # set up iterators over the map-like dimensions of the arrays
+        i0_map_iter = (i0_map[ind[0], ind[1]] for ind in inds)
+        a_map_iter = (a_map[ind[0], ind[1]] for ind in inds)
+
+        args_iter = ((Kspec_th,
+                      Kspec_obs[i0:(i0 + l), i0:(i0 + l)], E, a)
+                     for a, i0 in zip(a_map_iter, i0_map_iter))
 
         # now set up pool and dummy function
         MAX_PROCESSES = (mpc.cpu_count() - 1) or (1)
-        p = mpc.Pool(processes=MAX_PROCESSES, maxtasksperchild=1)
 
-        def worker(ind, ):
-            return
+        with mpc.Pool(processes=MAX_PROCESSES, maxtasksperchild=1) as p:
+            pool_outputs = p.starmap(cov_PC_worker, args_iter)
 
-        pool_outputs = p.map(worker)
+        # now map pool outputs to corresponding elements of K_PC
+
+        K_PC = np.array(list(pool_outputs)).reshape((q, q) + mapshape)
+
+        return K_PC
 
     def compute_model_weights(self, P, A):
         '''
@@ -744,6 +752,14 @@ class StellarPop_PCA(object):
     def __str__(self):
         return 'PCA object: q = {0[0]}, nlam = {0[1]}'.format(self.PCs.shape)
 
+def cov_PC_worker(Kspec_th, Kspec_obs, E, a):
+    '''
+    worker function that is passed to a Pool
+    '''
+
+    Kspec_full = ((Kspec_obs / a**2.) + (K_th * a**2.))
+
+    return E.dot(Kspec_full).dot(E.T)
 
 class Bandpass(object):
 
