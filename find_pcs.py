@@ -510,19 +510,23 @@ class StellarPop_PCA(object):
         i0_map_iter = (i0_map[ind[0], ind[1]] for ind in inds)
         a_map_iter = (a_map[ind[0], ind[1]] for ind in inds)
 
-        args_iter = ((Kspec_th,
-                      Kspec_obs[i0:(i0 + l), i0:(i0 + l)], E, a)
+        args_iter = ((self.cov_th,
+                      K_obs.cov[i0:(i0 + l), i0:(i0 + l)], E, a)
                      for a, i0 in zip(a_map_iter, i0_map_iter))
 
         # now set up pool and dummy function
         MAX_PROCESSES = (mpc.cpu_count() - 1) or (1)
+        print('processes: ', MAX_PROCESSES)
 
         with mpc.Pool(processes=MAX_PROCESSES, maxtasksperchild=1) as p:
-            pool_outputs = p.starmap(cov_PC_worker, args_iter)
+            pool_outputs = p.starmap(cov_PC_worker, args_iter, chunksize=1)
 
         # now map pool outputs to corresponding elements of K_PC
 
-        K_PC = np.array(list(pool_outputs)).reshape((q, q) + mapshape)
+        print(len(pool_outputs))
+        K_PC = np.array(pool_outputs)
+        print(K_PC.shape)
+        K_PC = K_PC.reshape((q, q) + mapshape)
 
         return K_PC
 
@@ -757,7 +761,7 @@ def cov_PC_worker(Kspec_th, Kspec_obs, E, a):
     worker function that is passed to a Pool
     '''
 
-    Kspec_full = ((Kspec_obs / a**2.) + (K_th * a**2.))
+    Kspec_full = ((Kspec_obs / a**2.) + (Kspec_th * a**2.))
 
     return E.dot(Kspec_full).dot(E.T)
 
@@ -1077,7 +1081,7 @@ class PCA_Result(object):
 
         self.resid = np.abs((self.O - self.O_recon) / self.O)
 
-        self.K_PC = pca.build_PC_cov_full_iter(
+        self.K_PC = pca.build_PC_cov_full_mpc(
             a_map=self.a_map, z_map=dered.z_map,
             obs_logl=dered.drp_logl, K_obs_=K_obs)
 
