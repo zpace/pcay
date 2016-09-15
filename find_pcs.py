@@ -1275,7 +1275,7 @@ class PCA_Result(object):
 
         return m, s, mcb, scb
 
-    def map_add_loc(ax, ix, **kwargs):
+    def map_add_loc(self, ax, ix, **kwargs):
         '''
         add axvline and axhline at the location in the map coresponding to
             some image-frame indices ix
@@ -1284,12 +1284,11 @@ class PCA_Result(object):
         from astropy.wcs.utils import pixel_to_skycoord
         from astropy.coordinates import SkyCoord
 
-        pix_coord = pixel_to_skycoord(
-            xp=ix[0], yp=ix[1], mode='wcs', origin=0,
-            wcs=self.wcs_header_offset)
+        pix_coord = self.wcs_header_offset.all_pix2world(
+            np.atleast_2d(ix), origin=1)
 
-        ax.axhline(pix_coord.dec.deg, **kwargs)
-        ax.axvline(pix_coord.dec.deg, **kwargs)
+        ax.axhline(pix_coord[1], **kwargs)
+        ax.axvline(pix_coord[0], **kwargs)
 
     def make_qty_fig(self, qty_str, qty_tex, qty_fname=None, f=None):
         '''
@@ -1407,12 +1406,6 @@ class PCA_Result(object):
             nrows, ncols, bottom=.05, top=(nrows - 1.) / nrows,
             left=.05, right=.95, hspace=.25)
 
-        im_ax = fig.add_subplot(gs1[:-1, 0],
-                                projection=self.wcs_header_offset)
-        lumim, lcb = self.lum_plot(im_ax, band='r')
-        self.map_add_loc(ix=ix, ax=im_ax, color='gray', linewidth=1.,
-                         linestyle=':')
-
         # put the spectrum and residual here!
         spec_ax = fig.add_subplot(gs1[0, 2:])
         resid_ax = fig.add_subplot(gs1[1, 2:])
@@ -1423,6 +1416,13 @@ class PCA_Result(object):
 
         TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
                       for n in self.pca.metadata.colnames]
+
+        # image of galaxy in integrated light
+        im_ax = fig.add_subplot(gs1[:-1, 0],
+                                projection=self.wcs_header_offset)
+        lumim, lcb = self.lum_plot(im_ax, band='r')
+        # self.map_add_loc(ix=ix_, ax=im_ax, color='gray', linewidth=1.,
+        #                  linestyle=':')
 
         # loop through parameters of interest, and make a weighted
         # histogram for each parameter
