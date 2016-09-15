@@ -473,15 +473,15 @@ class StellarPop_PCA(object):
 
         E = self.PCs
         q, l = E.shape
-        cubeshape = a_map.shape
+        mapshape = a_map.shape
 
         # build an array to hold covariances
-        K_PC = np.empty((q, q) + cubeshape)
+        K_PC = np.empty((q, q) + mapshape)
 
         # compute starting indices for covariance matrix
         i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
 
-        inds = np.ndindex(cubeshape)  # iterator over datacube shape
+        inds = np.ndindex(mapshape)  # iterator over physical shape of cube
 
         for ind in inds:
             K_spec = self._compute_spec_cov_spax(
@@ -490,6 +490,33 @@ class StellarPop_PCA(object):
             K_PC[..., ind[0], ind[1]] = E.dot(K_spec).dot(E.T)
 
         return K_PC
+
+    def build_PC_cov_full_mpc(self, a_map, z_map, obs_logl, K_obs_):
+        '''
+        same as `build_PC_cov_full_iter`, except uses multiprocessing module
+        '''
+
+        import multiprocessing as mpc
+
+        # same prep as above
+        E = self.PCs
+        q, l = E.shape
+        mapshape = a_map.shape
+        K_PC = np.empty((q, q) + cubeshape)
+        i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
+        inds = np.ndindex(mapshape)  # iterator over physical shape of cube
+
+        # set up iterators over the map-like dimensions of all the arrays
+        map_iter = np.nditer((), flags)
+
+        # now set up pool and dummy function
+        MAX_PROCESSES = (mpc.cpu_count() - 1) or (1)
+        p = mpc.Pool(processes=MAX_PROCESSES, maxtasksperchild=1)
+
+        def worker(ind, ):
+            return
+
+        pool_outputs = p.map(worker)
 
     def compute_model_weights(self, P, A):
         '''
@@ -503,9 +530,9 @@ class StellarPop_PCA(object):
             shape (q, NX, NY)
         '''
 
-        C = self.trn_PC_wts  # shape (nmodel, q)
+        C = self.trn_PC_wts  # C shape: [MODELNUM, PCNUM]
         D = np.abs(C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...])
-        # D goes [MODELNUM, PCNUM, XNUM, YNUM]
+        # D shape: [MODELNUM, PCNUM, XNUM, YNUM]
 
         # print(D.shape, P.shape)
 
@@ -680,11 +707,35 @@ class StellarPop_PCA(object):
 
     @staticmethod
     def P_from_K(K):
+        '''
+        compute straight inverse of all elements of K_PC [q, q, NX, NY]
+        '''
         P_PC = np.moveaxis(
             np.linalg.inv(
                 np.moveaxis(K, [0, 1, 2, 3], [2, 3, 0, 1])),
             [0, 1, 2, 3], [2, 3, 0, 1])
         return P_PC
+
+    @staticmethod
+    def P_from_K_pinv(K, rcond=1e-15):
+        '''
+        compute P_PC using Moore-Penrose pseudoinverse (pinv)
+        '''
+
+        Kprime = np.moveaxis(K, [0, 1, 2, 3], [2, 3, 0, 1])
+        swap = np.arange(Kprime.ndim)
+        swap[[-2, -1]] = swap[[-1, -2]]
+        u, s, v = np.linalg.svd(Kprime)
+        cutoff = np.maximum.reduce(s, axis=-1, keepdims=True) * rcond
+
+        mask = s > cutoff
+        s[mask] = 1. / s[mask]
+        s[~mask] = 0.
+
+        a = np.einsum('...uv,...vw->...uw',
+                      np.transpose(v, swap) * s[..., None, :],
+                      np.transpose(u, swap))
+        return np.moveaxis(a, [0, 1, 2, 3], [2, 3, 0, 1])
 
     # =====
     # under the hood
@@ -1014,7 +1065,7 @@ class PCA_Result(object):
             a_map=self.a_map, z_map=dered.z_map,
             obs_logl=dered.drp_logl, K_obs_=K_obs)
 
-        self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
+        self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
 
         self.map_shape = self.O.shape[-2:]
         self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
@@ -1224,6 +1275,22 @@ class PCA_Result(object):
 
         return m, s, mcb, scb
 
+    def map_add_loc(ax, ix, **kwargs):
+        '''
+        add axvline and axhline at the location in the map coresponding to
+            some image-frame indices ix
+        '''
+
+        from astropy.wcs.utils import pixel_to_skycoord
+        from astropy.coordinates import SkyCoord
+
+        pix_coord = pixel_to_skycoord(
+            xp=ix[0], yp=ix[1], mode='wcs', origin=0,
+            wcs=self.wcs_header_offset)
+
+        ax.axhline(pix_coord.dec.deg, **kwargs)
+        ax.axvline(pix_coord.dec.deg, **kwargs)
+
     def make_qty_fig(self, qty_str, qty_tex, qty_fname=None, f=None):
         '''
         make a with a map of the quantity of interest
@@ -1343,6 +1410,8 @@ class PCA_Result(object):
         im_ax = fig.add_subplot(gs1[:-1, 0],
                                 projection=self.wcs_header_offset)
         lumim, lcb = self.lum_plot(im_ax, band='r')
+        self.map_add_loc(ix=ix, ax=im_ax, color='gray', linewidth=1.,
+                         linestyle=':')
 
         # put the spectrum and residual here!
         spec_ax = fig.add_subplot(gs1[0, 2:])
@@ -1473,7 +1542,7 @@ class Test_PCA_Result(PCA_Result):
             a_map=self.a_map, z_map=dered.z_map,
             obs_logl=dered.drp_logl, K_obs_=K_obs)
 
-        self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
+        self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
 
         self.map_shape = self.O.shape[-2:]
         self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
@@ -1506,15 +1575,17 @@ if __name__ == '__main__':
 
     mpl_v = 'MPL-5'
 
+    plateifu = input('What galaxy? ')
+
+    if not plateifu:
+        plateifu = '8083-12704'
+
     pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=False, pkl=True, q=7)
 
-    plateifu = '8083-12704'
+    plate, ifu = plateifu.split('-')
 
     dered = MaNGA_deredshift.from_plateifu(
-        plate=8083, ifu=12704, MPL_v=mpl_v)
-    # dered = MaNGA_deredshift.from_filenames(
-    #    drp_fname='manga-8083-12704-LOGCUBE.fits.gz',
-    #    dap_fname='manga-8083-12704-MAPS-SPX-GAU-MILESHC.fits.gz')
+        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
 
     z_dist = m.get_drpall_val(
         os.path.join(
