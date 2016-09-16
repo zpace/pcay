@@ -503,7 +503,7 @@ class StellarPop_PCA(object):
         q, l = E.shape
         mapshape = a_map.shape
 
-        inds = np.ndindex(mapshape)  # iterator over physical shape of cube
+        inds = list(np.ndindex(mapshape))  # over physical shape of cube
         i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
 
         # set up iterators over the map-like dimensions of the arrays
@@ -519,13 +519,10 @@ class StellarPop_PCA(object):
         print('processes: ', MAX_PROCESSES)
 
         with mpc.Pool(processes=MAX_PROCESSES, maxtasksperchild=1) as p:
-            pool_outputs = p.starmap(cov_PC_worker, args_iter, chunksize=1)
+            pool_outputs = p.starmap(cov_PC_worker, args_iter)
 
         # now map pool outputs to corresponding elements of K_PC
-
-        print(len(pool_outputs))
         K_PC = np.array(pool_outputs)
-        print(K_PC.shape)
         K_PC = K_PC.reshape((q, q) + mapshape)
 
         return K_PC
@@ -1081,7 +1078,7 @@ class PCA_Result(object):
 
         self.resid = np.abs((self.O - self.O_recon) / self.O)
 
-        self.K_PC = pca.build_PC_cov_full_mpc(
+        self.K_PC = pca.build_PC_cov_full_iter(
             a_map=self.a_map, z_map=dered.z_map,
             obs_logl=dered.drp_logl, K_obs_=K_obs)
 
@@ -1127,7 +1124,7 @@ class PCA_Result(object):
             np.log10(np.ma.array(self.lum(band=band), mask=self.mask_map)),
             aspect='equal')
 
-        cb = plt.colorbar(im, ax=ax, pad=0.)
+        cb = plt.colorbar(im, ax=ax, pad=0.025)
         cb.set_label(r'$\log{\mathcal{L}}$ [$L_{\odot}$]', size=8)
         cb.ax.tick_params(labelsize=8)
 
@@ -1155,8 +1152,8 @@ class PCA_Result(object):
             ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
             f=f, norm=[None, None], log=True)
 
-        mstar_tot = np.ma.array(
-            self.Mstar_tot(band=band), mask=self.mask_map).sum()
+        mstar_tot = np.ma.masked_invalid(np.ma.array(
+            self.Mstar_tot(band=band), mask=self.mask_map)).sum()
 
         ax1.text(x=0.2, y=0.2,
                  s=''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
