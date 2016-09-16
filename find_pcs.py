@@ -25,6 +25,7 @@ from scipy.integrate import quad
 import ssp_lib
 import cov_obs
 import figures_tools
+import radial
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -1486,6 +1487,46 @@ class PCA_Result(object):
         plt.savefig('{0}_fulldiag_{1[0]}-{1[1]}.png'.format(
             self.objname, ix_))
 
+    def radial_gp_plot(self, qty, qty_tex, dep, f=None, ax=None):
+        '''
+        make a radial plot of a quantity + uncertainties using GP regression
+        '''
+
+        if ax is None:
+            ax = plt.gca()
+
+        pct_map = self.pca.param_pct_map(
+            qty=qty, W=self.w, P=np.array([16., 50., 84.]),
+            factor=f)
+
+        q = pct_map[1, ...]
+        q_unc = np.abs(pct_map[2, ...] - pct_map[0, ...]) / 2.
+
+        gp = radial.radial_gp(r=dep.d, q=q, q_unc=q_unc)
+
+        rlarge = dep.d > 2.5
+        r = np.ma.array(dep.d, mask=rlarge)
+
+        r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
+        q_pred, sigma = gp(r_pred, return_std=True)
+
+        ax.plot(r_pred, q_pred, c='b', label='Prediction')
+
+        ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
+                np.concatenate([(q_pred - 1.9600 * sigma),
+                                (q_pred + 1.9600 * sigma)[::-1]]),
+                alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
+
+        ax.errorbar(x=r.flatten(), y=q.flatten(), yerr=q_unc.flatten(),
+                    label='PCA Results')
+
+        ax.legend(loc='best')
+
+        ax.set_xlabel(r'R [$R_e$]')
+        ax.set_ylabel(qty_tex)
+
+        return ax
+
     @property
     def wcs_header(self):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
@@ -1635,7 +1676,7 @@ if __name__ == '__main__':
 
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
-    pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
-    pca_res.make_full_QA_fig(BP=BP)
+    # pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
+    # pca_res.make_full_QA_fig(BP=BP)
 
     pca_res.make_Mstar_fig(BP=BP, band='r')
