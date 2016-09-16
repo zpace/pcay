@@ -451,7 +451,7 @@ class StellarPop_PCA(object):
         nspec = K_th.shape[0]
         K_obs = K_obs_.cov[i0:(i0 + nspec), i0:(i0 + nspec)]
 
-        K_full = K_obs / a**2. + K_th * a**2.
+        K_full = 2. * K_obs / a**2. + K_th * a**2.
 
         return K_full
 
@@ -753,6 +753,7 @@ class StellarPop_PCA(object):
     def __str__(self):
         return 'PCA object: q = {0[0]}, nlam = {0[1]}'.format(self.PCs.shape)
 
+
 def cov_PC_worker(Kspec_th, Kspec_obs, E, a):
     '''
     worker function that is passed to a Pool
@@ -761,6 +762,7 @@ def cov_PC_worker(Kspec_th, Kspec_obs, E, a):
     Kspec_full = ((Kspec_obs / a**2.) + (Kspec_th * a**2.))
 
     return E.dot(Kspec_full).dot(E.T)
+
 
 class Bandpass(object):
 
@@ -1032,6 +1034,7 @@ class MaNGA_deredshift(object):
         dl = (lulims - lllims)[:, np.newaxis, np.newaxis]
         return np.mean(f * dl, axis=0)
 
+
 cmap = mplcm.get_cmap('cubehelix')
 cmap.set_bad('gray')
 cmap.set_under('k')
@@ -1099,8 +1102,9 @@ class PCA_Result(object):
         l_ctr = {'r': 6231. * u.AA, 'i': 7625. * u.AA, 'z': 9134. * u.AA}
 
         flux_im = (self.dered.drp_hdulist[
-            '{}IMG'.format(band)].data * 3.631e-6 * u.Jy).to('erg s-1 cm-2',
-            equivalencies=u.spectral_density(l_ctr[band]))
+            '{}IMG'.format(band)].data * 3.631e-6 * u.Jy).to(
+                'erg s-1 cm-2',
+                equivalencies=u.spectral_density(l_ctr[band]))
 
         return flux_im
 
@@ -1127,6 +1131,12 @@ class PCA_Result(object):
         cb = plt.colorbar(im, ax=ax, pad=0.025)
         cb.set_label(r'$\log{\mathcal{L}}$ [$L_{\odot}$]', size=8)
         cb.ax.tick_params(labelsize=8)
+
+        Lstar_tot = np.ma.array(self.lum(band=band), mask=self.mask_map).sum()
+
+        ax.text(x=0.2, y=0.2,
+                s=''.join((r'$\log{\frac{\mathcal{L}_{*}}{L_{\odot}}}$ = ',
+                           '{:.2f}'.format(np.log10(Lstar_tot)))))
 
         ax.set_title('{}-band luminosity'.format(band), size=8)
 
@@ -1200,10 +1210,9 @@ class PCA_Result(object):
         recon_ = ax1.plot(
             self.l, self.O_recon[:, ix[0], ix[1]], drawstyle='steps-mid',
             c='g', label='Recon.')
-        bestfit = self.pca.trn_spectra[np.argmax(self.w[:, ix[0], ix[1]]), :]
-        bestfit_ = ax1.plot(
-            self.l, 0.5 * bestfit / bestfit.mean(),
-            drawstyle='steps-mid', c='c', label='Best Model')
+        bestfit = self.pca.normed_trn[np.argmax(self.w[:, ix[0], ix[1]]), :]
+        bestfit_ = ax1.plot(self.l, bestfit,
+                            drawstyle='steps-mid', c='c', label='Best Model')
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
         ax1.set_ylim([-0.1 * self.O[:, ix[0], ix[1]].mean(),
@@ -1282,11 +1291,11 @@ class PCA_Result(object):
                 mask=self.mask_map),
             aspect='equal', norm=norm[1])
 
-        mcb = plt.colorbar(m, ax=ax1, pad=0.)
+        mcb = plt.colorbar(m, ax=ax1, pad=0.025)
         mcb.set_label('med.', size=8)
         mcb.ax.tick_params(labelsize=8)
 
-        scb = plt.colorbar(s, ax=ax2, pad=0.)
+        scb = plt.colorbar(s, ax=ax2, pad=0.025)
         scb.set_label('unc.', size=8)
         scb.ax.tick_params(labelsize=8)
 
@@ -1297,9 +1306,6 @@ class PCA_Result(object):
         add axvline and axhline at the location in the map coresponding to
             some image-frame indices ix
         '''
-
-        from astropy.wcs.utils import pixel_to_skycoord
-        from astropy.coordinates import SkyCoord
 
         pix_coord = self.wcs_header_offset.all_pix2world(
             np.atleast_2d(ix), origin=1)
@@ -1365,6 +1371,10 @@ class PCA_Result(object):
             q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
             label='prior')
         ax.set_xlabel(qty_tex)
+
+        # value of best-fit spectrum
+        ax.axvline(q[np.argmax(w)], color='g')
+
         if legend:
             ax.legend(loc='best')
         return h, hprior
@@ -1391,9 +1401,11 @@ class PCA_Result(object):
         # over ax objects
         for ax in axs:
             # over XOFFSET & YOFFSET
+            ax.set_xlabel(r'$\Delta$ RA ["]', size=10)
+            ax.set_ylabel(r'$\Delta$ Dec ["]', size=10)
             for i in range(2):
                 ax.coords[i].set_major_formatter('x')
-                ax.coords[i].set_ticks(spacing=5.*u.arcsec)
+                ax.coords[i].set_ticks(spacing=5. * u.arcsec)
                 ax.coords[i].set_format_unit(u.arcsec)
 
     def make_full_QA_fig(self, BP, ix=None):
@@ -1585,6 +1597,7 @@ def get_col_metadata(col, k, notfound=''):
         res = notfound
 
     return res
+
 
 if __name__ == '__main__':
     cosmo = WMAP9
