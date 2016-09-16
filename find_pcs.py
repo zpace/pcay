@@ -1180,7 +1180,7 @@ class PCA_Result(object):
         qty_tex = r'$M_{{*,{}}}$'.format(band)
 
         fig = plt.figure(figsize=(9, 4), dpi=300)
-        gs = gridspec.GridSpec(1, 2)
+        gs = gridspec.GridSpec(1, 2, wspace=.175, left=.1, right=.95)
         ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
         ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
@@ -1211,7 +1211,7 @@ class PCA_Result(object):
             self.l, self.O_recon[:, ix[0], ix[1]], drawstyle='steps-mid',
             c='g', label='Recon.')
         bestfit = self.pca.normed_trn[np.argmax(self.w[:, ix[0], ix[1]]), :]
-        bestfit_ = ax1.plot(self.l, bestfit,
+        bestfit_ = ax1.plot(self.l, self.a_map[ix[0], ix[1]] * bestfit,
                             drawstyle='steps-mid', c='c', label='Best Model')
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
@@ -1329,7 +1329,7 @@ class PCA_Result(object):
 
         fig = plt.figure(figsize=(9, 4), dpi=300)
 
-        gs = gridspec.GridSpec(1, 2)
+        gs = gridspec.GridSpec(1, 2, wspace=.175, left=.1, right=.95)
         ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
         ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
@@ -1362,21 +1362,30 @@ class PCA_Result(object):
         if len(q) == 0:
             return None
 
+        ax_ = ax.twinx()
+
         # marginalized posterior
         h = ax.hist(
             q, weights=w, bins=bins, normed=True, histtype='step',
             color='k', label='posterior')
         # marginalized prior
-        hprior = ax.hist(
+        hprior = ax_.hist(
             q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
             label='prior')
+
+        ax.yaxis.set_major_locator(plt.NullLocator())
+        ax_.yaxis.set_major_locator(plt.NullLocator())
+
         ax.set_xlabel(qty_tex)
 
         # value of best-fit spectrum
         ax.axvline(q[np.argmax(w)], color='g')
 
         if legend:
-            ax.legend(loc='best')
+            h1, l1 = ax.get_legend_handles_labels()
+            h2, l2 = ax_.get_legend_handles_labels()
+            ax.legend(h1 + h2, l1 + l2, loc='best')
+
         return h, hprior
 
     def orig_spax(self, ixx, ixy):
@@ -1400,9 +1409,10 @@ class PCA_Result(object):
 
         # over ax objects
         for ax in axs:
+            ax.set_xlabel(r'$\Delta$ RA ["]')
+            ax.set_ylabel(r'$\Delta$ Dec ["]')
+
             # over XOFFSET & YOFFSET
-            ax.set_xlabel(r'$\Delta$ RA ["]', size=10)
-            ax.set_ylabel(r'$\Delta$ Dec ["]', size=10)
             for i in range(2):
                 ax.coords[i].set_major_formatter('x')
                 ax.coords[i].set_ticks(spacing=5. * u.arcsec)
@@ -1429,7 +1439,7 @@ class PCA_Result(object):
         gs1 = gridspec.GridSpec(
             3, 4, bottom=(nrows - 1.) / nrows, top=0.95,
             height_ratios=[3, 1, 1], width_ratios=[2, 0.5, 2, 2],
-            hspace=0., wspace=.1, left=.05, right=.95)
+            hspace=0., wspace=.1, left=.075, right=.95)
 
         gs2 = gridspec.GridSpec(
             nrows, ncols, bottom=.05, top=(nrows - 1.) / nrows,
