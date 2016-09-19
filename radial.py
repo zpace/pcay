@@ -1,7 +1,6 @@
 import numpy as np
 
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+from sklearn.gaussian_process import GaussianProcess
 
 
 def radial_gp(r, q, q_unc):
@@ -21,17 +20,14 @@ def radial_gp(r, q, q_unc):
         uncertainty (standard error) of quantity `q`
     '''
 
-    if map(type, [r, q, q_unc]) != [np.ndarray, ] * 3:
-        raise ValueError('provide arrays')
-
     assert r.size == q.size == q_unc.size, 'provide same-sized arrays'
 
     r, q, q_unc = r.flatten(), q.flatten(), q_unc.flatten()
+    r, q, q_unc = r[~r.mask], q[~r.mask], q_unc[~r.mask]
     r = np.atleast_2d(r).T
 
-    kernel = C(1.0, (1e-2, 1e1)) * RBF(1, (1e-2, 5))
-    gp = GaussianProcessRegressor(alpha=(q_unc / q)**2., kernel=kernel,
-                                  n_restarts_optimizer=10)
+    gp = GaussianProcess(
+        regr='linear', corr='squared_exponential', nugget=(q_unc / q)**2.)
     gp.fit(r, q)
 
     return gp

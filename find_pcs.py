@@ -1502,13 +1502,14 @@ class PCA_Result(object):
         q = pct_map[1, ...]
         q_unc = np.abs(pct_map[2, ...] - pct_map[0, ...]) / 2.
 
-        gp = radial.radial_gp(r=dep.d, q=q, q_unc=q_unc)
-
         rlarge = dep.d > 2.5
         r = np.ma.array(dep.d, mask=rlarge)
 
+        gp = radial.radial_gp(r=r, q=q, q_unc=q_unc)
+
         r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
-        q_pred, sigma = gp(r_pred, return_std=True)
+        q_pred, sigma2 = gp.predict(r_pred, eval_MSE=True)
+        sigma = np.sqrt(sigma2)
 
         ax.plot(r_pred, q_pred, c='b', label='Prediction')
 
@@ -1518,14 +1519,29 @@ class PCA_Result(object):
                 alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
 
         ax.errorbar(x=r.flatten(), y=q.flatten(), yerr=q_unc.flatten(),
-                    label='PCA Results')
+                    label='PCA Results', linestyle='None', marker='x',
+                    markersize=3, c='k', alpha=0.2, capsize=3,
+                    markevery=10, errorevery=10)
 
-        ax.legend(loc='best')
+        ax.legend(loc='best', prop={'size': 6})
 
         ax.set_xlabel(r'R [$R_e$]')
         ax.set_ylabel(qty_tex)
+        ax.set_yscale('log')
+        ax.set_ylim([.01, 100.])
 
         return ax
+
+    def make_radial_gp_fig(self, qty, qty_tex, dep):
+        fig = plt.figure(figsize=(4, 4), dpi=300)
+
+        ax = fig.add_subplot(111)
+
+        self.radial_gp_plot(qty=qty, qty_tex=qty_tex, dep=dep, ax=ax)
+        ax.set_title(self.objname)
+        plt.tight_layout()
+
+        plt.savefig('{}-{}_radGP.png'.format(self.objname, qty), dpi=300)
 
     @property
     def wcs_header(self):
@@ -1663,10 +1679,16 @@ if __name__ == '__main__':
 
     pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=False, pkl=True, q=7)
 
+    drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
+                               'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
+    drpall = t.Table.read(drpall_path)
+
     plate, ifu = plateifu.split('-')
 
     dered = MaNGA_deredshift.from_plateifu(
         plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
+    obj = drpall[drpall['plateifu'] == plateifu]
+    dep = m.deproject(hdu=dered.drp_hdulist['FLUX'], drpall_row=obj)
 
     z_dist = m.get_drpall_val(
         os.path.join(
@@ -1680,3 +1702,5 @@ if __name__ == '__main__':
     # pca_res.make_full_QA_fig(BP=BP)
 
     pca_res.make_Mstar_fig(BP=BP, band='r')
+    pca_res.make_radial_gp_fig(qty='MLr', qty_tex=r'$(\frac{M}{L})^*_r$',
+                               dep=dep)
