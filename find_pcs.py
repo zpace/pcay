@@ -165,6 +165,7 @@ class StellarPop_PCA(object):
         ixs = np.arange(nspec)
         metadata.remove_rows(ixs[~goodspec])
         spec = spec[goodspec, :]
+        pca_spec = spec[:, :len(l_final)]
 
         # compute mass to light ratio
         # convert to Lnu and integrate over bandpass
@@ -201,7 +202,7 @@ class StellarPop_PCA(object):
         metadata['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
         metadata['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
 
-        return cls(l=l_final * u.Unit('AA'), trn_spectra=spec,
+        return cls(l=l_final * u.Unit('AA'), trn_spectra=pca_spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
                    K_obs=K_obs)
 

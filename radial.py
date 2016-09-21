@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.gaussian_process import GaussianProcess
 
 
-def radial_gp(r, q, q_unc):
+def radial_gp(r, q, q_unc, q_bdy=[-np.inf, np.inf]):
     '''
     compute radial gaussian process for regressing some quantity against Re
 
@@ -23,11 +23,12 @@ def radial_gp(r, q, q_unc):
     assert r.size == q.size == q_unc.size, 'provide same-sized arrays'
 
     r, q, q_unc = r.flatten(), q.flatten(), q_unc.flatten()
+    r = np.ma.masked_outside(r, *q_bdy)
     r, q, q_unc = r[~r.mask], q[~r.mask], q_unc[~r.mask]
     r = np.atleast_2d(r).T
 
     gp = GaussianProcess(
-        regr='linear', corr='squared_exponential', nugget=(q_unc / q)**2.)
+        regr='constant', corr='squared_exponential', nugget=(q_unc / q)**2.)
     gp.fit(r, q)
 
     return gp

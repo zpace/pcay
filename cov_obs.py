@@ -373,6 +373,7 @@ class Cov_Obs(object):
 
         return np.concatenate([normed, ivar], axis=0)
 
+
 if __name__ == '__main__':
     spAll_loc = os.path.join(mangarc.zpace_sdss_data_loc,
                              'boss', 'spAll-v5_9_0.fits')
