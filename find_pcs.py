@@ -26,7 +26,7 @@ import ssp_lib
 import cov_obs
 import figures_tools
 import radial
-from spectrophot import spec2phot_source
+from spectrophot import lumdens2bbdlum
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -117,14 +117,7 @@ class StellarPop_PCA(object):
 
         l_full = 10.**np.arange(np.log10(3700.), np.log10(10500.),
                                 dlogl_final)
-        cc = 2.9979e18   # AA/sec
-        nu_full = cc / l_full
 
-        dl_full = (10.**(np.log10(l_full) + dlogl_final / 2.) -
-                   10.**(np.log10(l_full) - dlogl_final / 2.))
-        dnu_full = nu_full * (dl_full / l_full)
-        print(dnu_full)
-        nl_final = len(l_final)
         nl_full = len(l_full)
 
         # load metadata tables
@@ -174,20 +167,14 @@ class StellarPop_PCA(object):
         spec = spec[goodspec, :]
 
         # compute mass to light ratio
-        # transmission fractions
+        # convert to Lnu and integrate over bandpass
 
-        L_r = np.array([spec2phot_source(lam=l_full * u.AA,
-                                         Llam=s * u.Unit('Lsun/AA'),
-                                         band='r')
-                        for s in spec])
-        L_i = np.array([spec2phot_source(lam=l_full * u.AA,
-                                         Llam=s * u.Unit('Lsun/AA'),
-                                         band='i')
-                        for s in spec])
-        L_z = np.array([spec2phot_source(lam=l_full * u.AA,
-                                         Llam=s * u.Unit('Lsun/AA'),
-                                         band='z')
-                        for s in spec])
+        L_r = lumdens2bbdlum(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
+                             band='r').value
+        L_i = lumdens2bbdlum(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
+                             band='i').value
+        L_z = lumdens2bbdlum(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
+                             band='z').value
 
         MLr = metadata['cspm_star'] / L_r
         MLi = metadata['cspm_star'] / L_i
@@ -1653,7 +1640,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=False, pkl=True, q=7)
+    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=True, pkl=True, q=7)
     print(pca.metadata['MLr', 'MLi', 'MLz'])
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
