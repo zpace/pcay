@@ -26,7 +26,7 @@ import ssp_lib
 import cov_obs
 import figures_tools
 import radial
-from spectrophot import lumdens2bbdlum
+from spectrophot import lumdens2bbdlum, color
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -460,7 +460,7 @@ class StellarPop_PCA(object):
         nspec = K_th.shape[0]
         K_obs = K_obs_.cov[i0:(i0 + nspec), i0:(i0 + nspec)]
 
-        K_full = K_obs / a**2. + K_th  # * a**2. + np.diag(var / a**2.)
+        K_full = K_obs / a**2. + K_th  # + np.diag(var)
 
         return K_full
 
@@ -856,9 +856,10 @@ class MaNGA_deredshift(object):
 
     def regrid_to_rest(self, template_logl, template_dlogl=None):
         '''
-        regrid flux density measurements from MaNGA DRP logcube results
-            to a specified logl grid, essentially picking the pixels that
-            fall in the logl grid's range, after being de-redshifted
+        regrid flux density measurements from MaNGA DRP logcube a logl grid,
+
+        essentially picking the pixels that fall in the logl grid's range,
+        after being de-redshifted
 
         also normalizes all spectra to have flux density of mean 1
 
@@ -1469,7 +1470,7 @@ class PCA_Result(object):
         rlarge = dep.d > 2.5
         r = np.ma.array(dep.d, mask=(rlarge | self.mask_map))
 
-        '''gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
+        gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
 
         r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
         q_pred, sigma2 = gp.predict(r_pred, eval_MSE=True)
@@ -1480,7 +1481,7 @@ class PCA_Result(object):
         ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
                 np.concatenate([(q_pred - 1.9600 * sigma),
                                 (q_pred + 1.9600 * sigma)[::-1]]),
-                alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')'''
+                alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
 
         ax.errorbar(x=r.flatten(), y=q.flatten(), yerr=q_unc.flatten(),
                     label='PCA Results', linestyle='None', marker='x',
@@ -1506,6 +1507,36 @@ class PCA_Result(object):
         plt.tight_layout()
 
         plt.savefig('{}-{}_radGP.png'.format(self.objname, qty), dpi=300)
+
+    def color_ML_plot(self, dep, mlb='i', b1='g', b2='r', ax=None):
+        '''
+        plot color vs mass-to-light ratio, colored by radius/Re
+        '''
+
+        if ax is None:
+            ax = plt.gca()
+
+        col = color(self.dered.drp_hdulist, b1, b2)
+        ml = self.pca.param_pct_map('ML{}'.format(mlb), self.w, [50])[0]
+        sc = ax.scatter(col.flatten(), ml.flatten(), c=dep.d)
+        plt.colorbar(sc, ax=ax, pad=.025)
+        ax.set_xlabel(r'${{}} - {{}}$'.format(b1, b2))
+        ax.set_yalbel(self.pca.metadata['ML{}'.format(mlb)].meta['TeX'])
+
+        return sc
+
+    def make_color_ML_fig(self, dep, mlb='i', b1='g', b2='r'):
+
+        fig = plt.figure((5, 5), dpi=300)
+
+        ax = fig.add_subplot(111)
+        ax.set_title(self.objname)
+
+        self.make_color_ML_fig(dep, mlb, b1, b2)
+
+        plt.tight_layout()
+
+        plt.savefig('{}_colorML.png'.format(self.objname), dpi=300)
 
     @property
     def wcs_header(self):
@@ -1641,8 +1672,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=True, pkl=True, q=7)
-    print(pca.metadata['MLr', 'MLi', 'MLz'])
+    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=False, pkl=True, q=7)
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
@@ -1681,3 +1711,5 @@ if __name__ == '__main__':
                                dep=dep, q_bdy=[1.0e-2, 1.0e2])
     pca_res.make_radial_gp_fig(qty='MLz', qty_tex=r'$(\frac{M}{L})^*_z$',
                                dep=dep, q_bdy=[1.0e-2, 1.0e2])
+
+    pca_res.make_color_ML_fig(dep)
