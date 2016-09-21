@@ -27,8 +27,13 @@ def radial_gp(r, q, q_unc, q_bdy=[-np.inf, np.inf]):
     r, q, q_unc = r[~r.mask], q[~r.mask], q_unc[~r.mask]
     r = np.atleast_2d(r).T
 
+    nugget = (q_unc / q)**2.
+    # this is badn and I should feel bad
+    nugget = np.maximum(nugget, 0.1 * np.ones_like(nugget))
+
     gp = GaussianProcess(
-        regr='constant', corr='squared_exponential', nugget=(q_unc / q)**2.)
+        regr='constant', corr='squared_exponential', nugget=nugget,
+        theta0=.5, thetaL=.05, thetaU=1.)
     gp.fit(r, q)
 
     return gp
