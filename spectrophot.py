@@ -51,3 +51,16 @@ def lumdens2bbdlum(lam, Llam, band):
     L = trapz(x=nu.value[::-1], y=f * Lnu.value, axis=-1) * u.Lsun
 
     return L
+
+def color(hdulist, band1='g', band2='r'):
+    '''
+    Calculate the color of a MaNGA galaxy, based on two bandpasses
+
+    By convention, C_br = b - r
+    '''
+    img1 = hdulist['{}IMG'.format(band1)].data
+    img2 = hdulist['{}IMG'.format(band2)].data
+
+    color = -2.5 * np.log10(img1 / img2)
+
+    return color
