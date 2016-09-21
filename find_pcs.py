@@ -26,6 +26,7 @@ import ssp_lib
 import cov_obs
 import figures_tools
 import radial
+from spectrophot import spec2phot_source
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -107,18 +108,22 @@ class StellarPop_PCA(object):
         l_raw = hdulist[2].data
         hdulist.close()
 
-        l_raw_good = (3700. <= l_raw) * (l_raw <= 8700.)
+        l_raw_good = (3700. <= l_raw) * (l_raw <= 11000.)
         l_raw = l_raw[l_raw_good]
         dlogl_final = 1.0e-4
 
         l_final = 10.**np.arange(
             np.log10(3700.), np.log10(5500.), dlogl_final)
 
-        l_full = 10.**np.arange(np.log10(3700.), np.log10(8700.),
+        l_full = 10.**np.arange(np.log10(3700.), np.log10(10500.),
                                 dlogl_final)
+        cc = 2.9979e18   # AA/sec
+        nu_full = cc / l_full
 
         dl_full = (10.**(np.log10(l_full) + dlogl_final / 2.) -
                    10.**(np.log10(l_full) - dlogl_final / 2.))
+        dnu_full = nu_full * (dl_full / l_full)
+        print(dnu_full)
         nl_final = len(l_final)
         nl_full = len(l_full)
 
@@ -169,13 +174,24 @@ class StellarPop_PCA(object):
         spec = spec[goodspec, :]
 
         # compute mass to light ratio
-        f_r = BP.interps['r'](l_full)
+        # transmission fractions
 
-        L_r = (f_r * spec * dl_full).sum(axis=1)
-        # reduce wavelength range
-        spec = spec[:, :nl_final]
+        L_r = np.array([spec2phot_source(lam=l_full * u.AA,
+                                         Llam=s * u.Unit('Lsun/AA'),
+                                         band='r')
+                        for s in spec])
+        L_i = np.array([spec2phot_source(lam=l_full * u.AA,
+                                         Llam=s * u.Unit('Lsun/AA'),
+                                         band='i')
+                        for s in spec])
+        L_z = np.array([spec2phot_source(lam=l_full * u.AA,
+                                         Llam=s * u.Unit('Lsun/AA'),
+                                         band='z')
+                        for s in spec])
 
         MLr = metadata['cspm_star'] / L_r
+        MLi = metadata['cspm_star'] / L_i
+        MLz = metadata['cspm_star'] / L_z
 
         metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9'].astype(
             float)) / metadata['mf_all']
@@ -183,6 +199,8 @@ class StellarPop_PCA(object):
         metadata = metadata['MWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
         metadata.add_column(t.Column(data=MLr, name='MLr'))
+        metadata.add_column(t.Column(data=MLi, name='MLi'))
+        metadata.add_column(t.Column(data=MLz, name='MLz'))
 
         # set metadata to enable plotting later
         metadata['MWA'].meta['TeX'] = r'MWA'
@@ -193,6 +211,8 @@ class StellarPop_PCA(object):
         metadata['Tau_v'].meta['TeX'] = r'$\tau_V$'
         metadata['mu'].meta['TeX'] = r'$\mu$'
         metadata['MLr'].meta['TeX'] = r'$(M/L)^*_r$'
+        metadata['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
+        metadata['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
 
         return cls(l=l_final * u.Unit('AA'), trn_spectra=spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
@@ -438,7 +458,7 @@ class StellarPop_PCA(object):
 
         return E.dot(K_spec).dot(E.T)
 
-    def _compute_spec_cov_spax(self, K_obs_, i0, a):
+    def _compute_spec_cov_spax(self, K_obs_, var, i0, a):
         '''
         compute the spectral covariance matrix for one spaxel
 
@@ -452,11 +472,11 @@ class StellarPop_PCA(object):
         nspec = K_th.shape[0]
         K_obs = K_obs_.cov[i0:(i0 + nspec), i0:(i0 + nspec)]
 
-        K_full = 2. * K_obs / a**2. + K_th * a**2.
+        K_full = K_obs / a**2. + K_th  # * a**2. + np.diag(var / a**2.)
 
         return K_full
 
-    def build_PC_cov_full_iter(self, a_map, z_map, obs_logl, K_obs_):
+    def build_PC_cov_full_iter(self, a_map, z_map, obs_logl, K_obs_, ivar):
         '''
         for each spaxel, build a PC covariance matrix, and return in array
             of shape (q, q, n, n)
@@ -486,45 +506,10 @@ class StellarPop_PCA(object):
 
         for ind in inds:
             K_spec = self._compute_spec_cov_spax(
-                K_obs_=K_obs_, i0=i0_map[ind[0], ind[1]],
+                K_obs_=K_obs_, var=1. / ivar[:, ind[0], ind[1]],
+                i0=i0_map[ind[0], ind[1]],
                 a=a_map[ind[0], ind[1]])
             K_PC[..., ind[0], ind[1]] = E.dot(K_spec).dot(E.T)
-
-        return K_PC
-
-    def build_PC_cov_full_mpc(self, a_map, z_map, obs_logl, K_obs_):
-        '''
-        same as `build_PC_cov_full_iter`, except uses multiprocessing module
-        '''
-
-        import multiprocessing as mpc
-
-        # same prep as above
-        E = self.PCs
-        q, l = E.shape
-        mapshape = a_map.shape
-
-        inds = list(np.ndindex(mapshape))  # over physical shape of cube
-        i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
-
-        # set up iterators over the map-like dimensions of the arrays
-        i0_map_iter = (i0_map[ind[0], ind[1]] for ind in inds)
-        a_map_iter = (a_map[ind[0], ind[1]] for ind in inds)
-
-        args_iter = ((self.cov_th,
-                      K_obs.cov[i0:(i0 + l), i0:(i0 + l)], E, a)
-                     for a, i0 in zip(a_map_iter, i0_map_iter))
-
-        # now set up pool and dummy function
-        MAX_PROCESSES = (mpc.cpu_count() - 1) or (1)
-        print('processes: ', MAX_PROCESSES)
-
-        with mpc.Pool(processes=MAX_PROCESSES, maxtasksperchild=1) as p:
-            pool_outputs = p.starmap(cov_PC_worker, args_iter)
-
-        # now map pool outputs to corresponding elements of K_PC
-        K_PC = np.array(pool_outputs)
-        K_PC = K_PC.reshape((q, q) + mapshape)
 
         return K_PC
 
@@ -549,7 +534,7 @@ class StellarPop_PCA(object):
         chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
         w = np.exp(-chi2 / 2.)
 
-        return w  # /w.max(axis=0)
+        return w / w.max(axis=0)
 
     def param_pct_map(self, qty, W, P, factor=None):
         '''
@@ -755,16 +740,6 @@ class StellarPop_PCA(object):
         return 'PCA object: q = {0[0]}, nlam = {0[1]}'.format(self.PCs.shape)
 
 
-def cov_PC_worker(Kspec_th, Kspec_obs, E, a):
-    '''
-    worker function that is passed to a Pool
-    '''
-
-    Kspec_full = ((Kspec_obs / a**2.) + (Kspec_th * a**2.))
-
-    return E.dot(Kspec_full).dot(E.T)
-
-
 class Bandpass(object):
 
     '''
@@ -775,33 +750,33 @@ class Bandpass(object):
         self.bands = []
         self.interps = {}
 
-    def add_bandpass(self, name, l, ff):
+    def add_bandpass(self, name, lam, ff):
         self.bands.append(name)
         self.interps[name] = interp1d(
-            x=l, y=ff, kind='linear', bounds_error=False, fill_value=0.)
+            x=lam, y=ff, kind='linear', bounds_error=False, fill_value=0.)
 
     def add_bandpass_from_ascii(self, fname, band_name):
-        table = t.Table.read(fname, format='ascii', names=['l', 'ff'])
-        l = np.array(table['l'])
+        table = t.Table.read(fname, format='ascii', names=['lam', 'ff'])
+        lam = np.array(table['lam'])
         ff = np.array(table['ff'])
-        self.add_bandpass(name=band_name, l=l, ff=ff)
+        self.add_bandpass(name=band_name, lam=lam, ff=ff)
 
-    def __call__(self, flam, l, units=None):
+    def __call__(self, flam, lam, units=None):
         if not units:
             units = {}
             units['flam'] = u.Unit('Lsun AA-1')
-            units['l'] = u.AA
-            units['dl'] = units['l']
+            units['lam'] = u.AA
+            units['dl'] = units['lam']
 
-        lgood = (l >= 2000.) * (l <= 15000.)
-        l, flam = l[lgood], flam[lgood]
+        lgood = (lam >= 2000.) * (lam <= 15000.)
+        lam, flam = lam[lgood], flam[lgood]
 
         flam_interp = interp1d(
-            x=l, y=flam, kind='linear', bounds_error=False, fill_value=0.)
+            x=lam, y=flam, kind='linear', bounds_error=False, fill_value=0.)
         return {n: quad(
             lambda l: interp(l) * flam_interp(l),
-            a=l.min(), b=l.max(), epsrel=1.0e-5,
-            limit=len(l))[0] * (units['flam'] * units['l']).to('Lsun')
+            a=lam.min(), b=lam.max(), epsrel=1.0e-5,
+            limit=len(lam))[0] * (units['flam'] * units['lam']).to('Lsun')
             for n, interp in self.interps.iteritems()}
 
 
@@ -1084,7 +1059,7 @@ class PCA_Result(object):
 
         self.K_PC = pca.build_PC_cov_full_iter(
             a_map=self.a_map, z_map=dered.z_map,
-            obs_logl=dered.drp_logl, K_obs_=K_obs)
+            obs_logl=dered.drp_logl, K_obs_=K_obs, ivar=self.ivar.data)
 
         self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
 
@@ -1145,7 +1120,7 @@ class PCA_Result(object):
 
         return im, cb
 
-    def Mstar_map(self, ax1, ax2, BP, band='i'):
+    def Mstar_map(self, ax1, ax2, band='i'):
         '''
         make two-axes stellar-mass map
 
@@ -1153,7 +1128,6 @@ class PCA_Result(object):
 
         params:
          - ax1, ax2: axes for median and stdev, passed along
-         - BP: bandpass object
          - band: what bandpass to use
         '''
 
@@ -1172,7 +1146,7 @@ class PCA_Result(object):
 
         return m, s, mcb, scb
 
-    def make_Mstar_fig(self, BP, band='i'):
+    def make_Mstar_fig(self, band='i'):
         '''
         make stellar-mass figure
         '''
@@ -1186,7 +1160,7 @@ class PCA_Result(object):
         ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
         self.Mstar_map(
-            ax1=ax1, ax2=ax2, BP=BP, band=band)
+            ax1=ax1, ax2=ax2, band=band)
         fig.suptitle(self.objname + ': ' + qty_tex)
 
         self.__fix_im_axs__([ax1, ax2])
@@ -1304,7 +1278,7 @@ class PCA_Result(object):
 
     def map_add_loc(self, ax, ix, **kwargs):
         '''
-        add axvline and axhline at the location in the map coresponding to
+        add axvline and axhline at the location in the map corresponding to
             some image-frame indices ix
         '''
 
@@ -1314,7 +1288,8 @@ class PCA_Result(object):
         ax.axhline(pix_coord[1], **kwargs)
         ax.axvline(pix_coord[0], **kwargs)
 
-    def make_qty_fig(self, qty_str, qty_tex, qty_fname=None, f=None):
+    def make_qty_fig(self, qty_str, qty_tex, qty_fname=None, f=None,
+                     log=False):
         '''
         make a with a map of the quantity of interest
 
@@ -1335,7 +1310,7 @@ class PCA_Result(object):
         ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
         m, s, mcb, scb = self.qty_map(
-            qty_str=qty_str, ax1=ax1, ax2=ax2, f=f)
+            qty_str=qty_str, ax1=ax1, ax2=ax2, f=f, log=log)
 
         fig.suptitle('{}: {}'.format(self.objname, qty_tex))
 
@@ -1487,7 +1462,8 @@ class PCA_Result(object):
         plt.savefig('{0}_fulldiag_{1[0]}-{1[1]}.png'.format(
             self.objname, ix_))
 
-    def radial_gp_plot(self, qty, qty_tex, dep, f=None, ax=None):
+    def radial_gp_plot(self, qty, qty_tex, dep, f=None, ax=None,
+                       q_bdy=[-np.inf, np.inf]):
         '''
         make a radial plot of a quantity + uncertainties using GP regression
         '''
@@ -1503,9 +1479,9 @@ class PCA_Result(object):
         q_unc = np.abs(pct_map[2, ...] - pct_map[0, ...]) / 2.
 
         rlarge = dep.d > 2.5
-        r = np.ma.array(dep.d, mask=rlarge)
+        r = np.ma.array(dep.d, mask=(rlarge | self.mask_map))
 
-        gp = radial.radial_gp(r=r, q=q, q_unc=q_unc)
+        '''gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
 
         r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
         q_pred, sigma2 = gp.predict(r_pred, eval_MSE=True)
@@ -1516,7 +1492,7 @@ class PCA_Result(object):
         ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
                 np.concatenate([(q_pred - 1.9600 * sigma),
                                 (q_pred + 1.9600 * sigma)[::-1]]),
-                alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
+                alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')'''
 
         ax.errorbar(x=r.flatten(), y=q.flatten(), yerr=q_unc.flatten(),
                     label='PCA Results', linestyle='None', marker='x',
@@ -1532,7 +1508,7 @@ class PCA_Result(object):
 
         return ax
 
-    def make_radial_gp_fig(self, qty, qty_tex, dep):
+    def make_radial_gp_fig(self, qty, qty_tex, dep, q_bdy=[-np.inf, np.inf]):
         fig = plt.figure(figsize=(4, 4), dpi=300)
 
         ax = fig.add_subplot(111)
@@ -1678,6 +1654,7 @@ if __name__ == '__main__':
         plateifu = '8083-12704'
 
     pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=False, pkl=True, q=7)
+    print(pca.metadata['MLr', 'MLi', 'MLz'])
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
@@ -1698,9 +1675,21 @@ if __name__ == '__main__':
 
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
-    # pca_res.make_qty_fig(qty_str='MWA', qty_tex=r'$MWA$')
-    # pca_res.make_full_QA_fig(BP=BP)
 
-    pca_res.make_Mstar_fig(BP=BP, band='r')
+    pca_res.make_Mstar_fig(band='r')
+    pca_res.make_Mstar_fig(band='i')
+    pca_res.make_Mstar_fig(band='z')
+
+    pca_res.make_qty_fig(qty_str='MLr', qty_tex=r'$\log(\frac{M}{L})^*_r$',
+                         log=True)
+    pca_res.make_qty_fig(qty_str='MLi', qty_tex=r'$\log(\frac{M}{L})^*_i$',
+                         log=True)
+    pca_res.make_qty_fig(qty_str='MLz', qty_tex=r'$\log(\frac{M}{L})^*_z$',
+                         log=True)
+
     pca_res.make_radial_gp_fig(qty='MLr', qty_tex=r'$(\frac{M}{L})^*_r$',
-                               dep=dep)
+                               dep=dep, q_bdy=[1.0e-2, 1.0e2])
+    pca_res.make_radial_gp_fig(qty='MLi', qty_tex=r'$(\frac{M}{L})^*_i$',
+                               dep=dep, q_bdy=[1.0e-2, 1.0e2])
+    pca_res.make_radial_gp_fig(qty='MLz', qty_tex=r'$(\frac{M}{L})^*_z$',
+                               dep=dep, q_bdy=[1.0e-2, 1.0e2])
