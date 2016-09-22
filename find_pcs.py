@@ -1141,7 +1141,7 @@ class PCA_Result(object):
         '''
 
         qty_str = 'Mstar_{}'.format(band)
-        qty_tex = r'$M_{{*,{}}}$'.format(band)
+        qty_tex = r'$\log M_{{*,{}}}$'.format(band)
 
         fig = plt.figure(figsize=(9, 4), dpi=300)
         gs = gridspec.GridSpec(1, 2, wspace=.175, left=.1, right=.95)
@@ -1383,7 +1383,7 @@ class PCA_Result(object):
                 ax.coords[i].set_ticks(spacing=5. * u.arcsec)
                 ax.coords[i].set_format_unit(u.arcsec)
 
-    def make_full_QA_fig(self, BP, ix=None):
+    def make_full_QA_fig(self, ix=None):
         '''
         use matplotlib to make a full map of the IFU grasp, including
             diagnostic spectral fits, and histograms of possible
@@ -1517,22 +1517,27 @@ class PCA_Result(object):
             ax = plt.gca()
 
         col = color(self.dered.drp_hdulist, b1, b2)
-        ml = self.pca.param_pct_map('ML{}'.format(mlb), self.w, [50])[0]
-        sc = ax.scatter(col.flatten(), ml.flatten(), c=dep.d)
-        plt.colorbar(sc, ax=ax, pad=.025)
-        ax.set_xlabel(r'${{}} - {{}}$'.format(b1, b2))
-        ax.set_yalbel(self.pca.metadata['ML{}'.format(mlb)].meta['TeX'])
+        ml = self.pca.param_pct_map('ML{}'.format(mlb), self.w, [50])[0, ...]
+        b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
+        alpha = 15.*np.arctan(0.33 * b2_img / np.median(b2_img))
+        sc = ax.scatter(col.flatten(), np.log10(ml.flatten()),
+                        facecolor=dep.d, edgecolor='None', s=alpha.flatten())
+        cb = plt.colorbar(sc, ax=ax, pad=.025)
+        cb.set_label(r'R [$R_e$]')
+        ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
+        ax.set_ylabel(''.join((r'$\log$',
+                               self.pca.metadata['ML{}'.format(mlb)].meta['TeX'])))
 
         return sc
 
     def make_color_ML_fig(self, dep, mlb='i', b1='g', b2='r'):
 
-        fig = plt.figure((5, 5), dpi=300)
+        fig = plt.figure(figsize=(5, 5), dpi=300)
 
         ax = fig.add_subplot(111)
         ax.set_title(self.objname)
 
-        self.make_color_ML_fig(dep, mlb, b1, b2)
+        self.color_ML_plot(dep, mlb, b1, b2)
 
         plt.tight_layout()
 
@@ -1694,6 +1699,8 @@ if __name__ == '__main__':
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
 
+    pca_res.make_full_QA_fig()
+
     pca_res.make_Mstar_fig(band='r')
     pca_res.make_Mstar_fig(band='i')
     pca_res.make_Mstar_fig(band='z')
@@ -1713,3 +1720,4 @@ if __name__ == '__main__':
                                dep=dep, q_bdy=[1.0e-2, 1.0e2])
 
     pca_res.make_color_ML_fig(dep)
+    pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')

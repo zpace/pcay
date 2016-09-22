@@ -14,7 +14,7 @@ def lumdens2bbdlum(lam, Llam, band):
     '''
     Convert a spectral luminosity density to a broadband luminosity
 
-    Convolve source spectrum/a with a filter; specific routine derived '
+    Convolve source spectrum/a with a filter; specific routine derived
         from MaNGA's ml_mangatosdssimage.pro routine from DRP
 
     Parameters
@@ -49,8 +49,12 @@ def lumdens2bbdlum(lam, Llam, band):
     Lnu = (Llam * lam**2. / c.c).to('Lsun Hz-1')
 
     L = trapz(x=nu.value[::-1], y=f * Lnu.value, axis=-1) * u.Lsun
+    Lnu_avg = L / (trapz(x=nu.value[::-1], y=f) * u.Hz)
 
-    return L
+    l_eff = l_eff_d[band]
+    L = Lnu_avg * l_eff.to('Hz', equivalencies=u.spectral())
+
+    return L.to('Lsun')
 
 def color(hdulist, band1='g', band2='r'):
     '''
