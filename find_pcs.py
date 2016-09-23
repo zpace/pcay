@@ -21,12 +21,16 @@ from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from scipy.integrate import quad
 
+# sklearn
+from sklearn.neighbors import KernelDensity
+from sklearn.grid_search import GridSearchCV
+
 # local
 import ssp_lib
 import cov_obs
 import figures_tools
 import radial
-from spectrophot import lumdens2bbdlum, color
+from spectrophot import lumdens2bbdlum, color, C_ML_conv_t as CML
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -1211,7 +1215,7 @@ class PCA_Result(object):
         ax = fig.add_subplot(gs[0])
         ax_res = fig.add_subplot(gs[1])
 
-        _, _, _, _, _, ix = self.comp_plot(ax1=ax, ax2=ax_res, ix=ix)
+        _, _, _, _, _, _, ix = self.comp_plot(ax1=ax, ax2=ax_res, ix=ix)
 
         fig.suptitle('{0}: ({1[0]}, {1[1]})'.format(self.objname, ix))
 
@@ -1434,7 +1438,7 @@ class PCA_Result(object):
         for i, (gs_, q, tex) in enum_:
             ax = fig.add_subplot(gs_)
             if 'ML' in q:
-                bins = np.logspace(-1, 6, 50)
+                bins = np.logspace(-2.5, 2, 50)
                 ax.set_xscale('log')
             else:
                 bins = 50
@@ -1470,22 +1474,25 @@ class PCA_Result(object):
         rlarge = dep.d > 2.5
         r = np.ma.array(dep.d, mask=(rlarge | self.mask_map))
 
-        gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
+        try:
+            gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
+        except:
+            pass
+        else:
+            r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
+            q_pred, sigma2 = gp.predict(r_pred, eval_MSE=True)
+            sigma = np.sqrt(sigma2)
 
-        r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
-        q_pred, sigma2 = gp.predict(r_pred, eval_MSE=True)
-        sigma = np.sqrt(sigma2)
+            ax.plot(r_pred, q_pred, c='b', label='Prediction')
 
-        ax.plot(r_pred, q_pred, c='b', label='Prediction')
-
-        ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
-                np.concatenate([(q_pred - 1.9600 * sigma),
-                                (q_pred + 1.9600 * sigma)[::-1]]),
-                alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
+            ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
+                    np.concatenate([(q_pred - 1.9600 * sigma),
+                                    (q_pred + 1.9600 * sigma)[::-1]]),
+                    alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
 
         ax.errorbar(x=r.flatten(), y=q.flatten(), yerr=q_unc.flatten(),
-                    label='PCA Results', linestyle='None', marker='x',
-                    markersize=3, c='k', alpha=0.2, capsize=3,
+                    label='PCA Results', linestyle='None', marker='o',
+                    markersize=2, c='k', alpha=0.2, capsize=1.5,
                     markevery=10, errorevery=10)
 
         ax.legend(loc='best', prop={'size': 6})
@@ -1519,11 +1526,42 @@ class PCA_Result(object):
         col = color(self.dered.drp_hdulist, b1, b2)
         ml = self.pca.param_pct_map('ML{}'.format(mlb), self.w, [50])[0, ...]
         b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
-        alpha = 15.*np.arctan(0.33 * b2_img / np.median(b2_img))
+        s = 10.*np.arctan(0.1 * b2_img / np.median(b2_img))
         sc = ax.scatter(col.flatten(), np.log10(ml.flatten()),
-                        facecolor=dep.d, edgecolor='None', s=alpha.flatten())
+                        facecolor=dep.d, edgecolor='None', s=s.flatten(),
+                        label=self.objname)
         cb = plt.colorbar(sc, ax=ax, pad=.025)
         cb.set_label(r'R [$R_e$]')
+
+        # Bell et al galaxy colors to M/L
+        # log (M/L) = a_lam + b_lam * C
+        CML_row = CML.loc['{}{}'.format(b1, b2)]
+        a_lam = CML_row['a_{}'.format(mlb)]
+        b_lam = CML_row['b_{}'.format(mlb)]
+
+        def bell_ML(col):
+            return a_lam + (b_lam * col)
+
+        # plot the predicted Bell et all MLs
+        col_grid = np.linspace(-0.25, 2.25, 100)
+        ML_pred = bell_ML(col_grid)
+        ax.plot(col_grid, ML_pred, c='magenta', linestyle='--', label='Bell et al. (2003)')
+        ax.legend(loc='best', prop={'size': 6})
+
+        # make contour overlay
+        ML_grid = np.linspace(*ax.get_ylim(), 100)
+        grid_search_ = GridSearchCV(KernelDensity(),
+                                    param_grid={'bandwidth': np.logspace(-2, 0, 20)})
+        data = np.column_stack([col.flatten(), ml.flatten()])
+        grid_search_.fit(data[~((~np.isfinite(data)).sum(axis=-1)), :])
+
+        XX, YY = np.meshgrid(col_grid, ML_grid)
+        XY = np.column_stack([XX.flatten(), YY.flatten()])
+        Z = np.exp(grid_search_.score_samples(XY)).reshape(XX.shape)
+        ax.contour(XX, YY, Z, origin='lower', N=5, colors='r', linewidth=1)
+
+        ax.set_xlim([-0.25, 2.25])
+        ax.set_ylim([-2., 1.5])
         ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
         ax.set_ylabel(''.join((r'$\log$',
                                self.pca.metadata['ML{}'.format(mlb)].meta['TeX'])))
@@ -1700,6 +1738,7 @@ if __name__ == '__main__':
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
 
     pca_res.make_full_QA_fig()
+    pca_res.make_comp_fig()
 
     pca_res.make_Mstar_fig(band='r')
     pca_res.make_Mstar_fig(band='i')
