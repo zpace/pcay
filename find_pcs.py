@@ -1526,7 +1526,7 @@ class PCA_Result(object):
         col = color(self.dered.drp_hdulist, b1, b2)
         ml = self.pca.param_pct_map('ML{}'.format(mlb), self.w, [50])[0, ...]
         b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
-        s = 10.*np.arctan(0.1 * b2_img / np.median(b2_img))
+        s = 10.*np.arctan(0.05 * b2_img / np.median(b2_img))
         sc = ax.scatter(col.flatten(), np.log10(ml.flatten()),
                         facecolor=dep.d, edgecolor='None', s=s.flatten(),
                         label=self.objname)
@@ -1542,26 +1542,26 @@ class PCA_Result(object):
         def bell_ML(col):
             return a_lam + (b_lam * col)
 
+        def midpoints(a):
+            return 0.5*(a[1:] + a[:-1])
+
+        ax.set_xlim([-0.25, 2.25])
+        ax.set_ylim([-2., 1.5])
+
         # plot the predicted Bell et all MLs
-        col_grid = np.linspace(-0.25, 2.25, 100)
+        col_grid = np.linspace(*ax.get_xlim(), 90)
+        ML_grid = np.linspace(*ax.get_ylim(), 100)
+
         ML_pred = bell_ML(col_grid)
         ax.plot(col_grid, ML_pred, c='magenta', linestyle='--', label='Bell et al. (2003)')
         ax.legend(loc='best', prop={'size': 6})
 
         # make contour overlay
-        ML_grid = np.linspace(*ax.get_ylim(), 100)
-        grid_search_ = GridSearchCV(KernelDensity(),
-                                    param_grid={'bandwidth': np.logspace(-2, 0, 20)})
-        data = np.column_stack([col.flatten(), ml.flatten()])
-        grid_search_.fit(data[~((~np.isfinite(data)).sum(axis=-1)), :])
+        Z, *_ = np.histogram2d(
+            x=col.flatten(), y=np.log10(ml.flatten()), bins=[col_grid, ML_grid])
+        XX, YY = np.meshgrid(midpoints(col_grid), midpoints(ML_grid))
+        ax.contour(XX, YY, Z.T, origin='lower', N=2, colors='r', linewidth=.5)
 
-        XX, YY = np.meshgrid(col_grid, ML_grid)
-        XY = np.column_stack([XX.flatten(), YY.flatten()])
-        Z = np.exp(grid_search_.score_samples(XY)).reshape(XX.shape)
-        ax.contour(XX, YY, Z, origin='lower', N=5, colors='r', linewidth=1)
-
-        ax.set_xlim([-0.25, 2.25])
-        ax.set_ylim([-2., 1.5])
         ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
         ax.set_ylabel(''.join((r'$\log$',
                                self.pca.metadata['ML{}'.format(mlb)].meta['TeX'])))
