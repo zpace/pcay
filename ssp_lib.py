@@ -242,7 +242,9 @@ class FSPS_SFHBuilder(object):
     def ts(self):
         burst_ends = self.FSPS_args['time_burst'] + self.FSPS_args['dt_burst']
         discont = np.append(self.FSPS_args['time_burst'], burst_ends)
-        ts = np.linspace(0., self.time0, 100)
+        # ages starting at 1Myr, and going to start of SF
+        ages = 10.**np.logspace(-3., np.log10(self.time0), 100)
+        ts = self.time0 - ages
         ts = np.append(ts, discont)
         ts.sort()
         return ts
@@ -369,15 +371,21 @@ class FSPS_SFHBuilder(object):
 
     @staticmethod
     def time_burst_gen(time_form, dt, nburst):
-        return np.random.uniform(time_form, time_form + dt, nburst)
+        t_ = np.random.uniform(time_form, time_form + dt, nburst)
+        npad = 5 - len(t_)
+        return np.pad(t_, npad, mode='constant', constant_values=0)
 
     @staticmethod
     def dt_burst_gen(nburst):
-        return np.random.uniform(.01, .1, nburst)
+        dt_ = np.random.uniform(.01, .1, nburst)
+        npad = 5 - len(dt_)
+        return np.pad(dt_, npad, mode='constant', constant_values=0)
 
     @staticmethod
     def A_burst_gen(nburst):
-        return 10.**np.random.uniform(np.log10(.03), np.log10(4.), nburst)
+        A_ = 10.**np.random.uniform(np.log10(.03), np.log10(4.), nburst)
+        npad = 5 - len(A_)
+        return np.pad(A_, npad, mode='constant', constant_values=0)
 
     @staticmethod
     def burst_gen(time_form, time0, time_cut, override):
@@ -415,6 +423,8 @@ class FSPS_SFHBuilder(object):
 
             # number of bursts
             nburst = stats.poisson.rvs(dt / time0)
+            if nburst > 5:
+                nburst = 5
             # when they occur
             time_burst = FSPS_SFHBuilder.time_burst_gen(time_form, dt, nburst)
             # how long they last
@@ -598,7 +608,7 @@ def make_csp():
     return l, spec, tab
 
 
-def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700.):
+def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700., dlogl=1.0e-4):
 
     if not pkl:
         # generate CSPs and cache them
@@ -608,7 +618,7 @@ def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700.):
         CSPs = pickle.load(open('csps.pkl', 'wb'))
         n = len(CSPs)
 
-    l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), 1.0e-4)
+    l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), dlogl)
 
     # initialize array to hold the spectra
     specs = np.nan * np.ones((n, len(l_final)))
