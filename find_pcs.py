@@ -1560,7 +1560,7 @@ class PCA_Result(object):
         Z, *_ = np.histogram2d(
             x=col.flatten(), y=np.log10(ml.flatten()), bins=[col_grid, ML_grid])
         XX, YY = np.meshgrid(midpoints(col_grid), midpoints(ML_grid))
-        ax.contour(XX, YY, Z.T, origin='lower', N=2, colors='r', linewidth=.5)
+        ax.contour(XX, YY, np.log10(Z.T), origin='lower', N=2, colors='r', linewidth=.5)
 
         ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
         ax.set_ylabel(''.join((r'$\log$',
@@ -1737,8 +1737,8 @@ if __name__ == '__main__':
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
 
-    pca_res.make_full_QA_fig()
-    pca_res.make_comp_fig()
+    #pca_res.make_full_QA_fig()
+    #pca_res.make_comp_fig()
 
     pca_res.make_Mstar_fig(band='r')
     pca_res.make_Mstar_fig(band='i')
