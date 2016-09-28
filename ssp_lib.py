@@ -18,6 +18,8 @@ from astropy.io import fits
 
 import fsps
 
+import multiprocessing as mpc
+
 from spectrophot import lumdens2bbdlum
 
 zsol_padova = .019
@@ -488,7 +490,7 @@ class FSPS_SFHBuilder(object):
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.items()])
 
 
-def make_csp(params={}):
+def make_csp(params={}, return_l=False):
     sfh = FSPS_SFHBuilder(max_bursts=5, override=params)
 
     tab = sfh.to_table()
@@ -496,10 +498,15 @@ def make_csp(params={}):
     mstar = t.Table(
         rows=np.atleast_2d(mstar), names=['mstar'])
     tab = t.hstack([tab, mstar])
-    return l, spec, tab
+
+    if return_l:
+        return spec, tab
+    else:
+        return spec, tab, l_full
 
 
-def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=8900., dlogl=1.0e-4):
+def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=8900., dlogl=1.0e-4,
+                          multiproc=False):
 
     if not pkl:
         # generate CSPs and cache them
@@ -512,20 +519,31 @@ def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=8900., dlogl=1.0e-4
 
     l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), dlogl)
     # dummy full-lambda-range array
-    l_full, spec0, meta0 = make_csp(params=CSPs[0])
+    spec0, meta0, l_full = make_csp(params=CSPs[0], return_l=True)
 
-    # initialize array to hold the spectra
-    specs = np.nan * np.ones((n, len(l_full)))
+    if multiproc:
+        # poolify the boring stuff
+        p = mpc.Pool(processes=8, maxtasksperchild=1)
+        res = p.map(make_csp, CSPs)
+        p.close()
+        p.join()
 
-    # initialize list to hold all metadata
-    metadata = [None for _ in range(n)]
+        # now build specs and metadata
+        specs, metadata = zip(*res)
 
-    # build each entry individually
-    for i in range(n):
-        if n == 0:
-            specs[i, :], metadata[i] = spec0, meta0
-        else:
-            _, specs[i, :], metadata[i] = make_csp(params=CSPs[i])
+    else:
+        # otherwise, build each entry individually
+        # initialize array to hold the spectra
+        specs = np.nan * np.ones((n, len(l_full)))
+
+        # initialize list to hold all metadata
+        metadata = [None for _ in range(n)]
+
+        metadata[0] = meta0
+        specs[0, :] = spec0
+
+        for i in range(1, n):
+            specs[i, :], metadata[i] = make_csp(params=CSPs[i])
 
     # assemble the full table
     metadata = t.vstack(metadata)
