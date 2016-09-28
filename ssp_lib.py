@@ -5,6 +5,7 @@ tools for working with FSPS stellar population synthesis library
 
 import numpy as np
 from scipy import stats, integrate
+from scipy.interpolate import interp1d
 
 from datetime import datetime
 import pickle
@@ -16,6 +17,8 @@ from astropy import units as u, constants as c, table as t
 from astropy.io import fits
 
 import fsps
+
+from spectrophot import lumdens2bbdlum
 
 zsol_padova = .019
 zs_padova = t.Table(
@@ -43,7 +46,7 @@ class FSPS_SFHBuilder(object):
 
     __version__ = '0.1'
 
-    def __init__(self, max_bursts, **override):
+    def __init__(self, max_bursts=5, override={}):
         '''
         set up star formation history generation to use with FSPS
 
@@ -116,7 +119,7 @@ class FSPS_SFHBuilder(object):
          - MLr, MLi, MLz: mass-to-light ratios, in r-, i-, and z-band
         '''
         sp = fsps.StellarPopulation(zcontinuous=1)
-        sp.params['imf_type'] = 2
+        sp.params['imf_type'] = 1
         sp.params['tage'] = self.time0
         sp.params['sfh'] = 3
         sp.params['logzsol'] = self.FSPS_args['zmet']
@@ -126,42 +129,9 @@ class FSPS_SFHBuilder(object):
         sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
 
         l, spec = sp.get_spectrum(tage=self.time0, peraa=True)
-        mstar = sp.stellar_mass * u.Msun
-        Ms = sp.get_mags(
-            bands=['sdss_r', 'sdss_i', 'sdss_z'], tage=self.time0)
-        Ls = 10.**(-0.4 * (Ms - np.array([4.76, 4.58, 4.51]))) * u.Lsun
+        mstar = sp.stellar_mass
 
-        MLs = mstar / Ls
-        return l, spec, MLs.value
-
-    def calc_sfh(self, plot=False, saveplot=False, mformed_compare=False):
-        '''
-        return an array of times (rel to BB) and SFRs (Msol/yr)
-        '''
-
-        FSPS_args = self.FSPS_args
-        mtot_cont = self.mtot_cont(
-            FSPS_args['time_form'], self.time0, FSPS_args['eftu'],
-            FSPS_args['time_cut'], FSPS_args['eftc'])
-
-        # calculate the total mass formed in bursts
-        mtot_burst = FSPS_args['A'].sum() * mtot_cont
-        mtot = mtot_burst + mtot_cont
-
-        self.mformed_tot = mtot
-        self.mformed_cont = mtot_cont
-        self.mformed_burst = mtot_burst
-
-        sfrs = self.sfrs
-        ts = self.ts
-
-        if mformed_compare:
-            print('Total mass formed')
-            print('\tintegral:', self.mformed_integration)
-            print('\tsummation:', np.trapz(x=self.ts, y=self.sfrs))
-
-        if plot:
-            self.plot_sfh(ts=ts, sfrs=sfrs, save=saveplot)
+        return l, spec, mstar
 
     def plot_sfh(self, ts=None, sfrs=None, save=False):
 
@@ -227,7 +197,7 @@ class FSPS_SFHBuilder(object):
         burst_ends = (self.FSPS_args['time_burst'] +
                       self.FSPS_args['dt_burst'])[:nburst]
 
-        discont = np.append(burst_starts, burst_ends - eps)
+        discont = self.disconts
         # ages starting at 1Myr, and going to start of SF
         ages = 10.**np.linspace(-4., np.log10(self.time0), 300)
         ts = self.time0 - ages
@@ -245,7 +215,7 @@ class FSPS_SFHBuilder(object):
     def disconts(self):
         burst_ends = self.FSPS_args['time_burst'] + self.FSPS_args['dt_burst']
         points = np.append(self.FSPS_args['time_burst'], burst_ends)
-        points = points[points < self.time0]
+        points = points[(0. < points) * (points < self.time0)]
         return points
 
     @property
@@ -282,13 +252,12 @@ class FSPS_SFHBuilder(object):
         '''
         mass fraction formed in last Gyr
         '''
-        FSPS_args = self.FSPS_args
-        disconts = self.disconts[
-            (self.time0 - 1. < self.disconts) * (self.disconts < self.time0)]
-        mformed_lastGyr = integrate.quad(
+        disconts = self.disconts
+        disconts = disconts[disconts > self.time0 - 1.]
+        mf, mfe = integrate.quad(
             self.all_sf, self.time0 - 1., self.time0,
-            points=disconts, epsrel=5.0e-3)[0]
-        F = mformed_lastGyr / self.mformed_integration
+            points=disconts, epsrel=5.0e-3)
+        F = mf / self.mformed_integration
         return F
 
     # =====
@@ -326,10 +295,13 @@ class FSPS_SFHBuilder(object):
 
         # if either/both time_cut/eftc are provided, use them!
         if (('time_cut' in self.override.keys()) or
-            ('eftc' in self.override.keys())):
+            ('eftc' in self.override.keys()) or
+            ('cut' in self.override.keys())):
 
-            return {'cut': True, **self.time_cut_gen(time_form),
+            return {'cut': self.override['cut'],
+                    **self.time_cut_gen(time_form),
                     **self.eftc_gen()}
+
         # if nothing is provided, and there's no random cut, use default
         elif not cut_yn:
             return default
@@ -380,11 +352,12 @@ class FSPS_SFHBuilder(object):
         elif (sum(map(lambda k: k in self.override.keys(),
                       ['time_burst', 'dt_burst', 'A'])) > 0):
 
-            nburst = 1
+            nburst = self.override.get('nburst', 1)
 
-            time_burst = self.override.get('time_burst', self.time_burst_gen())
-            dt_burst = self.override.get('dt_burst', self.dt_burst_gen())
-            A = self.override.get('A', self.A_burst_gen())
+            time_burst = self.override.get('time_burst', self.time_burst_gen(
+                time_form, dt, nburst))
+            dt_burst = self.override.get('dt_burst', self.dt_burst_gen(nburst))
+            A = self.override.get('A', self.A_burst_gen(nburst))
 
             return {'time_burst': time_burst, 'dt_burst': dt_burst,
                     'A': A, 'nburst': nburst}
@@ -402,7 +375,7 @@ class FSPS_SFHBuilder(object):
 
     def zmet_gen(self, zsol=zsol_padova):
         if 'zmet' in self.override.keys():
-            return {'zmet': override.keys()}
+            return {'zmet': self.override['zmet']}
 
         if np.random.rand() < .95:
             return {'zmet': np.random.uniform(0.2 * zsol, 2.5 * zsol)}
@@ -411,7 +384,7 @@ class FSPS_SFHBuilder(object):
 
     def tau_V_gen(self):
         if 'tau_V' in self.override.keys():
-            return {'tau_V': override.keys()}
+            return {'tau_V': self.override['tau_V']}
 
         mu_tau_V = 1.2
         std_tau_V = 1.272  # set to ensure 68% of prob mass lies < 2
@@ -428,7 +401,7 @@ class FSPS_SFHBuilder(object):
 
     def mu_gen(self):
         if 'mu' in self.override.keys():
-            return {'mu': override.keys()}
+            return {'mu': self.override['mu']}
 
         mu_mu = 0.3
         std_mu = np.random.uniform(.1, 1)
@@ -446,7 +419,7 @@ class FSPS_SFHBuilder(object):
 
     def sigma_gen(self):
         if 'sigma' in self.override.keys():
-            return {'sigma': override.keys()}
+            return {'sigma': self.override['sigma']}
 
         return {'sigma': np.random.uniform(50., 400.)}
 
@@ -515,53 +488,77 @@ class FSPS_SFHBuilder(object):
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.items()])
 
 
-def make_csp():
-    sfh = FSPS_SFHBuilder(max_bursts=5)
+def make_csp(params={}):
+    sfh = FSPS_SFHBuilder(max_bursts=5, override=params)
+
     tab = sfh.to_table()
-    l, spec, MLs = sfh.run_fsps()
-    MLs = t.Table(
-        rows=np.atleast_2d(MLs), names=['MLr', 'MLi', 'MLz'])
-    tab = t.hstack([tab, MLs])
+    l, spec, mstar = sfh.run_fsps()
+    mstar = t.Table(
+        rows=np.atleast_2d(mstar), names=['mstar'])
+    tab = t.hstack([tab, mstar])
     return l, spec, tab
 
 
-def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=4700., dlogl=1.0e-4):
+def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=8900., dlogl=1.0e-4):
 
     if not pkl:
         # generate CSPs and cache them
-        CSPs = [FSPS_SFHBuilder().FSPS_args for _ in range(n)]
+        CSPs = [FSPS_SFHBuilder(max_bursts=5).FSPS_args
+                for _ in range(n)]
         pickle.dump(CSPs, open('csps.pkl', 'wb'))
     else:
         CSPs = pickle.load(open('csps.pkl', 'wb'))
         n = len(CSPs)
 
     l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), dlogl)
+    # dummy full-lambda-range array
+    l_full, spec0, meta0 = make_csp(params=CSPs[0])
 
     # initialize array to hold the spectra
-    specs = np.nan * np.ones((n, len(l_final)))
+    specs = np.nan * np.ones((n, len(l_full)))
 
     # initialize list to hold all metadata
     metadata = [None for _ in range(n)]
 
     # build each entry individually
     for i in range(n):
-        sfh = FSPS_SFHBuilder(**CSPs[i])
-        l, spec, tab_ = make_csp()
-        metadata[i] = tab_
-        specs[i, :] = np.interp(x=l_final, xp=l, fp=spec)
+        if n == 0:
+            specs[i, :], metadata[i] = spec0, meta0
+        else:
+            _, specs[i, :], metadata[i] = make_csp(params=CSPs[i])
 
     # assemble the full table
     metadata = t.vstack(metadata)
 
+    # find luminosity
+    Lr = lumdens2bbdlum(lam=l_full * u.AA,
+                        Llam=specs * u.Unit('erg s-1 AA-1'), band='r')
+    Li = lumdens2bbdlum(lam=l_full * u.AA,
+                        Llam=specs * u.Unit('erg s-1 AA-1'), band='i')
+    Lz = lumdens2bbdlum(lam=l_full * u.AA,
+                        Llam=specs * u.Unit('erg s-1 AA-1'), band='z')
+
+    specs_interp = interp1d(x=l_full, y=specs, kind='linear', axis=-1)
+    specs_reduced = specs_interp(l_final)
+
+    MLr, MLi, MLz = (metadata['mstar'] / Lr.value,
+                     metadata['mstar'] / Li.value,
+                     metadata['mstar'] / Li.value)
+    ML = t.Table(data=[MLr, MLi, MLz], names=['MLr', 'MLi', 'MLz'])
+    metadata = t.hstack([metadata, ML])
+
     # initialize FITS HDUList
     hdulist = fits.HDUList(
-        [fits.BinTableHDU(np.array(metadata)), fits.ImageHDU(l),
-         fits.ImageHDU(specs)])
+        [fits.PrimaryHDU(), fits.BinTableHDU(np.array(metadata)),
+         fits.ImageHDU(l_final), fits.ImageHDU(specs_reduced)])
+    hdulist[1].header['EXTNAME'] = 'meta'
+    hdulist[2].header['EXTNAME'] = 'loglam'
+    hdulist[3].header['EXTNAME'] = 'flam'
     '''
     extension list:
-     - [0], 'meta': FITS table equal to `metadata`
-     - [1], 'loglam': array with log-lambda, and dlogl header keyword
-     - [2], 'flam': array with flux-densities for each CSP on same
+     - [1], 'meta': FITS table equal to `metadata`
+     - [2], 'loglam': array with log-lambda, and dlogl header keyword
+     - [3], 'flam': array with lum-densities for each CSP on same
         wavelength grid
     '''
 
