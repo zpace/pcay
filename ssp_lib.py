@@ -43,7 +43,7 @@ class FSPS_SFHBuilder(object):
 
     __version__ = '0.1'
 
-    def __init__(self, **override):
+    def __init__(self, max_bursts, **override):
         '''
         set up star formation history generation to use with FSPS
 
@@ -98,7 +98,7 @@ class FSPS_SFHBuilder(object):
         params.update(self.mu_gen())
 
         # cuts
-        params.update(self.cut_gen())
+        params.update(self.cut_gen(**params))
 
         # bursts
         params.update(self.burst_gen(**params))
@@ -185,7 +185,7 @@ class FSPS_SFHBuilder(object):
         # cover a dynamic range of a few OOM, plus bursts
         ylim_cont = [5.0e-3, 1.25]
         ylim = ylim_cont
-        if self.nburst > 0:
+        if self.FSPS_args['nburst'] > 0:
             ylim[1] = 1.25 * sfrs.max()
 
         ax.set_ylim(ylim)
@@ -218,15 +218,14 @@ class FSPS_SFHBuilder(object):
     @property
     def all_sf_v(self):
         return np.vectorize(
-            self.all_sf,
-            excluded=set(list(self.FSPS_args.keys()) + ['time0', ]),
-            cache=True)
+            self.all_sf)
 
     @property
     def ts(self):
-        burst_starts = self.FSPS_args['time_burst'][:self.nburst]
+        nburst = self.FSPS_args['nburst']
+        burst_starts = self.FSPS_args['time_burst'][:nburst]
         burst_ends = (self.FSPS_args['time_burst'] +
-                      self.FSPS_args['dt_burst'])[:self.nburst]
+                      self.FSPS_args['dt_burst'])[:nburst]
 
         discont = np.append(burst_starts, burst_ends - eps)
         # ages starting at 1Myr, and going to start of SF
@@ -240,7 +239,7 @@ class FSPS_SFHBuilder(object):
 
     @property
     def sfrs(self):
-        return self.all_sf_v(self.ts, time0=self.time0, **self.FSPS_args)
+        return self.all_sf_v(self.ts)
 
     @property
     def disconts(self):
@@ -315,19 +314,19 @@ class FSPS_SFHBuilder(object):
 
         return {'eftu': 1. / np.random.rand()}
 
-    def time_cut_gen(self):
+    def time_cut_gen(self, time_form):
         if 'time_cut' in self.override.keys():
             return {'time_cut': self.override['time_cut']}
 
         return {'time_cut': np.random.uniform(time_form, self.time0)}
 
     def eftc_gen(self):
-        if not 'eftc' in self.override.keys():
+        if 'eftc' in self.override.keys():
             return {'eftc': self.override['eftc']}
 
         return {'eftc': 10.**np.random.uniform(-2, 0)}
 
-    def cut_gen(self):
+    def cut_gen(self, time_form, **params):
         default = {'cut': False, 'time_cut': 0., 'eftc': 0.}
         cut_yn = np.random.rand() < 0.3
 
@@ -335,15 +334,17 @@ class FSPS_SFHBuilder(object):
         if (('time_cut' in self.override.keys()) or
             ('eftc' in self.override.keys())):
 
-            return {'cut': True, **self.time_cut_gen(), **self.eftc_gen()}
+            return {'cut': True, **self.time_cut_gen(time_form),
+                    **self.eftc_gen()}
         # if nothing is provided, and there's no random cut, use default
         elif not cut_yn:
             return default
         # if nothing is provided, and there is a random cut, generate it!
         else:
-            return {'cut': True, **self.time_cut_gen(), **self.eftc_gen()}
+            return {'cut': True, **self.time_cut_gen(time_form),
+                    **self.eftc_gen()}
 
-    def time_burst_gen(self, nburst):
+    def time_burst_gen(self, time_form, dt, nburst):
         t_ = np.random.uniform(time_form, time_form + dt, nburst)
         npad = self.max_bursts - nburst
         t_ = np.pad(t_, (0, npad), mode='constant', constant_values=0.)
@@ -361,13 +362,13 @@ class FSPS_SFHBuilder(object):
         A_ = np.pad(A_, (0, npad), mode='constant', constant_values=0.)
         return {'A': A_}
 
-    def burst_gen(self, **kwargs):
+    def burst_gen(self, cut, time_cut, time_form, **kwargs):
         # statistically, one burst occurs in duration time0
         # but forbidden to happen after cutoff
         if cut:
             dt = time_cut - time_form
         else:
-            dt = time0 - time_form
+            dt = self.time0 - time_form
 
         # =====
 
@@ -382,8 +383,8 @@ class FSPS_SFHBuilder(object):
 
         # handle case that single burst is specified or
         # partially specified, and move forward
-        elif (sum(list(map(lambda k: k in self.override.keys(),
-                           ['time_burst', 'dt_burst', 'A'])) > 0)):
+        elif (sum(map(lambda k: k in self.override.keys(),
+                      ['time_burst', 'dt_burst', 'A'])) > 0):
 
             nburst = 1
 
@@ -397,16 +398,13 @@ class FSPS_SFHBuilder(object):
         # =====
 
         # handle the case that no burst information is given (3 NaNs)
-        if ((np.isnan(time_burst).sum() *
-             np.isnan(dt_burst).sum() *
-             np.isnan(A).sum()) == 1) and \
-                (np.ndarray not in map(type, override)):
-
+        else:
             # number of bursts
-            nburst = stats.poisson.rvs(dt / time0)
+            nburst = stats.poisson.rvs(dt / self.time0)
 
-            return {**{'nburst': nburst}, **self.time_burst_gen(),
-                    **self.dt_burst_gen, **self.A_burst_gen()}
+            return {'nburst': nburst,
+                    **self.time_burst_gen(time_form, dt, nburst),
+                    **self.dt_burst_gen(nburst), **self.A_burst_gen(nburst)}
 
     def zmet_gen(self, zsol=zsol_padova):
         if 'zmet' in self.override.keys():
@@ -489,10 +487,13 @@ class FSPS_SFHBuilder(object):
         '''
         evaluate the SFR augmentation at some time
         '''
-        burst_intervals = self.FSPS_args['time_burst'] + np.column_stack([
-            np.zeros(self.max_bursts), self.FSPS_args['dt_burst']])
+        nburst = self.FSPS_args['nburst']
+        burst_starts = self.FSPS_args['time_burst'][:nburst]
+        burst_ends = (self.FSPS_args['time_burst'] +
+                      self.FSPS_args['dt_burst'])[:nburst]
+        A = self.FSPS_args['A'][:nburst]
 
-        in_burst = (t >= burst_intervals[:, 0]) * (t <= burst_intervals[:, 1])
+        in_burst = ((t >= burst_starts) * (t <= burst_ends))[:nburst]
         return A.dot(in_burst)
 
     def mtot_cont(self):
