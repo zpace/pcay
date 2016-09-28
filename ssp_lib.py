@@ -96,6 +96,7 @@ class FSPS_SFHBuilder(object):
         params.update(self.sigma_gen())
         params.update(self.tau_V_gen())
         params.update(self.mu_gen())
+        params.update(self.zmet_gen())
 
         # cuts
         params.update(self.cut_gen(**params))
@@ -127,8 +128,8 @@ class FSPS_SFHBuilder(object):
         l, spec = sp.get_spectrum(tage=self.time0, peraa=True)
         mstar = sp.stellar_mass * u.Msun
         Ms = sp.get_mags(
-            bands=['sdss_i', 'sdss_r', 'sdss_z'], tage=self.time0)
-        Ls = 10.**(-0.4 * (Ms - 4.85)) * u.Lsun
+            bands=['sdss_r', 'sdss_i', 'sdss_z'], tage=self.time0)
+        Ls = 10.**(-0.4 * (Ms - np.array([4.76, 4.58, 4.51]))) * u.Lsun
 
         MLs = mstar / Ls
         return l, spec, MLs.value
@@ -207,7 +208,6 @@ class FSPS_SFHBuilder(object):
         tab = t.Table(rows=[self.FSPS_args])
         tab.add_column(t.Column(data=[self.Fstar], name='Fstar'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
-        tab.add_column(t.Column(data=[self.nburst], name='nburst'))
 
         return tab
 
@@ -260,19 +260,13 @@ class FSPS_SFHBuilder(object):
     def mass_weighted_age(self):
 
         disconts = self.disconts
-        mtot_cont = self.mtot_cont(
-            self.FSPS_args['time_form'], self.time0, self.FSPS_args['eftu'],
-            self.FSPS_args['time_cut'], self.FSPS_args['eftc'])
+        mtot_cont = self.mtot_cont()
 
         def num_integrand(tau, mtot_cont):
-            return tau * self.all_sf(
-                self.time0 - tau, mtot_cont=mtot_cont,
-                time0=self.time0, **self.FSPS_args)
+            return tau * self.all_sf(self.time0 - tau)
 
         def denom_integrand(tau, mtot_cont):
-            return self.all_sf(
-                self.time0 - tau, mtot_cont=mtot_cont,
-                time0=self.time0, **self.FSPS_args)
+            return self.all_sf(self.time0 - tau)
 
         # integrating tau * SFR(time0 - tau) wrt tau from 0 to time0
         num = integrate.quad(
@@ -499,7 +493,7 @@ class FSPS_SFHBuilder(object):
     def mtot_cont(self):
         # calculate total stellar mass formed in the continuous bit
         mtot_cont = integrate.quad(
-            self.continuous_sf, 0, time0)
+            self.continuous_sf, 0, self.time0)
         return mtot_cont[0]
 
     def all_sf(self, t):
@@ -522,7 +516,7 @@ class FSPS_SFHBuilder(object):
 
 
 def make_csp():
-    sfh = FSPS_SFHBuilder()
+    sfh = FSPS_SFHBuilder(max_bursts=5)
     tab = sfh.to_table()
     l, spec, MLs = sfh.run_fsps()
     MLs = t.Table(
