@@ -852,7 +852,7 @@ class MaNGA_deredshift(object):
         if not os.path.isfile(drp_fname):
             raise m.DRP_IFU_DNE_Error(plate, ifu)
         if not os.path.isfile(dap_fname):
-            raise m.DAP_IFU_DNE_Error(plate, ifu)
+            raise m.DAP_IFU_DNE_Error(plate, ifu, kind)
 
         drp_hdulist = fits.open(drp_fname)
         dap_hdulist = fits.open(dap_fname)
