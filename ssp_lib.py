@@ -3,6 +3,8 @@ tools for working with FSPS stellar population synthesis library
     (and its python bindings)
 '''
 
+import os
+
 import numpy as np
 from scipy import stats, integrate
 from scipy.interpolate import interp1d
@@ -120,7 +122,9 @@ class FSPS_SFHBuilder(object):
          - spec: flux-density (Lsol/AA)
          - MLr, MLi, MLz: mass-to-light ratios, in r-, i-, and z-band
         '''
-        sp = fsps.StellarPopulation(zcontinuous=1)
+        sp = fsps.StellarPopulation(zcontinuous=1, add_stellar_remnants=True,
+                                    smooth_velocity=True, redshift_colors=False,
+                                    vactoair_flag=False, tage=self.time0, masscut=150.)
         sp.params['imf_type'] = 1
         sp.params['tage'] = self.time0
         sp.params['sfh'] = 3
@@ -128,6 +132,7 @@ class FSPS_SFHBuilder(object):
         sp.params['sigma_smooth'] = self.FSPS_args['sigma']
         sp.params['dust1'] = self.FSPS_args['tau_V']
         sp.params['dust2'] = self.FSPS_args['tau_V'] * self.FSPS_args['mu']
+
         sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
 
         l, spec = sp.get_spectrum(tage=self.time0, peraa=True)
@@ -226,7 +231,7 @@ class FSPS_SFHBuilder(object):
         mf, mfe = integrate.quad(
             self.all_sf, 0., self.time0,
             points=self.disconts, epsrel=5.0e-3)
-        return mf
+        return mf * 1.0e9
 
     @property
     def mass_weighted_age(self):
@@ -325,7 +330,7 @@ class FSPS_SFHBuilder(object):
         return {'dt_burst': dt_}
 
     def A_burst_gen(self, nburst):
-        A_ = 10.**np.random.uniform(np.log10(.1), np.log10(4.), nburst)
+        A_ = 10.**np.random.uniform(np.log10(1.), np.log10(20.), nburst)
         npad = self.max_bursts - nburst
         A_ = np.pad(A_, (0, npad), mode='constant', constant_values=0.)
         return {'A': A_}
@@ -370,6 +375,8 @@ class FSPS_SFHBuilder(object):
         else:
             # number of bursts
             nburst = stats.poisson.rvs(dt / self.time0)
+            if nburst > self.max_bursts:
+                nburst = self.max_bursts
 
             return {'nburst': nburst,
                     **self.time_burst_gen(time_form, dt, nburst),
@@ -382,7 +389,7 @@ class FSPS_SFHBuilder(object):
         if np.random.rand() < .95:
             return {'zmet': np.random.uniform(0.2 * zsol, 2.5 * zsol)}
 
-        return {'zmet': np.random.uniform(.02 * zsol, .2 * zsol)}
+        return {'zmet': np.log10(np.random.uniform(.02 * zsol, .2 * zsol))}
 
     def tau_V_gen(self):
         if 'tau_V' in self.override.keys():
@@ -428,6 +435,8 @@ class FSPS_SFHBuilder(object):
     def continuous_sf(self, t):
         '''
         eval the continuous portion of the SFR at some time
+
+        Note: units are Msun/
         '''
         time_form = self.FSPS_args['time_form']
         eftu = self.FSPS_args['eftu']
@@ -491,6 +500,7 @@ class FSPS_SFHBuilder(object):
 
 
 def make_csp(params={}, return_l=False):
+    print(os.getpid())
     sfh = FSPS_SFHBuilder(max_bursts=5, override=params)
 
     tab = sfh.to_table()
@@ -500,22 +510,27 @@ def make_csp(params={}, return_l=False):
     tab = t.hstack([tab, mstar])
 
     if return_l:
-        return spec, tab
+        return spec, tab, l
     else:
-        return spec, tab, l_full
+        return spec, tab
 
 
-def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=8900., dlogl=1.0e-4,
-                          multiproc=False):
+def make_spectral_library(n=1, pkl=True, lllim=3700., lulim=8900., dlogl=1.0e-4,
+                          multiproc=False, nproc=8):
 
     if not pkl:
+        if n is None:
+            n = 1
         # generate CSPs and cache them
         CSPs = [FSPS_SFHBuilder(max_bursts=5).FSPS_args
                 for _ in range(n)]
-        pickle.dump(CSPs, open('csps.pkl', 'wb'))
+        with open('csps.pkl', 'wb') as f:
+            pickle.dump(CSPs, f)
     else:
-        CSPs = pickle.load(open('csps.pkl', 'wb'))
-        n = len(CSPs)
+        with open('csps.pkl', 'rb') as f:
+            CSPs = pickle.load(f)
+        if n is None:
+            n = len(CSPs)
 
     l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), dlogl)
     # dummy full-lambda-range array
@@ -523,10 +538,13 @@ def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=8900., dlogl=1.0e-4
 
     if multiproc:
         # poolify the boring stuff
-        p = mpc.Pool(processes=8, maxtasksperchild=1)
-        res = p.map(make_csp, CSPs)
+        p = mpc.Pool(processes=nproc, maxtasksperchild=1)
+        res = p.map(make_csp, CSPs[1:n], chunksize=1)
+
         p.close()
         p.join()
+
+        res = [(spec0, meta0), ] + res
 
         # now build specs and metadata
         specs, metadata = zip(*res)
@@ -550,11 +568,11 @@ def make_spectral_library(n=1, pkl=False, lllim=3700., lulim=8900., dlogl=1.0e-4
 
     # find luminosity
     Lr = lumdens2bbdlum(lam=l_full * u.AA,
-                        Llam=specs * u.Unit('erg s-1 AA-1'), band='r')
+                        Llam=specs * u.Unit('Lsun/AA'), band='r')
     Li = lumdens2bbdlum(lam=l_full * u.AA,
-                        Llam=specs * u.Unit('erg s-1 AA-1'), band='i')
+                        Llam=specs * u.Unit('Lsun/AA'), band='i')
     Lz = lumdens2bbdlum(lam=l_full * u.AA,
-                        Llam=specs * u.Unit('erg s-1 AA-1'), band='z')
+                        Llam=specs * u.Unit('Lsun/AA'), band='z')
 
     specs_interp = interp1d(x=l_full, y=specs, kind='linear', axis=-1)
     specs_reduced = specs_interp(l_final)
