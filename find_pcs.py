@@ -1471,25 +1471,29 @@ class PCA_Result(object):
         q = pct_map[1, ...]
         q_unc = np.abs(pct_map[2, ...] - pct_map[0, ...]) / 2.
 
+        # throw out spaxels at large Re
+        # in future, should evaluate spectrum uncertainties directly
         rlarge = dep.d > 2.5
         r = np.ma.array(dep.d, mask=(rlarge | self.mask_map))
 
         try:
+            # radial gaussian process from sklearn (v0.18 or later)
             gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
         except:
+            # sometimes it fails when solution space is too sparse
             pass
         else:
             r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
-            q_pred, sigma2 = gp.predict(r_pred, eval_MSE=True)
+            q_pred, sigma2 = gp.predict(r_pred, return_std=True)
             sigma = np.sqrt(sigma2)
-
+            # plot allowed range
             ax.plot(r_pred, q_pred, c='b', label='Prediction')
-
             ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
                     np.concatenate([(q_pred - 1.9600 * sigma),
                                     (q_pred + 1.9600 * sigma)[::-1]]),
                     alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
 
+        # plot data
         ax.errorbar(x=r.flatten(), y=q.flatten(), yerr=q_unc.flatten(),
                     label='PCA Results', linestyle='None', marker='o',
                     markersize=2, c='k', alpha=0.2, capsize=1.5,
@@ -1523,18 +1527,23 @@ class PCA_Result(object):
         if ax is None:
             ax = plt.gca()
 
+        # b1 - b2 color
         col = color(self.dered.drp_hdulist, b1, b2)
+        # retrieve ML ratio
         ml = self.pca.param_pct_map('ML{}'.format(mlb), self.w, [50])[0, ...]
+
+        # size of points determined by signal in redder band
         b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
         s = 10.*np.arctan(0.05 * b2_img / np.median(b2_img))
+
         sc = ax.scatter(col.flatten(), np.log10(ml.flatten()),
                         facecolor=dep.d, edgecolor='None', s=s.flatten(),
                         label=self.objname)
         cb = plt.colorbar(sc, ax=ax, pad=.025)
         cb.set_label(r'R [$R_e$]')
 
-        # Bell et al galaxy colors to M/L
-        # log (M/L) = a_lam + b_lam * C
+        # spectrophot.py includes conversion from many colors to many M/L ratios
+        # from Bell et al -- of form $\log{(M/L)} = a_{\lambda} + b_{\lambda} * C$
         CML_row = CML.loc['{}{}'.format(b1, b2)]
         a_lam = CML_row['a_{}'.format(mlb)]
         b_lam = CML_row['b_{}'.format(mlb)]
@@ -1552,6 +1561,7 @@ class PCA_Result(object):
         col_grid = np.linspace(*ax.get_xlim(), 90)
         ML_grid = np.linspace(*ax.get_ylim(), 100)
 
+        # plot the predicted MLRs from Bell
         ML_pred = bell_ML(col_grid)
         ax.plot(col_grid, ML_pred, c='magenta', linestyle='--', label='Bell et al. (2003)')
         ax.legend(loc='best', prop={'size': 6})

@@ -28,6 +28,8 @@ def radial_gp(r, q, q_unc, q_bdy=[-np.inf, np.inf]):
     r, q, q_unc = r[~r.mask], q[~r.mask], q_unc[~r.mask]
     r = np.atleast_2d(r).T
 
+    # build a very flexible kernel: can nominally handle factor
+    # of 20 variation in 1/4 Re, but mmay not need to
     kernel = Const(5., (1.0e-2, 20.)) * RBF(.25, (.05, 2.))
 
     nugget = (q_unc / q)**2.
