@@ -49,7 +49,8 @@ class ModelDataCompare(object):
         fig = plt.figure(figsize=(4, 4), dpi=300)
         ax = fig.add_subplot(111)
 
-        KDE_data = KDEMultivariate(data=[self.D4000, self.Hdelta_A],
+        KDE_data = KDEMultivariate(data=[self.D4000.flatten(),
+                                         self.Hdelta_A.flatten()],
                                    var_type='cc')
 
         KDE_models = KDEMultivariate(data=[self.pca.metadata['D4000'],
@@ -66,7 +67,12 @@ class ModelDataCompare(object):
         ZZ_data = KDE_data.pdf(XXYY).reshape((nx, ny))
         ZZ_models = KDE_models.pdf(XXYY).reshape((nx, ny))
 
-        ax.contour(XX, YY, ZZ_data, c='r')
-        ax.contour(XX, YY, ZZ_models, c='b')
+        ax.contour(XX, YY, ZZ_data, c='r', label='MaNGA data')
+        ax.contour(XX, YY, ZZ_models, c='b', label='Models')
+
+        ax.legend(loc='best')
+
+        ax.set_xlabel('D4000')
+        ax.set_ylabel(r'D$\delta_{A}$')
 
         return fig
