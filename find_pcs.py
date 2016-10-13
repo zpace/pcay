@@ -188,8 +188,10 @@ class StellarPop_PCA(object):
         metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9'].astype(
             float)) / metadata['mf_all']
 
-        metadata['D4000'] = spec_tools.D4000_index(l=l_full, s=spec.T)
-        metadata['Hdelta_A'] = spec_tools.Hdelta_A_index(l=l_full, s=spec.T)
+        metadata['D4000'] = spec_tools.D4000_index(
+            l=l_full, s=spec.T[..., None]).flatten()
+        metadata['Hdelta_A'] = spec_tools.Hdelta_A_index(
+            l=l_full, s=spec.T[..., None]).flatten()
 
         metadata = metadata['MWA', 'D4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
@@ -955,7 +957,7 @@ class MaNGA_deredshift(object):
         add_faintmetal = EW > 0. * u.AA
         add_paschen = EW > 0. * u.AA
 
-        template_l = spec_tools.air2vac(10.**template_logl * u.AA)
+        template_l = 10.**template_logl * u.AA
 
         full_mask = np.zeros((len(template_l),) + EW.shape, dtype=bool)
 
@@ -965,7 +967,8 @@ class MaNGA_deredshift(object):
                              [balmer_low, balmer_high, paschen,
                               helium, bright_metal, faint_metal]):
 
-            line_ctrs = np.array(list(d.values())) * u.AA
+            line_ctrs = spec_tools.air2vac(
+                np.array(list(d.values())) * u.AA)
 
             # compute mask edges
             mask_ledges = line_ctrs * (1 - (half_dv / c.c).to(''))
