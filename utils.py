@@ -1,4 +1,5 @@
 import numpy as np
+import pickle as pkl
 
 class ArrayPartitioner(object):
     '''
@@ -77,3 +78,8 @@ class ArrayPartitioner(object):
 
         return r
 
+def pickle_loader(fname):
+    with open(fname, 'rb') as f:
+        p = pickle.load(f)
+
+    return p

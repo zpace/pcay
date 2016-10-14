@@ -215,6 +215,33 @@ class StellarPop_PCA(object):
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
                    K_obs=K_obs)
 
+    @classmethod
+    def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs'):
+        '''
+        Read in FSPS outputs (dicts & metadata + spectra) from some directory
+        '''
+
+        from glob import glob
+        from utils import pickle_loader
+        from itertools import chain
+
+        d_names = glob(os.path.join(base_dir,'{}_*.pkl'.format(base_fname)))
+        f_names = glob(os.path.join(base_dir,'{}_*.fits'.format(base_fname)))
+
+        dicts = chain.from_iterable([pickle_loader(f) for f in d_names])
+        hdulists = [fits.open(f) for f in f_names]
+
+        logl = hdulists[0]['loglam'].data
+        l = 10.**logl
+
+        meta, _, specs = zip(*hdulists)
+
+        meta = t.vstack(meta)
+        spec = np.row_stack(specs)
+
+        return cls(l=l, trn_spectra=specs, gen_dicts=dicts, metadata=meta,
+                   K_obs=K_obs, dlogl=None)
+
     # =====
     # methods
     # =====
@@ -1629,7 +1656,7 @@ class PCA_Result(object):
         return sig.to('Msun pc-2').value
 
 
-def setup_pca(BP, fname=None, redo=False, pkl=True, q=7):
+def setup_pca(fname=None, redo=False, pkl=True, q=7):
     import pickle
     if (fname is None):
         redo = True
@@ -1731,7 +1758,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(BP, fname='pca.pkl', redo=False, pkl=True, q=7)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7)
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
