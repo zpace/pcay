@@ -500,7 +500,7 @@ class FSPS_SFHBuilder(object):
 
 
 def make_csp(params={}, return_l=False):
-    print(os.getpid())
+    #print(os.getpid())
     sfh = FSPS_SFHBuilder(max_bursts=5, override=params)
 
     tab = sfh.to_table()
@@ -515,7 +515,8 @@ def make_csp(params={}, return_l=False):
         return spec, tab
 
 
-def make_spectral_library(n=1, pkl=True, lllim=3700., lulim=8900., dlogl=1.0e-4,
+def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
+                          lllim=3700., lulim=8900., dlogl=1.0e-4,
                           multiproc=False, nproc=8):
 
     if not pkl:
@@ -524,10 +525,10 @@ def make_spectral_library(n=1, pkl=True, lllim=3700., lulim=8900., dlogl=1.0e-4,
         # generate CSPs and cache them
         CSPs = [FSPS_SFHBuilder(max_bursts=5).FSPS_args
                 for _ in range(n)]
-        with open('csps.pkl', 'wb') as f:
+        with open(os.path.join(loc, '{}.pkl'.format(fname), 'wb')) as f:
             pickle.dump(CSPs, f)
     else:
-        with open('csps.pkl', 'rb') as f:
+        with open(os.path.join(loc, '{}.pkl'.format(fname), 'rb')) as f:
             CSPs = pickle.load(f)
         if n is None:
             n = len(CSPs)
@@ -598,7 +599,7 @@ def make_spectral_library(n=1, pkl=True, lllim=3700., lulim=8900., dlogl=1.0e-4,
         wavelength grid
     '''
 
-    hdulist.writeto('CSP_spectra.fits', clobber=True)
+    hdulist.writeto(os.path.join(loc, '{}.fits'.format(fname)), clobber=True)
 
 # my hobby: needlessly subclassing exceptions
 
@@ -613,10 +614,3 @@ class TemplateCoverageError(TemplateError):
     '''
     when there's something wrong with the wavelength coverage of a template
     '''
-
-'''
-to do:
- - r-band luminosity-weighted age
- - mass-weighted age
- - i- and z-band mass-to-light ratio
-'''
