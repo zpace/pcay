@@ -61,7 +61,7 @@ def color(hdulist, band1='g', band2='r'):
     '''
     Calculate the color of a MaNGA galaxy, based on two bandpasses
 
-    By convention, C_br = b - r
+    By convention, C_br = b - r, i.e., band1 - band2
     '''
     img1 = hdulist['{}IMG'.format(band1)].data
     img2 = hdulist['{}IMG'.format(band2)].data
