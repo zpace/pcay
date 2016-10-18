@@ -80,6 +80,6 @@ class ArrayPartitioner(object):
 
 def pickle_loader(fname):
     with open(fname, 'rb') as f:
-        p = pickle.load(f)
+        p = pkl.load(f)
 
     return p
