@@ -82,7 +82,7 @@ class StellarPop_PCA(object):
         self.trn_spectra = trn_spectra
         self.metadata = metadata
         self.metadata_a = np.array(
-            self.metadata).view(dtype=float).reshape(
+            self.metadata).view().reshape(
             (len(self.metadata), -1))
         self.gen_dicts = gen_dicts
 
@@ -91,7 +91,8 @@ class StellarPop_PCA(object):
             raise TypeError('incorrect observational covariance matrix class!')
 
         if K_obs.dlogl != self.dlogl:
-            raise PCAError('non-matching log-lambda spacing!')
+            raise PCAError('non-matching log-lambda spacing ({}, {})'.format(
+                           K_obs.dlogl, self.dlogl))
 
     @classmethod
     def from_YMC(cls, base_dir, lib_para_file, form_file,
@@ -231,12 +232,12 @@ class StellarPop_PCA(object):
         dicts = chain.from_iterable([pickle_loader(f) for f in d_names])
         hdulists = [fits.open(f) for f in f_names]
 
-        logl = hdulists[0]['loglam'].data
-        l = 10.**logl
+        l = hdulists[0][2].data * u.AA
 
-        meta, _, specs = zip(*hdulists)
+        _, meta, _, specs = zip(*hdulists)
 
-        meta = t.vstack(meta)
+        meta = t.vstack([t.Table.read(f, format='fits', hdu=1)
+                         for f in f_names])
         spec = np.row_stack(specs)
 
         return cls(l=l, trn_spectra=specs, gen_dicts=dicts, metadata=meta,
@@ -555,7 +556,8 @@ class StellarPop_PCA(object):
 
         # print(D.shape, P.shape)
 
-        chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
+        #chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
+        chi2 = D.sum(axis=1)
         w = np.exp(-chi2 / 2.)
 
         return w / w.max(axis=0)
@@ -1780,7 +1782,7 @@ if __name__ == '__main__':
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
 
-    #pca_res.make_full_QA_fig()
+    pca_res.make_full_QA_fig()
     #pca_res.make_comp_fig()
 
     pca_res.make_Mstar_fig(band='r')

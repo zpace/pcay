@@ -525,10 +525,10 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
         # generate CSPs and cache them
         CSPs = [FSPS_SFHBuilder(max_bursts=5).FSPS_args
                 for _ in range(n)]
-        with open(os.path.join(loc, '{}.pkl'.format(fname), 'wb')) as f:
+        with open(os.path.join(loc, '{}.pkl'.format(fname)), 'wb') as f:
             pickle.dump(CSPs, f)
     else:
-        with open(os.path.join(loc, '{}.pkl'.format(fname), 'rb')) as f:
+        with open(os.path.join(loc, '{}.pkl'.format(fname)), 'rb') as f:
             CSPs = pickle.load(f)
         if n is None:
             n = len(CSPs)
@@ -589,12 +589,12 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
         [fits.PrimaryHDU(), fits.BinTableHDU(np.array(metadata)),
          fits.ImageHDU(l_final), fits.ImageHDU(specs_reduced)])
     hdulist[1].header['EXTNAME'] = 'meta'
-    hdulist[2].header['EXTNAME'] = 'loglam'
+    hdulist[2].header['EXTNAME'] = 'lam'
     hdulist[3].header['EXTNAME'] = 'flam'
     '''
     extension list:
      - [1], 'meta': FITS table equal to `metadata`
-     - [2], 'loglam': array with log-lambda, and dlogl header keyword
+     - [2], 'lam': array with log-lambda, and dlogl header keyword
      - [3], 'flam': array with lum-densities for each CSP on same
         wavelength grid
     '''
