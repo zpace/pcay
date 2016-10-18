@@ -55,7 +55,7 @@ class StellarPop_PCA(object):
     '''
 
     def __init__(self, l, trn_spectra, gen_dicts, metadata, K_obs,
-                 dlogl=None):
+                 dlogl=None, lllim=3700. * u.AA, lulim=7400. * u.AA):
         '''
         params:
          - l: length-n array-like defining the wavelength bin centers
@@ -72,14 +72,20 @@ class StellarPop_PCA(object):
             this somewhat replicates data in `gen_dicts`, but that's ok
         '''
 
-        self.l = l
-        self.logl = np.log10(l.to('AA').value)
+        l_good = np.ones_like(l, dtype=bool)
+        if lllim is not None:
+            l_good *= (l >= lllim)
+        if lulim is not None:
+            l_good *= (l <= lulim)
+
+        self.l = l[l_good]
+        self.logl = np.log10(l.to('AA').value)[l_good]
         if not dlogl:
             dlogl = np.round(np.mean(self.logl[1:] - self.logl[:-1]), 8)
 
         self.dlogl = dlogl
 
-        self.trn_spectra = trn_spectra
+        self.trn_spectra = trn_spectra[:, l_good]
         self.metadata = metadata
         self.metadata_a = np.array(
             self.metadata).view().reshape(
@@ -189,12 +195,12 @@ class StellarPop_PCA(object):
         metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9'].astype(
             float)) / metadata['mf_all']
 
-        metadata['D4000'] = spec_tools.D4000_index(
+        metadata['Dn4000'] = spec_tools.Dn4000_index(
             l=l_full, s=spec.T[..., None]).flatten()
         metadata['Hdelta_A'] = spec_tools.Hdelta_A_index(
             l=l_full, s=spec.T[..., None]).flatten()
 
-        metadata = metadata['MWA', 'D4000', 'Hdelta_A', 'Fstar',
+        metadata = metadata['MWA', 'Dn4000', 'Hdelta_A', 'Fstar',
                             'zmet', 'Tau_v', 'mu']
         metadata.add_column(t.Column(data=MLr, name='MLr'))
         metadata.add_column(t.Column(data=MLi, name='MLi'))
@@ -202,7 +208,7 @@ class StellarPop_PCA(object):
 
         # set metadata to enable plotting later
         metadata['MWA'].meta['TeX'] = r'MWA'
-        metadata['D4000'].meta['TeX'] = r'D4000'
+        metadata['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
         metadata['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
         metadata['Fstar'].meta['TeX'] = r'$F^*$'
         metadata['zmet'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
@@ -212,7 +218,7 @@ class StellarPop_PCA(object):
         metadata['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
         metadata['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
 
-        return cls(l=l_final * u.Unit('AA'), trn_spectra=pca_spec,
+        return cls(l=l_final * u.AA, trn_spectra=pca_spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
                    K_obs=K_obs)
 
@@ -234,13 +240,31 @@ class StellarPop_PCA(object):
 
         l = hdulists[0][2].data * u.AA
 
-        _, meta, _, specs = zip(*hdulists)
+        *_, specs = zip(*hdulists)
 
         meta = t.vstack([t.Table.read(f, format='fits', hdu=1)
                          for f in f_names])
-        spec = np.row_stack(specs)
 
-        return cls(l=l, trn_spectra=specs, gen_dicts=dicts, metadata=meta,
+        spec = np.row_stack([s.data for s in specs])
+
+        meta['Dn4000'] = spec_tools.Dn4000_index(
+            l=l.value, s=spec.T[..., None]).flatten()
+        meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
+            l=l.value, s=spec.T[..., None]).flatten()
+        meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'zmet', 'tau_V', 'mu',
+                    'MLr', 'MLi', 'MLz']
+
+        meta['MWA'].meta['TeX'] = r'MWA'
+        meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
+        meta['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
+        meta['zmet'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
+        meta['tau_V'].meta['TeX'] = r'$\tau_V$'
+        meta['mu'].meta['TeX'] = r'$\mu$'
+        meta['MLr'].meta['TeX'] = r'$(M/L)^*_r$'
+        meta['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
+        meta['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
+
+        return cls(l=l, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
                    K_obs=K_obs, dlogl=None)
 
     # =====
@@ -292,22 +316,6 @@ class StellarPop_PCA(object):
                                 dim_pc_subspace)
                 m_dims_ = (n_, p_, q_)
 
-                res_q[dim_pc_subspace] = minimize(
-                    self.__obj_fn_Pfit__,
-                    x0=np.random.uniform(-1, 1, p_ * (q_ + 1)),
-                    args=(self.metadata_a, trn_PC_wts, m_dims_))
-
-                plt.scatter(
-                    dim_pc_subspace,
-                    res_q[dim_pc_subspace].fun / dim_pc_subspace,
-                    c='b', marker='x')
-
-            plt.yscale('log')
-            plt.xlabel(r'\# of PCs kept')
-            plt.ylabel(r'$\Delta/\delta$ (sum-squared-error over DOF)')
-            plt.title('Parameter Estimation Errors')
-            plt.savefig('param_est_QA.png')
-
         # if user asks to run parameter regression of specific # of PCs
         # this also sets self attributes, so that everything is kept
         if q is not None:
@@ -331,14 +339,6 @@ class StellarPop_PCA(object):
                             len(self.metadata.colnames),
                             dim_pc_subspace)
             m_dims_ = (n_, p_, q_)
-
-            res_q = minimize(
-                self.__obj_fn_Pfit__,
-                x0=np.random.uniform(-1, 1, p_ * (q_ + 1)),
-                args=(self.metadata_a, self.trn_PC_wts, m_dims_))
-
-            self.PC2params_A = res_q.x[:(q_ * p_)].reshape((q_, p_))
-            self.PC2params_Z = res_q.x[(q_ * p_):].flatten()
 
     def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
                      mask_cube=None):
@@ -556,9 +556,9 @@ class StellarPop_PCA(object):
 
         # print(D.shape, P.shape)
 
-        #chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
-        chi2 = D.sum(axis=1)
-        w = np.exp(-chi2 / 2.)
+        chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
+        #chi2 = D.sum(axis=1)
+        w = np.exp(-chi2 / (2.)) # * C.shape[1]))
 
         return w / w.max(axis=0)
 
@@ -1658,7 +1658,7 @@ class PCA_Result(object):
         return sig.to('Msun pc-2').value
 
 
-def setup_pca(fname=None, redo=False, pkl=True, q=7):
+def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS'):
     import pickle
     if (fname is None):
         redo = True
@@ -1668,11 +1668,17 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7):
 
     if redo:
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
-        pca = StellarPop_PCA.from_YMC(
-            base_dir=mangarc.BC03_CSP_loc,
-            lib_para_file='lib_para',
-            form_file='input_model_para_for_paper',
-            spec_file_base='modelspec', K_obs=K_obs, BP=BP)
+        if src == 'FSPS':
+            pca = StellarPop_PCA.from_FSPS(
+                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs')
+        elif src == 'YMC':
+            pca = StellarPop_PCA.from_YMC(
+                base_dir=mangarc.BC03_CSP_loc,
+                lib_para_file='lib_para',
+                form_file='input_model_para_for_paper',
+                spec_file_base='modelspec', K_obs=K_obs, BP=BP)
+        else:
+            raise ValueError('invalid source')
         pca.run_pca_models(q=q)
 
         if pkl:
@@ -1760,7 +1766,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=False, q=7)
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
