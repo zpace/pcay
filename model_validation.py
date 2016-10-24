@@ -30,7 +30,7 @@ class ModelDataCompare(object):
     """
     Compare the model set and the data in a bunch of spaces
     """
-    def __init__(self, pca, dereds, rimgs, Hd_em_EWs, rimg_thr=0.):
+    def __init__(self, pca, dereds, rimgs, Hd_em_EWs, deps, rimg_thr=0.):
         self.pca = pca
         self.dereds = dereds
         self.rimgs = rimgs
@@ -40,6 +40,9 @@ class ModelDataCompare(object):
 
         self.mask = np.concatenate(
             [(r <= rimg_thr).flatten() for r in rimgs])
+
+        self.dep_d = np.concatenate(
+            [dep.d.flatten() for dep in deps])
 
         for p in ['Hdelta_A', 'Dn4000']:
             # retrieve appropriate function from spec_tools
@@ -97,6 +100,49 @@ class ModelDataCompare(object):
 
         return fig
 
+    def D4000_Hd_scatter_fig(self):
+        fig = plt.figure(figsize=(4, 4), dpi=300)
+        ax = fig.add_subplot(111)
+
+        data = np.column_stack(
+            [np.concatenate(self.Dn4000),
+             np.concatenate(self.Hdelta_A) + self.Hd_em_EWs])
+        data = data[~self.mask]
+
+        KDE_models = KDEMultivariate(data=[self.pca.metadata['D4000'],
+                                           self.pca.metadata['Hdelta_A']],
+                                     var_type='cc')
+
+        nx, ny = 100, 100
+
+        XX, YY = np.meshgrid(np.linspace(1., 2.5, nx),
+                             np.linspace(-6., 12., ny))
+
+        XXYY = np.column_stack((XX.flatten(), YY.flatten()))
+
+        ZZ_models = KDE_models.pdf(XXYY).reshape((nx, ny))
+
+        ax.contour(XX, YY, ZZ_models, colors='b')
+
+        r_plt = ax.scatter(data[:, 0], data[:, 1], facecolor=self.dep_d[~self.mask],
+                           edgecolor='None', s=3,
+                           cmap='viridis', label='MaNGA data')
+        plt.colorbar(r_plt)
+
+        ax.plot([0., 1.], [20., 20.], c='b', label='CSP models')
+
+        ax.legend(loc='best', prop={'size': 6})
+
+        ax.set_ylim([-6., 12.])
+        ax.set_xlim([1., 2.5])
+
+        ax.set_xlabel(self.pca.metadata['D4000'].meta['TeX'])
+        ax.set_ylabel(self.pca.metadata['Hdelta_A'].meta['TeX'])
+
+        plt.tight_layout()
+
+        return fig
+
 
 if __name__ == '__main__':
 
@@ -106,12 +152,13 @@ if __name__ == '__main__':
 
     pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7)
 
-    gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704',
+    gals = ['8566-12705']
+    ''', '8567-12701', '8939-12704', '8083-12704',
             '8134-12702', '8134-9102', '8135-12701', '8137-12703',
             '8140-12703', '8140-12701', '8140-3701', '8243-12704',
             '8244-9101', '8247-9101', '8249-12703', '8249-12704',
             '8252-12705', '8252-6102', '8253-6104', '8254-3704', '8254-9101',
-            '8257-12701', '8257-6101', '8257-6103', '8258-12704']
+            '8257-12701', '8257-6101', '8257-6103', '8258-12704']'''
 
     #gals = ['8567-12701']
 
@@ -121,8 +168,10 @@ if __name__ == '__main__':
         plate=int(p), ifu=int(i), MPL_v=mpl_v) for (p, i) in p_i]
     rimgs = [d.drp_hdulist['RIMG'].data for d in dereds]
     Hdelt_em_EWs = [d.dap_hdulist['EMLINE_SEW'].data[14, ...] for d in dereds]
+    deps = [m.deproject.from_plateifu(plate=p, ifu=i, MPL_v='MPL-5')
+            for (p, i) in p_i]
 
     MDComp = ModelDataCompare(pca=pca, dereds=dereds, rimgs=rimgs,
-                              Hd_em_EWs=Hdelt_em_EWs)
-    mdcomp_fig = MDComp.D4000_Hd_fig()
-    mdcomp_fig.savefig('D4000-HdA.png', dpi=300)
+                              Hd_em_EWs=Hdelt_em_EWs, deps=deps)
+    mdcomp_fig = MDComp.D4000_Hd_scatter_fig()
+    mdcomp_fig.savefig('D4000-HdA_scatter.png', dpi=300)
