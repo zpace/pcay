@@ -394,7 +394,7 @@ class FSPS_SFHBuilder(object):
             return {'zmet': self.override['zmet']}
 
         if np.random.rand() < .95:
-            return {'zmet': np.random.uniform(0.2, 2.5)}
+            return {'zmet': np.log10(np.random.uniform(0.2, 2.5))}
 
         return {'zmet': np.log10(np.random.uniform(.02, .2))}
 
@@ -437,13 +437,13 @@ class FSPS_SFHBuilder(object):
         if 'sigma' in self.override.keys():
             return {'sigma': self.override['sigma']}
 
-        return {'sigma': np.random.uniform(50., 400.)}
+        return {'sigma': np.random.uniform(10., 400.)}
 
     def continuous_sf(self, t):
         '''
         eval the continuous portion of the SFR at some time
 
-        Note: units are Msun/
+        Note: units are Msun/yr, while the time units are Gyr
         '''
         time_form = self.FSPS_args['time_form']
         eftu = self.FSPS_args['eftu']
