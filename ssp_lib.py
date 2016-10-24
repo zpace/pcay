@@ -394,9 +394,9 @@ class FSPS_SFHBuilder(object):
             return {'zmet': self.override['zmet']}
 
         if np.random.rand() < .95:
-            return {'zmet': np.random.uniform(0.2 * zsol, 2.5 * zsol)}
+            return {'zmet': np.random.uniform(0.2, 2.5)}
 
-        return {'zmet': np.log10(np.random.uniform(.02 * zsol, .2 * zsol))}
+        return {'zmet': np.log10(np.random.uniform(.02, .2))}
 
     def tau_V_gen(self):
         if 'tau_V' in self.override.keys():
