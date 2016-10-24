@@ -50,7 +50,7 @@ class FSPS_SFHBuilder(object):
 
     __version__ = '0.1'
 
-    def __init__(self, max_bursts=5, override={}):
+    def __init__(self, max_bursts=5, override={}, min_dt_cont=.03):
         '''
         set up star formation history generation to use with FSPS
 
@@ -72,6 +72,7 @@ class FSPS_SFHBuilder(object):
 
         self.p_cut = .3
         self.max_bursts = max_bursts
+        self.min_dt_cont = min_dt_cont
 
         self.cosmo = WMAP9
         # how long the universe has been around
@@ -125,7 +126,7 @@ class FSPS_SFHBuilder(object):
         sp = fsps.StellarPopulation(zcontinuous=1, add_stellar_remnants=True,
                                     smooth_velocity=True, redshift_colors=False,
                                     vactoair_flag=False, tage=self.time0, masscut=150.)
-        sp.params['imf_type'] = 1
+        sp.params['imf_type'] = 2
         sp.params['tage'] = self.time0
         sp.params['sfh'] = 3
         sp.params['logzsol'] = self.FSPS_args['zmet']
@@ -208,7 +209,7 @@ class FSPS_SFHBuilder(object):
         # ages starting at 1Myr, and going to start of SF
         ages = 10.**np.linspace(-4., np.log10(self.time0), 300)
         ts = self.time0 - ages
-        ts = np.append(ts, discont)
+        ts = np.unique(np.append(ts, discont))
         ts.sort()
         if ts[0] < 0:
             ts[0] = 0.
@@ -220,8 +221,14 @@ class FSPS_SFHBuilder(object):
 
     @property
     def disconts(self):
-        burst_ends = self.FSPS_args['time_burst'] + self.FSPS_args['dt_burst']
-        points = np.append(self.FSPS_args['time_burst'], burst_ends)
+        burst_starts = self.FSPS_args['time_burst']
+        burst_ends = burst_starts + self.FSPS_args['dt_burst']
+        dt = .01
+        burst_starts_m = burst_starts - dt
+        burst_ends_p = burst_ends + dt
+        sf_starts = self.FSPS_args['time_form'] + np.array([-dt, dt])
+        points = np.concatenate([sf_starts, burst_starts, burst_starts_m,
+                                 burst_ends, burst_ends_p])
         points = points[(0. < points) * (points < self.time0)]
         return points
 
@@ -230,28 +237,23 @@ class FSPS_SFHBuilder(object):
         FSPS_args = self.FSPS_args
         mf, mfe = integrate.quad(
             self.all_sf, 0., self.time0,
-            points=self.disconts, epsrel=5.0e-3)
+            points=self.disconts, epsrel=5.0e-3, limit=100)
         return mf * 1.0e9
 
     @property
     def mass_weighted_age(self):
 
+        ts = self.ts
+        sfrs = self.sfrs
         disconts = self.disconts
-        mtot_cont = self.mtot_cont()
-
-        def num_integrand(tau, mtot_cont):
-            return tau * self.all_sf(self.time0 - tau)
-
-        def denom_integrand(tau, mtot_cont):
-            return self.all_sf(self.time0 - tau)
 
         # integrating tau * SFR(time0 - tau) wrt tau from 0 to time0
-        num = integrate.quad(
-            num_integrand, 0., self.time0, args=(mtot_cont),
-            points=disconts, epsrel=5.0e-3)[0]
-        denom = integrate.quad(
-            denom_integrand, 0., self.time0, args=(mtot_cont),
-            points=disconts, epsrel=5.0e-3)[0]
+        num, numerr = integrate.quad(
+            lambda tau: tau * 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
+            points=disconts, epsrel=5.0e-3, limit=100)
+        denom, denomerr = integrate.quad(
+            lambda tau: 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
+            points=disconts, epsrel=5.0e-3, limit=100)
         return num / denom
 
     @property
@@ -263,7 +265,7 @@ class FSPS_SFHBuilder(object):
         disconts = disconts[disconts > self.time0 - 1.]
         mf, mfe = integrate.quad(
             self.all_sf, self.time0 - 1., self.time0,
-            points=disconts, epsrel=5.0e-3)
+            points=disconts, epsrel=5.0e-3, limit=100)
         F = mf / self.mformed_integration
         return F
 
@@ -288,7 +290,9 @@ class FSPS_SFHBuilder(object):
         if 'time_cut' in self.override.keys():
             return {'time_cut': self.override['time_cut']}
 
-        return {'time_cut': np.random.uniform(time_form, self.time0)}
+        # require at least 20 Myr of "continuous" SF before cut
+        return {'time_cut': np.random.uniform(time_form + self.min_dt_cont,
+                                              self.time0)}
 
     def eftc_gen(self):
         if 'eftc' in self.override.keys():
@@ -311,6 +315,9 @@ class FSPS_SFHBuilder(object):
 
         # if nothing is provided, and there's no random cut, use default
         elif not cut_yn:
+            return default
+        # require a certain duration of "continuous" SF
+        elif np.abs(time_form - self.time0) < self.min_dt_cont:
             return default
         # if nothing is provided, and there is a random cut, generate it!
         else:
@@ -590,11 +597,12 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
          fits.ImageHDU(l_final), fits.ImageHDU(specs_reduced)])
     hdulist[1].header['EXTNAME'] = 'meta'
     hdulist[2].header['EXTNAME'] = 'lam'
+    hdulist[2].header['DLOGL'] = dogl
     hdulist[3].header['EXTNAME'] = 'flam'
     '''
     extension list:
      - [1], 'meta': FITS table equal to `metadata`
-     - [2], 'lam': array with log-lambda, and dlogl header keyword
+     - [2], 'lam': array with lambda, and dlogl header keyword
      - [3], 'flam': array with lum-densities for each CSP on same
         wavelength grid
     '''
