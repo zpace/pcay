@@ -23,7 +23,7 @@ from scipy.integrate import quad
 
 # sklearn
 from sklearn.neighbors import KernelDensity
-from sklearn.grid_search import GridSearchCV
+from sklearn.model_selection import GridSearchCV
 
 # local
 import ssp_lib
@@ -538,7 +538,7 @@ class StellarPop_PCA(object):
 
         return K_PC
 
-    def compute_model_weights(self, P, A):
+    def compute_model_weights(self, P, A, norm='L1', soft=False):
         '''
         compute model weights for each combination of spaxel (PC fits)
             and model
@@ -550,15 +550,23 @@ class StellarPop_PCA(object):
             shape (q, NX, NY)
         '''
 
-        C = self.trn_PC_wts  # C shape: [MODELNUM, PCNUM]
+        C = self.trn_PC_wts
+        # C shape: [MODELNUM, PCNUM]
         D = np.abs(C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...])
         # D shape: [MODELNUM, PCNUM, XNUM, YNUM]
 
-        # print(D.shape, P.shape)
+        if norm == 'L2':
+            chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
+        elif norm == 'L1':
+            P_ = np.moveaxis(np.diagonal(P), [0, 1, 2], [1, 2, 0])
+            chi2 = (D * P_ * D).sum(axis=1)
 
-        chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
-        #chi2 = D.sum(axis=1)
-        w = np.exp(-chi2 / (2.)) # * C.shape[1]))
+        if soft:
+            f = C.shape[1]
+        else:
+            f = 1.
+
+        w = np.exp(-chi2 / (2. * f)) # * C.shape[1]))
 
         return w / w.max(axis=0)
 
@@ -979,12 +987,12 @@ class MaNGA_deredshift(object):
         # revisited in the future
         # proposed values... balmer_low: 0, balmer_high: 2, helium: 2
         #                    brightmetal: 0, faintmetal: 5, paschen: 10
-        add_balmer_low = EW > 0. * u.AA
-        add_balmer_high = EW > 0. * u.AA
-        add_helium = EW > 0. * u.AA
-        add_brightmetal = EW > 0. * u.AA
-        add_faintmetal = EW > 0. * u.AA
-        add_paschen = EW > 0. * u.AA
+        add_balmer_low = (EW >= 0. * u.AA)
+        add_balmer_high = (EW >= 0. * u.AA)
+        add_helium = (EW >= 0. * u.AA)
+        add_brightmetal = (EW >= 0. * u.AA)
+        add_faintmetal = (EW >= 0. * u.AA)
+        add_paschen = (EW >= 0. * u.AA)
 
         template_l = 10.**template_logl * u.AA
 
@@ -1051,7 +1059,7 @@ class PCA_Result(object):
     store results of PCA for one galaxy using this
     '''
 
-    def __init__(self, pca, dered, K_obs, z, cosmo):
+    def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
@@ -1094,7 +1102,7 @@ class PCA_Result(object):
         self.map_shape = self.O.shape[-2:]
         self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
 
-        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
+        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A, **norm_params)
 
         self.l = 10.**self.pca.logl
 
@@ -1369,9 +1377,12 @@ class PCA_Result(object):
         ax_ = ax.twinx()
 
         # marginalized posterior
-        h = ax.hist(
-            q, weights=w, bins=bins, normed=True, histtype='step',
-            color='k', label='posterior')
+        try:
+            h = ax.hist(
+                q, weights=w, bins=bins, normed=True, histtype='step',
+                color='k', label='posterior')
+        except UnboundLocalError:
+            h = None
         # marginalized prior
         hprior = ax_.hist(
             q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
@@ -1602,10 +1613,12 @@ class PCA_Result(object):
         ax.legend(loc='best', prop={'size': 6})
 
         # make contour overlay
+        '''
         Z, *_ = np.histogram2d(
             x=col.flatten(), y=np.log10(ml.flatten()), bins=[col_grid, ML_grid])
         XX, YY = np.meshgrid(midpoints(col_grid), midpoints(ML_grid))
         ax.contour(XX, YY, np.log10(Z.T), origin='lower', N=2, colors='r', linewidth=.5)
+        '''
 
         ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
         ax.set_ylabel(''.join((r'$\log$',
@@ -1766,7 +1779,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=False, q=7)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=False, q=7, src='FSPS')
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
@@ -1777,7 +1790,7 @@ if __name__ == '__main__':
     dered = MaNGA_deredshift.from_plateifu(
         plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
     obj = drpall[drpall['plateifu'] == plateifu]
-    dep = m.deproject(hdu=dered.drp_hdulist['FLUX'], drpall_row=obj)
+    dep = m.deproject.from_plateifu(plate=plate, ifu=ifu, MPL_v=mpl_v)
 
     z_dist = m.get_drpall_val(
         os.path.join(
@@ -1786,7 +1799,8 @@ if __name__ == '__main__':
         ['nsa_zdist'], plateifu)[0]['nsa_zdist']
 
     pca_res = PCA_Result(
-        pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo)
+        pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
+        norm_params={'norm': 'L2', 'soft': False})
 
     pca_res.make_full_QA_fig()
     #pca_res.make_comp_fig()
@@ -1809,5 +1823,4 @@ if __name__ == '__main__':
     pca_res.make_radial_gp_fig(qty='MLz', qty_tex=r'$(\frac{M}{L})^*_z$',
                                dep=dep, q_bdy=[1.0e-2, 1.0e2])
 
-    pca_res.make_color_ML_fig(dep)
     pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
