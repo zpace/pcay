@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as mplcm
 
 from astropy import table as t
 from statsmodels.nonparametric.kernel_density import KDEMultivariate
@@ -40,6 +41,9 @@ class ModelDataCompare(object):
 
         self.mask = np.concatenate(
             [(r <= rimg_thr).flatten() for r in rimgs])
+
+        self.rimgs = np.concatenate(
+            [r.flatten() for r in rimgs])
 
         self.dep_d = np.concatenate(
             [dep.d.flatten() for dep in deps])
@@ -124,10 +128,25 @@ class ModelDataCompare(object):
 
         ax.contour(XX, YY, ZZ_models, colors='b')
 
-        r_plt = ax.scatter(data[:, 0], data[:, 1], facecolor=self.dep_d[~self.mask],
+        # define alpha-less color
+        d = self.dep_d[~self.mask]
+        c = mplcm.viridis(d)
+
+        # make a dummy plot to reflect color dist, at alpha=1
+        imin, imax = np.argmin(d), np.argmax(d)
+        dmin, dmax = d[imin], d[imax]
+        c_plt = ax.scatter([0., 1.], [20., 20.], c=[dmin, dmax],
+                           s=3, alpha=1., cmap='viridis')
+
+        sb = self.rimgs[~self.mask]
+        # e-folding SB decrement
+        efsbd = 0.5
+        c[:, -1] = np.exp(-sb / (efsbd * sb.max()))
+
+        r_plt = ax.scatter(data[:, 0], data[:, 1], c=c,
                            edgecolor='None', s=3,
                            cmap='viridis', label='MaNGA data')
-        plt.colorbar(r_plt)
+        cb = plt.colorbar(c_plt)
 
         ax.plot([0., 1.], [20., 20.], c='b', label='CSP models')
 
