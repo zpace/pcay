@@ -597,7 +597,7 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
          fits.ImageHDU(l_final), fits.ImageHDU(specs_reduced)])
     hdulist[1].header['EXTNAME'] = 'meta'
     hdulist[2].header['EXTNAME'] = 'lam'
-    hdulist[2].header['DLOGL'] = dogl
+    hdulist[2].header['DLOGL'] = dlogl
     hdulist[3].header['EXTNAME'] = 'flam'
     '''
     extension list:
