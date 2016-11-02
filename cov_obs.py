@@ -35,14 +35,14 @@ class Cov_Obs(object):
     a class to precompute observational spectral covariance matrices
     '''
 
-    def __init__(self, cov, lllim, dlogl, nobj, SB_r_mean):
+    def __init__(self, cov, lllim, dlogl, nobj):
+        cov[cov > 100.] = 100.
         self.cov = cov
         self.nspec = len(cov)
         self.lllim = lllim
         self.loglllim = np.log10(self.lllim)
         self.dlogl = dlogl
         self.nobj = nobj
-        self.SB_r_mean = SB_r_mean
 
     # =====
     # classmethods
@@ -77,12 +77,11 @@ class Cov_Obs(object):
         qw = resids * ivars
         cov = qw.T.dot(qw) / ivars.T.dot(ivars)
 
-        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
-                   SB_r_mean=SB_r_mean)
+        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
 
     @classmethod
     def from_MaNGA_reobs(cls, lllim=3650.059970708618, nspec=4563,
-                         dlogl=1.0e-4, MPL_v=mpl_v):
+                         dlogl=1.0e-4, MPL_v=mpl_v, n=None):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
@@ -108,22 +107,32 @@ class Cov_Obs(object):
         obs_dupl = objs.groups[repeat & onesize]
 
         # final grouping
-        objs_dupl = objs_dupl = obs_dupl.group_by('mangaid')
-        # mangaids = objs_dupl.groups.keys
-        # print mangaids
+        objs_dupl = obs_dupl.group_by('mangaid')
+        mangaids = objs_dupl.groups.keys
+        n_unique = len(mangaids)
 
-        # process multiply-observed datacubes
+        # if unspecified, use all galaxies
+        if n is None:
+            n = n_unique
 
-        mults = [
-            Cov_Obs.process_MaNGA_mult(tab, nspec) for tab in objs_dupl.groups]
+        groups = [tab for tab in objs_dupl.groups]
+        use = [True if i <= n else False for i in range(n_unique)]
+        groups = [g for g, u in zip(groups, use) if u]
 
-        mults = np.row_stack(mults)
-        nobj = mults.shape[0]
+        # process multiply-observed datacubes, up to limit set
+        diffs, good, n = zip(
+            *[Cov_Obs.process_MaNGA_mult(grp, nspec)
+              for grp in groups])
 
-        cov = np.cov(mults.T)
+        diffs = np.row_stack([p for (p, g) in zip(diffs, good) if g]).T
+        n = [nn for (nn, g) in zip(n, good) if g]
+        N = np.sum(n)
 
-        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
-                   SB_r_mean=0. * m.Mgy)
+        cov = np.cov(diffs.T)
+
+        print(np.median(np.diag(cov)))
+
+        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=N)
 
     @classmethod
     def from_fits(cls, fname):
@@ -133,9 +142,7 @@ class Cov_Obs(object):
         lllim = 10.**h['LOGL0']
         dlogl = h['DLOGL']
         nobj = h['NOBJ']
-        SB_r_mean = h['SBRMEAN'] * 1.0e-9 * m.Mgy / (u.arcsec)**2.
-        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj,
-                   SB_r_mean=SB_r_mean)
+        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
 
     # =====
     # methods
@@ -147,22 +154,21 @@ class Cov_Obs(object):
         hdu.header['LOGL0'] = np.log10(self.lllim)
         hdu.header['DLOGL'] = self.dlogl
         hdu.header['NOBJ'] = self.nobj
-        hdu.header['SBRMEAN'] = self.SB_r_mean.value
         hdulist = fits.HDUList([hdu_, hdu])
         hdulist.writeto(fname, clobber=True)
 
-    def make_im(self):
+    def make_im(self, kind):
         l = self.l
         fig = plt.figure(figsize=(6, 6), dpi=300)
         ax = fig.add_subplot(111)
         im = ax.imshow(
             np.abs(self.cov), extent=[l.min(), l.max(), l.min(), l.max()],
-            vmax=np.max(np.abs(self.cov)),
+            vmax=100., vmin=1.0e-8, interpolation='None',
             aspect='equal', norm=LogNorm())
         ax.set_xlabel(r'$\lambda$', size=8)
         ax.set_ylabel(r'$\lambda$', size=8)
-        plt.colorbar(im, ax=ax)
-        plt.savefig('cov_obs.png', dpi=300)
+        plt.colorbar(im, ax=ax, shrink=0.8)
+        plt.savefig('cov_obs_{}.png'.format(kind), dpi=300)
 
     # =====
     # properties
@@ -192,7 +198,14 @@ class Cov_Obs(object):
             Missing data (such that zero or one observations are available)
             will result in an empty array (with correct dimensions)
             being returned
+
+        Returns:
+         - resids_normed: SNR-1-normed variance (or zeros array of right shape)
+         - good: indicates whether resids_normed is good
         '''
+
+        from itertools import combinations as comb
+        from scipy.signal import medfilt
 
         # load all LOGCUBES for a given MaNGA-ID
         # files have form 'manga-<PLATE>-<IFU>-LOGCUBE.fits.gz'
@@ -202,39 +215,51 @@ class Cov_Obs(object):
                                          'LOGCUBE.fits.gz')))
                   for plate, ifu in zip(tab['plate'], tab['ifudsgn'])]
 
-        # handle the case where there aren't enough observations loaded
-        if sum(map(os.path.exists, fnames)) < 2:
-            return np.zeros((0, nspec))
-
         # otherwise, move forward and load all files
         logcubes = [fits.open(f) for f in fnames]
 
-        # extract & reshape data
-        ivars = [cube['IVAR'].data for cube in logcubes]
+        # handle the odd case where there aren't enough observations loaded
+        n_reobs = len(logcubes)
+        naxis1, naxis2, naxis3 = logcubes[0]['FLUX'].data.shape
+        if n_reobs < 2:
+            return np.zeros((0, nspec)), False, 0
 
         # handle the case where LOGCUBEs have different shapes
-        if len(set([i.shape for i in ivars])) > 1:
-            return np.zeros((0, nspec))
+        if len(set(map(lambda h: h['FLUX'].data.shape, logcubes))) > 1:
+            return np.zeros((0, nspec)), False, 0
 
-        # rearrange datacube into faux RSS
-        ivars = np.stack(
-            [ivar.reshape(ivar.shape[0], -1).T for ivar in ivars])
-        fluxs = [cube['FLUX'].data for cube in logcubes]
-        fluxs = np.stack(
-            [flux.reshape(flux.shape[0], -1).T for flux in fluxs])
+        # extract & reshape data
+        fluxs = np.stack([cube['FLUX'].data.reshape((naxis1, -1)).T
+                          for cube in logcubes])
+        ivars = np.stack([cube['IVAR'].data.reshape((naxis1, -1)).T
+                          for cube in logcubes])
+
+        # replace bad pixels by median of surrounding 300 pixels
+        meds = medfilt(fluxs, [1, 301, 1])
+        fluxs[ivars == 0] = meds[ivars == 0]
+
+        # load rimg extension of only one observation
+        rimg = logcubes[0]['RIMG'].data.flatten()
+        rimg /= rimg.max()
 
         # exclude rows where any observation has zero total weight
+        # and exclude rows with low r-band signal (< 1% of max)
         good = np.all(ivars.sum(axis=-1) != 0, axis=0)
+        good *= (rimg > .01)
         ivars = ivars[:, good, :]
         fluxs = fluxs[:, good, :]
 
-        # account for spectral elements with zero total weights
-        ivars += eps
-        # mean of each row
-        mean = np.average(fluxs, axis=0, weights=ivars)
-        resids = (fluxs - mean).reshape((-1, mean.shape[1]))
+        # norm the spectra and their uncertainties
+        norms = np.average(fluxs, weights=ivars, axis=2)
+        specs = (fluxs / norms[..., None]).reshape((n_reobs, fluxs.shape[1], -1))
+        uncs_f = (np.sqrt(ivars) * specs).reshape((n_reobs, fluxs.shape[1], -1))
 
-        return resids
+        # differences between pairs
+        pairs_ixs = comb(range(n_reobs), 2)
+        diffs = np.row_stack([specs[i1, ...] - specs[i2, ...]
+                          for (i1, i2) in pairs_ixs])
+
+        return diffs, True, n_reobs * good.sum()
 
     @staticmethod
     def _mults(spAll, i_lim=10):
@@ -375,13 +400,15 @@ class Cov_Obs(object):
 
 
 if __name__ == '__main__':
+    '''
     spAll_loc = os.path.join(mangarc.zpace_sdss_data_loc,
                              'boss', 'spAll-v5_9_0.fits')
     spAll = fits.open(spAll_loc, memmap=True)
     Cov_boss = Cov_Obs.from_spAll(spAll=spAll)
     Cov_boss.write_fits('boss_Kspec.fits')
-
+    '''
     # =====
 
-    Cov_manga = Cov_Obs.from_MaNGA_reobs()
+    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=None)
     Cov_manga.write_fits('manga_Kspec.fits')
+    Cov_manga.make_im(kind='manga')
