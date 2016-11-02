@@ -522,9 +522,9 @@ class StellarPop_PCA(object):
         # PC projection takes out the effects of bad data
 
         var = (np.median(ivar) * f) / ivar
-        var[ivar/ivar.max() < .01] = 0. # np.diag(K_obs)[ivar < .01]
+        var[ivar == 0.] = 5. * np.median(var[ivar != 0.])
 
-        np.einsum('ii->i', K_obs)[:] = var
+        np.einsum('ii->i', K_obs)[:] = 1./(2. * f)
 
         K_full = K_obs + K_th
 
@@ -648,6 +648,53 @@ class StellarPop_PCA(object):
                 P, 100. * w.cumsum() / w.sum(), q)
 
         return A * factor[np.newaxis, ...]
+
+    def make_PCs_fig(self):
+        '''
+        plot eigenspectra
+        '''
+
+        import matplotlib.ticker as mticker
+
+        q = self.PCs.shape[0]
+        hdim, wdim = (4, 0.7 + 0.5 * (q + 1.))
+        fig = plt.figure(figsize=(hdim, wdim), dpi=300)
+        gs = gridspec.GridSpec((q + 1), 1)
+        hborder = (0.45 / hdim, 0.25 / hdim) #  height border
+        wborder = (0.55 / wdim, 0.25 / hdim) #  width border
+        hspace = (hdim - 1.) / 10.
+
+        gs.update(left=wborder[0], right=1. - wborder[1], wspace=0.,
+                  bottom=hborder[0], top=1. - hborder[1], hspace=hspace)
+
+        PCs = np.row_stack([self.M, self.PCs])
+
+        for i in range(q + 1):
+            ax = plt.subplot(gs[i])
+            ax.plot(self.l, PCs[i, :], color='k', linestyle='-',
+                    drawstyle='steps-mid', linewidth=1.)
+            if i == 0:
+                pcnum = 'Mean'
+            else:
+                pcnum = 'PC{}'.format(i)
+            ax.text(x=3550., y=np.mean(PCs[i, :]), s=pcnum, size=6)
+
+            loc = mticker.MaxNLocator(nbins=5)
+            ax.yaxis.set_major_locator(loc)
+
+            if i != q:
+                ax.tick_params(axis='x', labelbottom='off')
+            else:
+                ax.tick_params(axis='x', color='k', labelsize=8)
+
+            ax.tick_params(axis='y', color='k', labelsize=6)
+
+        # use last axis to give wavelength
+        ax.set_xlabel(r'$\lambda~[\textrm{\AA}]$')
+        plt.suptitle('Eigenspectra')
+
+        fig.savefig('PCs.png', dpi=300)
+
 
     # =====
     # properties
@@ -965,21 +1012,27 @@ class MaNGA_deredshift(object):
                 'template\'s is {}; input spectra\'s is {}'.format(
                     template_dlogl, self.drp_dlogl))
 
-        # determine starting index for each of the spaxels
-
+        # where does template grid start?
         template_logl0 = template_logl[0]
-        z_map = (self.vel / c.c).to('').value + self.z
+
+        # total redshift of each spaxel
+        z_map = self.z + (self.vel / c.c).to('').value
         self.z_map = z_map
-        template_logl0_z = np.log10(10.**(template_logl0) * (1. + z_map))
+
+        # redshift the template grid starting wavelenth per-spaxel
+        template_logl0_z = np.log10(
+            10.**template_logl0 * (1. + z_map))
+        template_logl0_z_ = template_logl0_z[None, ...]
+
+        # cube of logl
         drp_logl_tiled = np.tile(
             self.drp_logl[:, np.newaxis, np.newaxis],
             self.vel.shape)
-        template_logl0_z_ = template_logl0_z[np.newaxis, :, :]
 
         # find the index for the wavelength that best corresponds to
         # an appropriately redshifted wavelength grid
         logl_diff = template_logl0_z_ - drp_logl_tiled
-        ix_logl0_z = np.argmin(logl_diff**2., axis=0)
+        ix_logl0_z = np.argmin(np.abs(logl_diff), axis=0)
 
         # test whether wavelength grid extends beyond MaNGA coverage
         # in any spaxels
@@ -1020,11 +1073,14 @@ class MaNGA_deredshift(object):
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
-    def compute_eline_mask(self, template_logl, template_dlogl, ix_eline=7,
+    def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
                            half_dv=500. * u.Unit('km/s')):
 
         from elines import (balmer_low, balmer_high, paschen, helium,
                             bright_metal, faint_metal)
+
+        if template_dlogl is None:
+            template_dlogl = spec_tools.determine_dlogl(template_logl)
 
         EW = self.eline_EW(ix=ix_eline)
         # thresholds are set very aggressively for debugging, but should be
@@ -1115,9 +1171,9 @@ class PCA_Result(object):
         self.E = pca.PCs
 
         self.O, self.ivar, mask_spax = dered.regrid_to_rest(
-            template_logl=pca.logl, template_dlogl=pca.dlogl)
+            template_logl=pca.logl, template_dlogl=None)
         self.mask_cube = dered.compute_eline_mask(
-            template_logl=pca.logl, template_dlogl=pca.dlogl)
+            template_logl=pca.logl, template_dlogl=None)
 
         self.SNR_med = np.median(self.O * np.sqrt(self.ivar) + eps,
                                  axis=0)
@@ -1446,9 +1502,10 @@ class PCA_Result(object):
 
         # marginalized posterior
         if kde_post:
-            qgrid, pgrid = self.qty_kde(
+            qgrid, postgrid = self.qty_kde(
                 q=q, weights=w, kernel='gau', bw='scott', fft=False)
-            h = ax.plot(qgrid, pgrid, color='k', label='posterior')
+            h = ax.plot(qgrid, postgrid, color='k', linestyle='-',
+                        label='posterior')
         else:
             try:
                 h = ax.hist(
@@ -1459,13 +1516,26 @@ class PCA_Result(object):
 
         # marginalized prior
         if kde_prior:
-            qgrid, pgrid = self.qty_kde(
+            qgrid, prigrid = self.qty_kde(
                 q=q, kernel='gau', bw='scott', fft=False)
-            hprior = ax.plot(qgrid, pgrid, color='b', label='posterior')
+            hprior = ax.plot(qgrid, prigrid, color='b', linestyle=':',
+                             label='posterior')
         else:
             hprior = ax_.hist(
                 q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
                 label='prior')
+
+        # Bayesian evidence
+        if kde_prior and kde_post:
+            ev_ax_ = ax.twinx()
+            log_ev = np.log10(postgrid / prigrid)
+            ev_ax_.plot(qgrid, log_ev, color='g', linestyle='--', label='log-evidence')
+            he, le = ev_ax_.get_legend_handles_labels()
+            ev_ax_.yaxis.label.set_color('g')
+            ev_ax_.tick_params(axis='y', color='g', labelsize=8)
+        else:
+            he, le = None, None
+
 
         ax.yaxis.set_major_locator(plt.NullLocator())
         ax_.yaxis.set_major_locator(plt.NullLocator())
@@ -1473,12 +1543,12 @@ class PCA_Result(object):
         ax.set_xlabel(qty_tex)
 
         # value of best-fit spectrum
-        ax.axvline(q[np.argmax(w)], color='g')
+        ax.axvline(q[np.argmax(w)], color='c')
 
         if legend:
             h1, l1 = ax.get_legend_handles_labels()
             h2, l2 = ax_.get_legend_handles_labels()
-            ax.legend(h1 + h2, l1 + l2, loc='best')
+            ax.legend(h1 + h2 + he, l1 + l2 + le, loc='best', prop={'size': 8})
 
         return h, hprior
 
@@ -1858,7 +1928,8 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='YMC')
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7, src='YMC')
+    pca.make_PCs_fig()
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
