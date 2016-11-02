@@ -25,6 +25,9 @@ from scipy.integrate import quad
 from sklearn.neighbors import KernelDensity
 from sklearn.model_selection import GridSearchCV
 
+# statsmodels
+from statsmodels.nonparametric.kde import KDEUnivariate
+
 # local
 import ssp_lib
 import cov_obs
@@ -102,7 +105,7 @@ class StellarPop_PCA(object):
 
     @classmethod
     def from_YMC(cls, base_dir, lib_para_file, form_file,
-                 spec_file_base, K_obs, BP):
+                 spec_file_base, K_obs):
         '''
         initialize object from CSP library provided by Y-M Chen, which is
             based on a BC03 model library
@@ -483,25 +486,52 @@ class StellarPop_PCA(object):
 
         return E.dot(K_spec).dot(E.T)
 
-    def _compute_spec_cov_spax(self, K_obs_, var, i0, a):
+    def _compute_spec_cov_spax(self, K_obs_, ivar, i0, a, snr, flux):
         '''
         compute the spectral covariance matrix for one spaxel
 
         params:
          - K_obs_: observational covariance object
          - i0: starting index of observational covariance matrix
-         - a: mean flux-density of original spectra
+         - a: mean flux-density of original spectrum
+         - snr: signal-to-noise of original spectrum, used to scale
+             the covariance matrix
         '''
 
+        # make the theoretical cov matrix
+        # (should be relatively unimportant, <1% level)
+        # accounts for uncertainties in taking data to PCs
         K_th = self.cov_th
         nspec = K_th.shape[0]
-        K_obs = K_obs_.cov[i0:(i0 + nspec), i0:(i0 + nspec)]
 
-        K_full = K_obs / a**2. + K_th  # + np.diag(var)
+        # retrieve the right part of the full obs cov matrix
+        K_obs = K_obs_.cov[i0:(i0 + nspec), i0:(i0 + nspec)]
+        K_obs /= np.median(np.diag(K_obs))
+
+        # cov_obs assumes resids~1 ==> med. SNR~1
+        # to get the right order K_obs, multiply normed K_obs by
+        # squared reciprocal of desired SNR
+        f = (1. / snr)**2.
+        K_obs = (f * K_obs)
+
+        # and prepare to replace the diag of K_obs with var from datacube
+        # but, var is formulated for the original (non-normalized) data
+        # so it should be rescaled by its median (to bring to SNR~1),
+        # and then multiplied by f
+        # explicitly bad data has variance set to K_obs, since the robust
+        # PC projection takes out the effects of bad data
+
+        var = (np.median(ivar) * f) / ivar
+        var[ivar/ivar.max() < .01] = 0. # np.diag(K_obs)[ivar < .01]
+
+        np.einsum('ii->i', K_obs)[:] = var
+
+        K_full = K_obs + K_th
 
         return K_full
 
-    def build_PC_cov_full_iter(self, a_map, z_map, obs_logl, K_obs_, ivar):
+    def build_PC_cov_full_iter(self, a_map, z_map, obs_logl, K_obs_, ivar,
+                               snr_map, flux):
         '''
         for each spaxel, build a PC covariance matrix, and return in array
             of shape (q, q, n, n)
@@ -530,15 +560,24 @@ class StellarPop_PCA(object):
         inds = np.ndindex(mapshape)  # iterator over physical shape of cube
 
         for ind in inds:
-            K_spec = self._compute_spec_cov_spax(
-                K_obs_=K_obs_, var=1. / ivar[:, ind[0], ind[1]],
-                i0=i0_map[ind[0], ind[1]],
-                a=a_map[ind[0], ind[1]])
-            K_PC[..., ind[0], ind[1]] = E.dot(K_spec).dot(E.T)
+            # handle bad (SNR < 1) spaxels
+            if snr_map[ind[0], ind[1]] < 1.:
+                K_PC[..., ind[0], ind[1]] = 10. * np.ones((q, q))
+            else:
+                K_spec = self._compute_spec_cov_spax(
+                    K_obs_=K_obs_, ivar=ivar[:, ind[0], ind[1]],
+                    i0=i0_map[ind[0], ind[1]], a=a_map[ind[0], ind[1]],
+                    flux=flux[:, ind[0], ind[1]], snr=snr_map[ind[0], ind[1]])
+
+                K_PC[..., ind[0], ind[1]] = E.dot(K_spec).dot(E.T)
+
+                #print(np.median(np.sqrt(np.diag(K_PC[..., ind[0], ind[1]]))))
+
+        #print('ctr:', np.median(np.sqrt(np.diag(K_PC[..., 37, 37]))))
 
         return K_PC
 
-    def compute_model_weights(self, P, A, norm='L1', soft=False):
+    def compute_model_weights(self, P, A, norm='L2', soft=False):
         '''
         compute model weights for each combination of spaxel (PC fits)
             and model
@@ -548,11 +587,16 @@ class StellarPop_PCA(object):
          - A: PC weights OF OBSERVED DATA obtained from weighted PC
             projection routine (robust_project_onto_PCs),
             shape (q, NX, NY)
+
+        NOTE: this is the equivalent of taking model weights a = A[n, x, y]
+            in some spaxel (x, y), and the corresp. inv-cov matrix
+            p = P[..., x, y], training data PC weights C; constructing
+            D = C - a; and taking D \dot p \dot D
         '''
 
         C = self.trn_PC_wts
         # C shape: [MODELNUM, PCNUM]
-        D = np.abs(C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...])
+        D = C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...]
         # D shape: [MODELNUM, PCNUM, XNUM, YNUM]
 
         if norm == 'L2':
@@ -566,9 +610,9 @@ class StellarPop_PCA(object):
         else:
             f = 1.
 
-        w = np.exp(-chi2 / (2. * f)) # * C.shape[1]))
+        w = np.exp(-chi2 / (2. * f))
 
-        return w / w.max(axis=0)
+        return w
 
     def param_pct_map(self, qty, W, P, factor=None):
         '''
@@ -1020,6 +1064,8 @@ class MaNGA_deredshift(object):
             full_mask += (mask[:, np.newaxis, np.newaxis] *
                           add_[np.newaxis, ...])
 
+        full_mask = full_mask > 0.
+
         return full_mask
 
     def eline_EW(self, ix):
@@ -1073,6 +1119,9 @@ class PCA_Result(object):
         self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=pca.dlogl)
 
+        self.SNR_med = np.median(self.O * np.sqrt(self.ivar) + eps,
+                                 axis=0)
+
         self.mask_map = np.logical_or(
             mask_spax, (dered.drp_hdulist['RIMG'].data) == 0.)
 
@@ -1095,14 +1144,16 @@ class PCA_Result(object):
 
         self.K_PC = pca.build_PC_cov_full_iter(
             a_map=self.a_map, z_map=dered.z_map,
-            obs_logl=dered.drp_logl, K_obs_=K_obs, ivar=self.ivar.data)
+            obs_logl=dered.drp_logl, K_obs_=K_obs, ivar=self.ivar.data,
+            snr_map=self.SNR_med, flux=self.O.data)
 
         self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
 
         self.map_shape = self.O.shape[-2:]
         self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
 
-        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A, **norm_params)
+        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A,
+                                           **norm_params)
 
         self.l = 10.**self.pca.logl
 
@@ -1356,8 +1407,22 @@ class PCA_Result(object):
 
         return fig
 
+    def qty_kde(self, q, **kwargs):
+        '''
+        Construct and evaluate KDE for some array `q`,
+            passing other kwargs to KDE.fit()
+        '''
+
+        kde = KDEUnivariate(q)
+        kde.fit(**kwargs)
+        qgrid = np.linspace(q.min(), q.max(), len(q))
+        pgrid = np.array([kde.evaluate(q) for q in qgrid])
+        pgrid /= pgrid.max()
+
+        return qgrid, pgrid
+
     def qty_hist(self, qty, qty_tex, ix=None, ax=None, f=None, bins=50,
-                 legend=False):
+                 legend=False, kde=(False, False)):
         if ix is None:
             ix = self.ifu_ctr_ix
 
@@ -1366,6 +1431,9 @@ class PCA_Result(object):
 
         if f is None:
             f = np.ones_like(self.pca.metadata[qty])
+
+        # whether to use KDE to plot prior and/or posterior
+        kde_prior, kde_post = kde
 
         q = self.pca.metadata[qty]
         w = self.w[:, ix[0], ix[1]]
@@ -1377,16 +1445,27 @@ class PCA_Result(object):
         ax_ = ax.twinx()
 
         # marginalized posterior
-        try:
-            h = ax.hist(
-                q, weights=w, bins=bins, normed=True, histtype='step',
-                color='k', label='posterior')
-        except UnboundLocalError:
-            h = None
+        if kde_post:
+            qgrid, pgrid = self.qty_kde(
+                q=q, weights=w, kernel='gau', bw='scott', fft=False)
+            h = ax.plot(qgrid, pgrid, color='k', label='posterior')
+        else:
+            try:
+                h = ax.hist(
+                    q, weights=w, bins=bins, normed=True, histtype='step',
+                    color='k', label='posterior')
+            except UnboundLocalError:
+                h = None
+
         # marginalized prior
-        hprior = ax_.hist(
-            q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
-            label='prior')
+        if kde_prior:
+            qgrid, pgrid = self.qty_kde(
+                q=q, kernel='gau', bw='scott', fft=False)
+            hprior = ax.plot(qgrid, pgrid, color='b', label='posterior')
+        else:
+            hprior = ax_.hist(
+                q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
+                label='prior')
 
         ax.yaxis.set_major_locator(plt.NullLocator())
         ax_.yaxis.set_major_locator(plt.NullLocator())
@@ -1433,7 +1512,7 @@ class PCA_Result(object):
                 ax.coords[i].set_ticks(spacing=5. * u.arcsec)
                 ax.coords[i].set_format_unit(u.arcsec)
 
-    def make_full_QA_fig(self, ix=None):
+    def make_full_QA_fig(self, ix=None, kde=(False, False)):
         '''
         use matplotlib to make a full map of the IFU grasp, including
             diagnostic spectral fits, and histograms of possible
@@ -1493,7 +1572,8 @@ class PCA_Result(object):
             else:
                 legend = False
             h_, hprior_ = self.qty_hist(
-                qty=q, qty_tex=tex, ix=ix, ax=ax, bins=bins, legend=legend)
+                qty=q, qty_tex=tex, ix=ix, ax=ax, bins=bins, legend=legend,
+                kde=kde)
             ax.tick_params(axis='both', which='major', labelsize=10)
 
         plt.suptitle('{0}: ({1[0]}-{1[1]})'.format(self.objname, ix_))
@@ -1580,7 +1660,7 @@ class PCA_Result(object):
 
         # size of points determined by signal in redder band
         b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
-        s = 10.*np.arctan(0.05 * b2_img / np.median(b2_img))
+        s = 10.*np.arctan(0.05 * b2_img / np.median(b2_img[b2_img > 0.]))
 
         sc = ax.scatter(col.flatten(), np.log10(ml.flatten()),
                         facecolor=dep.d, edgecolor='None', s=s.flatten(),
@@ -1683,13 +1763,13 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS'):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs')
+                K_obs=K_obs, base_dir='CSPs_new', base_fname='CSPs')
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
                 lib_para_file='lib_para',
                 form_file='input_model_para_for_paper',
-                spec_file_base='modelspec', K_obs=K_obs, BP=BP)
+                spec_file_base='modelspec', K_obs=K_obs)
         else:
             raise ValueError('invalid source')
         pca.run_pca_models(q=q)
@@ -1770,7 +1850,6 @@ def get_col_metadata(col, k, notfound=''):
 
 if __name__ == '__main__':
     cosmo = WMAP9
-    BP = setup_bandpasses()
 
     mpl_v = 'MPL-5'
 
@@ -1779,7 +1858,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=False, q=7, src='FSPS')
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='YMC')
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
@@ -1802,7 +1881,7 @@ if __name__ == '__main__':
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
         norm_params={'norm': 'L2', 'soft': False})
 
-    pca_res.make_full_QA_fig()
+    pca_res.make_full_QA_fig(kde=(True, True))
     #pca_res.make_comp_fig()
 
     pca_res.make_Mstar_fig(band='r')
