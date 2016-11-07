@@ -376,26 +376,27 @@ class StellarPop_PCA(object):
         if mask_cube is not None:
             ivar *= (~mask_cube).astype(float)
 
-        # make f and ivar effectively a list of spectra
-        f = np.transpose(f, (1, 2, 0)).reshape(-1, cube_shape[0])
-        ivar = np.transpose(ivar, (1, 2, 0)).reshape(-1, cube_shape[0])
+        # account for everywhere-zero ivar
         ivar[ivar == 0.] = eps
 
         # normalize by average flux density
-        a = np.average(f, weights=ivar, axis=1)
+        a = np.average(f, weights=ivar, axis=0)
         a[a == 0.] = np.mean(a[a != 0.])
-        f = f / a[:, None]
+        f = f / a
+
         # get mean spectrum
-        S = f - self.M[np.newaxis, :]
+        O_norm = f - self.M[..., None, None]
 
         # need to do some reshaping
-        A = self.robust_project_onto_PCs(e=self.PCs, f=S, w=ivar)
+        # make f and ivar effectively a list of spectra
+        #S = np.transpose(S, (1, 2, 0)).reshape(-1, cube_shape[0])
+        #ivar = np.transpose(ivar, (1, 2, 0)).reshape(-1, cube_shape[0])
 
-        A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
+        A = self.robust_project_onto_PCs(e=self.PCs, f=O_norm, w=ivar)
 
-        O_norm = S.T.reshape((f.shape[1], ) + cube_shape[1:])
+        #A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
 
-        return A, self.M, a.reshape(cube_shape[-2:]), O_norm
+        return A, self.M, a, O_norm
 
     def _compute_i0_map(self, logl, z_map):
         '''
@@ -522,9 +523,10 @@ class StellarPop_PCA(object):
         # PC projection takes out the effects of bad data
 
         var = (np.median(ivar) * f) / ivar
-        var[ivar == 0.] = 5. * np.median(var[ivar != 0.])
+        # what about a variance weighted against 1/f by the ivar?
+        var[ivar == 0.] = f / 4.
 
-        np.einsum('ii->i', K_obs)[:] = 1./(2. * f)
+        np.einsum('ii->i', K_obs)[:] = var
 
         K_full = K_obs + K_th
 
@@ -657,12 +659,12 @@ class StellarPop_PCA(object):
         import matplotlib.ticker as mticker
 
         q = self.PCs.shape[0]
-        hdim, wdim = (4, 0.7 + 0.5 * (q + 1.))
-        fig = plt.figure(figsize=(hdim, wdim), dpi=300)
+        wdim, hdim = (6, 0.8 + 0.5 * (q + 1.))
+        fig = plt.figure(figsize=(wdim, hdim), dpi=300)
         gs = gridspec.GridSpec((q + 1), 1)
-        hborder = (0.45 / hdim, 0.25 / hdim) #  height border
+        hborder = (0.55 / hdim, 0.35 / hdim) #  height border
         wborder = (0.55 / wdim, 0.25 / hdim) #  width border
-        hspace = (hdim - 1.) / 10.
+        hspace = (hdim - 1.) / 20.
 
         gs.update(left=wborder[0], right=1. - wborder[1], wspace=0.,
                   bottom=hborder[0], top=1. - hborder[1], hspace=hspace)
@@ -672,7 +674,7 @@ class StellarPop_PCA(object):
         for i in range(q + 1):
             ax = plt.subplot(gs[i])
             ax.plot(self.l, PCs[i, :], color='k', linestyle='-',
-                    drawstyle='steps-mid', linewidth=1.)
+                    drawstyle='steps-mid', linewidth=0.5)
             if i == 0:
                 pcnum = 'Mean'
             else:
@@ -730,10 +732,10 @@ class StellarPop_PCA(object):
             the principal components of the model library
 
         params:
-         - e: n-by-l array of eigenvectors
-         - f: n-by-m array, where n is the number of spectra, and m
+         - e: (q, l) array of eigenvectors
+         - f: (l, x, y) array, where n is the number of spectra, and m
             is the number of spectral wavelength bins. [Flux-density units]
-         - w: n-by-m array, containing the inverse-variances for each
+         - w: (l, x, y) array, containing the inverse-variances for each
             of the rows in spec [Flux-density units]
             (this functions like the array w_lam in REF [1])
 
@@ -754,10 +756,13 @@ class StellarPop_PCA(object):
         else:
             w[w == 0] = eps
 
-        M = np.einsum('sk,ik,jk->sij', w, e, e)
-        F = np.einsum('sk,sk,jk->sj', w, f, e)
+        M = np.einsum('kxy,ik,jk->xyij', w, e, e)
+        F = np.einsum('kxy,kxy,jk->xyj', w, f, e)
 
-        A = np.linalg.solve(M, F)
+        #M = np.einsum('sk,ik,jk->sij', w, e, e)
+        #F = np.einsum('sk,sk,jk->sj', w, f, e)
+
+        A = np.moveaxis(np.linalg.solve(M, F), -1, 0)
 
         return A
 
@@ -998,8 +1003,6 @@ class MaNGA_deredshift(object):
         essentially picking the pixels that fall in the logl grid's range,
         after being de-redshifted
 
-        also normalizes all spectra to have flux density of mean 1
-
         (this does not perform any fancy interpolation, just "shifting")
         (nor are emission line features masked--that must be done in post-)
         '''
@@ -1069,7 +1072,6 @@ class MaNGA_deredshift(object):
         atten = atten[:, None, None]
 
         self.flux_regr /= atten
-        self.ivar_regr *= atten**2.
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -1181,7 +1183,7 @@ class PCA_Result(object):
         self.mask_map = np.logical_or(
             mask_spax, (dered.drp_hdulist['RIMG'].data) == 0.)
 
-        self.A, self.M, self.a_map, O_norm = pca.project_cube(
+        self.A, self.M, self.a_map, self.O_norm = pca.project_cube(
             f=self.O, ivar=self.ivar, mask_spax=mask_spax,
             mask_cube=self.mask_cube)
 
@@ -1533,6 +1535,8 @@ class PCA_Result(object):
             he, le = ev_ax_.get_legend_handles_labels()
             ev_ax_.yaxis.label.set_color('g')
             ev_ax_.tick_params(axis='y', color='g', labelsize=8)
+            ev_ax_.spines['right'].set_color('green')
+            ev_ax_.set_ylim([-6., 6.])
         else:
             he, le = None, None
 
