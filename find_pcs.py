@@ -282,12 +282,12 @@ class StellarPop_PCA(object):
 
         if (q is None) and (max_q is None):
             raise ValueError('must provide either or both `q`/`max_q`!')
+
         # first run some prep on the model spectra
 
-        # find lower and upper edges of each wavelength bin,
-        # and compute width of bins
-
-        # normalize each spectrum to the mean flux density
+        # S = (T / a) - M
+        # T = a * (M + S)
+        # normalize each spectrum by its avg flux density
         self.a = np.mean(self.trn_spectra, axis=1)
 
         self.normed_trn = self.trn_spectra / self.a[:, np.newaxis]
@@ -385,18 +385,43 @@ class StellarPop_PCA(object):
         f = f / a
 
         # get mean spectrum
-        O_norm = f - self.M[..., None, None]
+        O_sub = f - self.M[..., None, None]
 
         # need to do some reshaping
         # make f and ivar effectively a list of spectra
-        #S = np.transpose(S, (1, 2, 0)).reshape(-1, cube_shape[0])
-        #ivar = np.transpose(ivar, (1, 2, 0)).reshape(-1, cube_shape[0])
 
-        A = self.robust_project_onto_PCs(e=self.PCs, f=O_norm, w=ivar)
+        A = self.robust_project_onto_PCs(e=self.PCs, f=O_sub, w=ivar)
 
-        #A = A.T.reshape((A.shape[1], ) + cube_shape[1:])
+        return A, self.M, a, O_sub, f
 
-        return A, self.M, a, O_norm
+    def reconstruct_normed(self, A):
+        '''
+        reconstruct spectra to (one-normalized) cube
+
+        params:
+         - A: array of weights per spaxel
+        '''
+
+        R = np.einsum('nij,nl->lij', A, self.PCs) + self.M[:, None, None]
+
+        return R
+
+    def reconstruct_full(self, A, a):
+        '''
+        reconstruct spectra to properly-scaled cube
+
+        params:
+         - A: array of weights per spaxel
+         - a: "surface-brightness" multiplier, used to scale the cube
+        '''
+
+        # R = a * (S + M)
+        # S = A dot E
+
+        R = a[None, ...] * (np.einsum('nij,nl->lij', A, self.PCs) +
+                            self.M[:, None, None])
+
+        return R
 
     def _compute_i0_map(self, logl, z_map):
         '''
@@ -524,7 +549,7 @@ class StellarPop_PCA(object):
 
         var = (np.median(ivar) * f) / ivar
         # what about a variance weighted against 1/f by the ivar?
-        var[ivar == 0.] = f / 4.
+        var[ivar == 0.] = .0001
 
         np.einsum('ii->i', K_obs)[:] = var
 
@@ -1181,24 +1206,22 @@ class PCA_Result(object):
                                  axis=0)
 
         self.mask_map = np.logical_or(
-            mask_spax, (dered.drp_hdulist['RIMG'].data) == 0.)
+            mask_spax, dered.drp_hdulist['RIMG'].data == 0.)
 
-        self.A, self.M, self.a_map, self.O_norm = pca.project_cube(
+        self.A, self.M, self.a_map, self.O_sub, self.O_norm = pca.project_cube(
             f=self.O, ivar=self.ivar, mask_spax=mask_spax,
             mask_cube=self.mask_cube)
 
         # original spectrum
         self.O = np.ma.array(self.O, mask=self.mask_cube)
         self.ivar = np.ma.array(self.ivar, mask=self.mask_cube)
+        self.O_norm = np.ma.array(self.O_norm, mask=self.mask_cube)
 
-        # how to reconstruct datacube from PC weights cube and PC
-        # ij are IFU index, n is eigenspectrum index, l is wavelength index
-        self.O_recon = np.ma.array(
-            (self.M[:, np.newaxis, np.newaxis] + np.einsum(
-                'nij,nl->lij', self.A, self.E)) * self.a_map[np.newaxis, ...],
-            mask=self.mask_cube)
+        # how to reconstruct datacube from PC weights cube
+        self.O_recon = np.ma.array(pca.reconstruct_normed(self.A),
+                                   mask=self.mask_cube)
 
-        self.resid = np.abs((self.O - self.O_recon) / self.O)
+        self.resid = np.abs((self.O_norm - self.O_recon) / self.O_norm)
 
         self.K_PC = pca.build_PC_cov_full_iter(
             a_map=self.a_map, z_map=dered.z_map,
@@ -1323,16 +1346,20 @@ class PCA_Result(object):
         if ix is None:
             ix = self.ifu_ctr_ix
 
+        # best fitting spectrum
+        bestfit = self.pca.normed_trn[np.argmax(self.w[:, ix[0], ix[1]]), :]
+        bestfit_ = ax1.plot(self.l, bestfit,
+                            drawstyle='steps-mid', c='c', label='Best Model',
+                            linewidth=0.5)
+
         # original & reconstructed
         orig_ = ax1.plot(
-            self.l, self.O[:, ix[0], ix[1]], drawstyle='steps-mid',
-            c='b', label='Orig.')
+            self.l, self.O_norm[:, ix[0], ix[1]], drawstyle='steps-mid',
+            c='b', label='Orig.', linewidth=0.5)
         recon_ = ax1.plot(
             self.l, self.O_recon[:, ix[0], ix[1]], drawstyle='steps-mid',
-            c='g', label='Recon.')
-        bestfit = self.pca.normed_trn[np.argmax(self.w[:, ix[0], ix[1]]), :]
-        bestfit_ = ax1.plot(self.l, self.a_map[ix[0], ix[1]] * bestfit,
-                            drawstyle='steps-mid', c='c', label='Best Model')
+            c='g', label='Recon.', linewidth=0.5)
+
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
         ax1.set_ylim([-0.1 * self.O[:, ix[0], ix[1]].mean(),
@@ -1344,14 +1371,15 @@ class PCA_Result(object):
         ax1_ivar.set_yticklabels([])
         ivar_ = ax1_ivar.plot(
             self.l, self.ivar[:, ix[0], ix[1]], drawstyle='steps-mid',
-            c='m', label='Wt.')
+            c='m', label='Wt.', linewidth=0.25)
 
         # residual
         resid_ = ax2.plot(
             self.l, self.resid[:, ix[0], ix[1]], drawstyle='steps-mid',
-            c='blue')
+            c='blue', linewidth=0.5)
         resid_avg_ = ax2.axhline(
-            self.resid[:, ix[0], ix[1]].mean(), linestyle='--', c='salmon')
+            self.resid[:, ix[0], ix[1]].mean(), linestyle='--', c='salmon',
+            linewidth=0.5)
 
         ax2.set_yscale('log')
         ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
@@ -1520,11 +1548,11 @@ class PCA_Result(object):
         if kde_prior:
             qgrid, prigrid = self.qty_kde(
                 q=q, kernel='gau', bw='scott', fft=False)
-            hprior = ax.plot(qgrid, prigrid, color='b', linestyle=':',
+            hprior = ax.plot(qgrid, prigrid, color='orange', linestyle=':',
                              label='posterior')
         else:
             hprior = ax_.hist(
-                q, bins=bins, normed=True, histtype='step', color='b', alpha=0.5,
+                q, bins=bins, normed=True, histtype='step', color='orange', alpha=0.5,
                 label='prior')
 
         # Bayesian evidence
@@ -1534,7 +1562,7 @@ class PCA_Result(object):
             ev_ax_.plot(qgrid, log_ev, color='g', linestyle='--', label='log-evidence')
             he, le = ev_ax_.get_legend_handles_labels()
             ev_ax_.yaxis.label.set_color('g')
-            ev_ax_.tick_params(axis='y', color='g', labelsize=8)
+            ev_ax_.tick_params(axis='y', color='g', labelsize=8, labelcolor='g')
             ev_ax_.spines['right'].set_color('green')
             ev_ax_.set_ylim([-6., 6.])
         else:
