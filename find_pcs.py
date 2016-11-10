@@ -251,7 +251,6 @@ class StellarPop_PCA(object):
         d_names = glob(os.path.join(base_dir,'{}_*.pkl'.format(base_fname)))
         f_names = glob(os.path.join(base_dir,'{}_*.fits'.format(base_fname)))
 
-        dicts = chain.from_iterable([pickle_loader(f) for f in d_names])
         hdulists = [fits.open(f) for f in f_names]
 
         l = hdulists[0][2].data * u.AA
@@ -280,6 +279,16 @@ class StellarPop_PCA(object):
         meta['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
         meta['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
+
+        MLs_good = np.all(np.row_stack([(np.array(meta['MLr']) > 0.),
+                                        (np.array(meta['MLi']) > 0.),
+                                        (np.array(meta['MLz']) > 0.)]), axis=0)
+
+        dicts = chain.from_iterable([pickle_loader(f)
+                                     for (i, f) in enumerate(d_names)
+                                     if MLs_good[i]])
+
+        spec, meta = spec[MLs_good, :], meta[MLs_good]
 
         return cls(l=l, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
                    K_obs=K_obs, dlogl=None, src='FSPS')
@@ -889,37 +898,6 @@ class StellarPop_PCA(object):
         return A
 
     @staticmethod
-    def __obj_fn_Pfit__(XZ, P, C, dims):
-        '''
-        objective function for fitting parameters with PCs
-
-        params:
-            - P: n-by-p array, representing n spectra having p parameters
-                associated with them. P contains the true parameter values
-                for all spectra
-            - C: n-by-q array, representing principal component amplitudes
-                associated with a PCA realization, where n is the number of
-                spectra used in the PCA and q is the number of principal
-                components kept
-            - X: q-by-p array, which takes C.T to P_, an estimate of
-                the true P
-            - Z: length-p vector, representing the zeropoint associated
-                with each parameter P[:, i]
-
-        n: number of spectra
-        p: number of galaxy parameters estimated
-        q: number of PCs kept (i.e., dimension of PC subspace)
-        '''
-        (n, p, q) = dims
-
-        X = XZ[:(q * p)].reshape((q, p))
-        Z = XZ[(q * p):].flatten()
-
-        P_ = np.dot(C, X) + Z
-        P_resid_sq = (((P_ - P).sum(axis=1))**2.).sum()
-        return P_resid_sq
-
-    @staticmethod
     def PCA(data, dims=None):
         '''
         perform pure numpy PCA on array of data, returning `dims`-length
@@ -947,6 +925,9 @@ class StellarPop_PCA(object):
         # select the first n eigenvectors (n is desired dimension
         # of rescaled data array, or dims_rescaled_data)
         evecs = evecs[:, :dims].T
+
+        # make the mean of each eigenvector positive
+        evecs /= np.sign(evecs.mean(axis=1))[:, None]
 
         # transformation matrix takes (scaled) data to array of PC weights
 
