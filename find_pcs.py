@@ -396,7 +396,7 @@ class StellarPop_PCA(object):
 
         # set up figure
         # borders in inches
-        lborder, rborder = 0.25, 0.5
+        lborder, rborder = 0.3, 0.25
         uborder, dborder = 0.5, 0.25
         # subplot dimensions
         spwid, sphgt = 1.75, 1.25
@@ -431,11 +431,9 @@ class StellarPop_PCA(object):
 
             locx = mticker.MaxNLocator(nbins=5)
             locy = mticker.MaxNLocator(nbins=5)
-            locx_ = mticker.NullLocator()
             locy_ = mticker.NullLocator()
             ax.xaxis.set_major_locator(locx)
             ax.yaxis.set_major_locator(locy)
-            ax_.xaxis.set_major_locator(locx_)
             ax_.yaxis.set_major_locator(locy_)
 
             ax.tick_params(axis='both', color='k', labelsize=6)
