@@ -128,9 +128,8 @@ class Cov_Obs(object):
         n = [nn for (nn, g) in zip(n, good) if g]
         N = np.sum(n)
 
-        cov = np.cov(diffs.T)
-
-        print(np.median(np.diag(cov)))
+        cov = np.cov(diffs)
+        cov /= np.median(np.diag(cov))
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=N)
 
@@ -409,6 +408,6 @@ if __name__ == '__main__':
     '''
     # =====
 
-    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=None)
+    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=10)
     Cov_manga.write_fits('manga_Kspec.fits')
     Cov_manga.make_im(kind='manga')

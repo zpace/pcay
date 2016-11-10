@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm as mplcm
 from matplotlib import gridspec
+import matplotlib.ticker as mticker
 
 # astropy ecosystem
 from astropy import constants as c, units as u, table as t
@@ -57,7 +58,7 @@ class StellarPop_PCA(object):
     class for determining PCs of a library of synthetic spectra
     '''
 
-    def __init__(self, l, trn_spectra, gen_dicts, metadata, K_obs,
+    def __init__(self, l, trn_spectra, gen_dicts, metadata, K_obs, src,
                  dlogl=None, lllim=3700. * u.AA, lulim=7400. * u.AA):
         '''
         params:
@@ -90,10 +91,22 @@ class StellarPop_PCA(object):
 
         self.trn_spectra = trn_spectra[:, l_good]
         self.metadata = metadata
-        self.metadata_a = np.array(
-            self.metadata).view().reshape(
-            (len(self.metadata), -1))
+
+        # metadata array is anything with a 'TeX' metadata entry
+        metadata_TeX = [metadata[n].meta.get('TeX', False)
+                        for n in metadata.colnames]
+        metadata_incl = np.array([True if m is not False else False
+                                  for m in metadata_TeX])
+        self.metadata_TeX = [m for m in metadata_TeX if m is not False]
+
+        # a kludgey conversion from structured array to regular array
+        metadata_a = np.array(self.metadata)
+        metadata_a = metadata_a.view((metadata_a.dtype[0],
+                                      len(metadata_a.dtype.names)))
+        self.metadata_a = metadata_a[:, metadata_incl]
         self.gen_dicts = gen_dicts
+
+        self.src = src
 
         # observational covariance matrix
         if K_obs.__class__ != cov_obs.Cov_Obs:
@@ -223,7 +236,7 @@ class StellarPop_PCA(object):
 
         return cls(l=l_final * u.AA, trn_spectra=pca_spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
-                   K_obs=K_obs)
+                   K_obs=K_obs, src='YMC')
 
     @classmethod
     def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs'):
@@ -255,7 +268,7 @@ class StellarPop_PCA(object):
         meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
             l=l.value, s=spec.T[..., None]).flatten()
         meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'zmet', 'tau_V', 'mu',
-                    'MLr', 'MLi', 'MLz']
+                    'MLr', 'MLi', 'MLz', 'sigma']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
@@ -266,9 +279,10 @@ class StellarPop_PCA(object):
         meta['MLr'].meta['TeX'] = r'$(M/L)^*_r$'
         meta['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
         meta['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
+        meta['sigma'].meta['TeX'] = r'$\sigma$'
 
         return cls(l=l, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
-                   K_obs=K_obs, dlogl=None)
+                   K_obs=K_obs, dlogl=None, src='FSPS')
 
     # =====
     # methods
@@ -342,6 +356,93 @@ class StellarPop_PCA(object):
                             len(self.metadata.colnames),
                             dim_pc_subspace)
             m_dims_ = (n_, p_, q_)
+
+    def find_PC_param_coeffs(self):
+        '''
+        find the combination of PC amplitudes that predict the parameters
+
+        a X + Z = b
+        '''
+
+        # dependent variable (the parameter values)
+        b_ = self.metadata_a
+
+        # independent variable (the PC weights)
+        a_ = np.column_stack(
+            [self.trn_PC_wts,
+             np.ones(self.trn_PC_wts.shape[0])])
+
+        X = np.stack([np.linalg.lstsq(a=a_, b=b_[:, i])[0]
+                      for i in range(b_.shape[-1])])
+
+        return X
+
+    def make_PC_param_regr_fig(self):
+        '''
+        make a figure that compares each parameter against the PC
+            combination that most closely predicts it
+        '''
+
+        X = self.find_PC_param_coeffs()
+
+        # how many params are there?
+        # try to make a square grid, but if impossible, add another row
+        nparams = self.metadata_a.shape[1]
+        ncols = int(np.sqrt(nparams))
+        n_in_last_row = nparams % ncols
+        nrows = nparams // ncols
+        if n_in_last_row != 0:
+            nrows += 1
+
+        # set up figure
+        # borders in inches
+        lborder, rborder = 0.25, 0.5
+        uborder, dborder = 0.5, 0.25
+        # subplot dimensions
+        spwid, sphgt = 1.75, 1.25
+        figwid, fighgt = (lborder + rborder + (ncols * spwid),
+                          uborder + dborder + (nrows * sphgt))
+
+        fig = plt.figure(figsize=(figwid, fighgt), dpi=300)
+        gs = gridspec.GridSpec(ncols, nrows,
+                               left=(lborder / figwid),
+                               right=1. - (rborder / figwid),
+                               bottom=(dborder / fighgt),
+                               top = 1. - (uborder / fighgt),
+                               wspace=.2, hspace=.15)
+
+        # regresion result
+        A = self.find_PC_param_coeffs()
+
+        for i in range(nparams):
+            # set up subplots
+            ax = fig.add_subplot(gs[i])
+
+            x = np.column_stack([self.trn_PC_wts,
+                                 np.ones(self.trn_PC_wts.shape[0])])
+            y = self.metadata_a[:, i]
+            y_regr = x.dot(A[i]).flatten()
+            ax.scatter(y_regr, y, marker='.', facecolor='b', edgecolor='None',
+                       s=1., alpha=0.4)
+
+            ax_ = ax.twinx()
+            ax_.set_ylim([0., 1.])
+            ax_.text(x=y_regr.min(), y=0.8, s=self.metadata_TeX[i], size=6)
+
+            locx = mticker.MaxNLocator(nbins=5)
+            locy = mticker.MaxNLocator(nbins=5)
+            locx_ = mticker.NullLocator()
+            locy_ = mticker.NullLocator()
+            ax.xaxis.set_major_locator(locx)
+            ax.yaxis.set_major_locator(locy)
+            ax_.xaxis.set_major_locator(locx_)
+            ax_.yaxis.set_major_locator(locy_)
+
+            ax.tick_params(axis='both', color='k', labelsize=6)
+
+        fig.suptitle(t=r'$Z + A \cdot X$ vs $\{P_i\}$')
+
+        fig.savefig('param_regr_{}.png'.format(self.src), dpi=300)
 
     def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
                      mask_cube=None):
@@ -547,11 +648,11 @@ class StellarPop_PCA(object):
         # explicitly bad data has variance set to K_obs, since the robust
         # PC projection takes out the effects of bad data
 
-        var = (np.median(ivar) * f) / ivar
+        #var = (np.median(ivar) * f) / ivar
         # what about a variance weighted against 1/f by the ivar?
-        var[ivar == 0.] = .0001
+        # var[ivar == 0.] = .0001
 
-        np.einsum('ii->i', K_obs)[:] = var
+        #np.einsum('ii->i', K_obs)[:] = np.minimum(var, np.diag(K_obs))
 
         K_full = K_obs + K_th
 
@@ -639,7 +740,7 @@ class StellarPop_PCA(object):
 
         w = np.exp(-chi2 / (2. * f))
 
-        return w
+        return w / w.max()
 
     def param_pct_map(self, qty, W, P, factor=None):
         '''
@@ -681,8 +782,6 @@ class StellarPop_PCA(object):
         plot eigenspectra
         '''
 
-        import matplotlib.ticker as mticker
-
         q = self.PCs.shape[0]
         wdim, hdim = (6, 0.8 + 0.5 * (q + 1.))
         fig = plt.figure(figsize=(wdim, hdim), dpi=300)
@@ -720,7 +819,7 @@ class StellarPop_PCA(object):
         ax.set_xlabel(r'$\lambda~[\textrm{\AA}]$')
         plt.suptitle('Eigenspectra')
 
-        fig.savefig('PCs.png', dpi=300)
+        fig.savefig('PCs_{}.png'.format(self.src), dpi=300)
 
 
     # =====
@@ -892,7 +991,7 @@ class StellarPop_PCA(object):
     # =====
 
     def __str__(self):
-        return 'PCA object: q = {0[0]}, nlam = {0[1]}'.format(self.PCs.shape)
+        return 'PCA object: q = {0[0]}, l = {0[1]}'.format(self.PCs.shape)
 
 
 class Bandpass(object):
@@ -1362,8 +1461,8 @@ class PCA_Result(object):
 
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
-        ax1.set_ylim([-0.1 * self.O[:, ix[0], ix[1]].mean(),
-                      2.25 * self.O[:, ix[0], ix[1]].mean()])
+        ax1.set_ylim([-0.1 * self.O_norm[:, ix[0], ix[1]].mean(),
+                      2.25 * self.O_norm[:, ix[0], ix[1]].mean()])
         ax1.set_xticklabels([])
 
         # inverse-variance (weight) plot
@@ -1549,7 +1648,7 @@ class PCA_Result(object):
             qgrid, prigrid = self.qty_kde(
                 q=q, kernel='gau', bw='scott', fft=False)
             hprior = ax.plot(qgrid, prigrid, color='orange', linestyle=':',
-                             label='posterior')
+                             label='prior')
         else:
             hprior = ax_.hist(
                 q, bins=bins, normed=True, histtype='step', color='orange', alpha=0.5,
@@ -1558,16 +1657,28 @@ class PCA_Result(object):
         # Bayesian evidence
         if kde_prior and kde_post:
             ev_ax_ = ax.twinx()
+
             log_ev = np.log10(postgrid / prigrid)
-            ev_ax_.plot(qgrid, log_ev, color='g', linestyle='--', label='log-evidence')
+            try:
+                ev_ax_.plot(qgrid, log_ev, color='g', linestyle='--',
+                            label='log-evidence')
+            except ValueError:
+                pass
             he, le = ev_ax_.get_legend_handles_labels()
             ev_ax_.yaxis.label.set_color('g')
             ev_ax_.tick_params(axis='y', color='g', labelsize=8, labelcolor='g')
             ev_ax_.spines['right'].set_color('green')
-            ev_ax_.set_ylim([-6., 6.])
-        else:
-            he, le = None, None
 
+            if np.median(np.abs(log_ev)) <= 1.0e-2:
+                ev_ax_.set_ylim([-6., 1.])
+            else:
+                ev_ax_.set_ylim([log_ev.max() - 10., log_ev.max() + .1])
+
+        else:
+            he, le = [None, ], [None, ]
+
+        h1, l1 = ax.get_legend_handles_labels()
+        h2, l2 = ax_.get_legend_handles_labels()
 
         ax.yaxis.set_major_locator(plt.NullLocator())
         ax_.yaxis.set_major_locator(plt.NullLocator())
@@ -1578,8 +1689,6 @@ class PCA_Result(object):
         ax.axvline(q[np.argmax(w)], color='c')
 
         if legend:
-            h1, l1 = ax.get_legend_handles_labels()
-            h2, l2 = ax_.get_legend_handles_labels()
             ax.legend(h1 + h2 + he, l1 + l2 + le, loc='best', prop={'size': 8})
 
         return h, hprior
@@ -1960,8 +2069,9 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7, src='YMC')
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS')
     pca.make_PCs_fig()
+    pca.make_PC_param_regr_fig()
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
