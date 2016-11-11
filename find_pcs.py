@@ -828,6 +828,101 @@ class StellarPop_PCA(object):
 
         fig.savefig('PCs_{}.png'.format(self.src), dpi=300)
 
+    def make_params_vs_PCs_fig(self):
+        '''
+        make a triangle-plot-like figure with PC amplitudes plotted against components
+        '''
+
+        from astropy.visualization import hist as ahist
+        from itertools import product as iproduct
+
+        q = ncols = self.PCs.shape[0]
+        nparams = nrows = self.metadata_a.shape[1]
+
+        # dimensions of component subplots
+        sc_ht, sc_wid = 1., 1.
+        pch_ht, pch_wid = .6, 1.
+        pah_ht, pah_wid = 1., .6
+        lbord, rbord, ubord, dbord = 0.8, 0.4, 0.6, 0.6
+        wspace, hspace = 0.5, 0.5
+
+        wdim = lbord + rbord + pah_wid + ncols * sc_wid
+        hdim = ubord + dbord + pch_ht + nrows * sc_ht
+
+        wrs = [1 for _ in range(ncols)]
+        hrs = [1 for _ in range(nrows)]
+        wrs.append(pch_wid / sc_wid)
+        hrs.append(pah_ht / sc_ht)
+
+        fig = plt.figure(figsize=(wdim, hdim), dpi=300)
+
+        gs = gridspec.GridSpec(ncols=(ncols + 1), nrows=(nrows + 1),
+                               left=(lbord / wdim), right=(1. - rbord / wdim),
+                               bottom=(dbord / hdim), top=(1. - ubord / hdim),
+                               wspace=(wspace / wdim), hspace=(hspace / hdim),
+                               width_ratios=wrs, height_ratios=hrs)
+
+        # lists of hist axes, to allow sharex and sharey
+        PC_hist_axes = [None for _ in range(q)]
+        param_hist_axes = [None for _ in range(nparams)]
+
+        # PC histograms in top row
+        for i in range(q):
+            ax = fig.add_subplot(gs[0, i])
+            try:
+                ahist(self.trn_PC_wts[:, i], bins='knuth', ax=ax,
+                      histtype='step', orientation='vertical')
+            except ValueError:
+                pass
+            ax.tick_params(axis='x', labelbottom='off')
+            ax.tick_params(axis='y', labelleft='off')
+            PC_hist_axes[i] = ax
+
+        # param histograms in right column
+        for i in range(nrows):
+            ax = fig.add_subplot(gs[i + 1, -1])
+            try:
+                ahist(self.metadata_a[:, i], bins='knuth', ax=ax,
+                      histtype='step', orientation='horizontal')
+            except ValueError:
+                pass
+            ax.tick_params(axis='x', labelbottom='off')
+            ax.tick_params(axis='y', labelleft='off')
+            param_hist_axes[i] = ax
+
+        # scatter plots everywhere else
+        for i, j in iproduct(range(nrows), range(ncols)):
+            # i is param number
+            # j is PC number
+
+            ax = fig.add_subplot(gs[i + 1, j], sharex=PC_hist_axes[j],
+                                 sharey=param_hist_axes[i])
+            ax.scatter(self.trn_PC_wts[:, j], self.metadata_a[:, i],
+                       facecolor='k', edgecolor='None', marker='.',
+                       s=1., alpha=0.4)
+
+            # suppress x axis and y axis tick labels
+            # (except in bottom row and left column, respectively)
+
+            if i != nparams - 1:
+                ax.tick_params(axis='x', labelbottom='off')
+            else:
+                xloc = mticker.MaxNLocator(nbins=5, prune='upper')
+                ax.xaxis.set_major_locator(xloc)
+                ax.tick_params(axis='x', labelsize=6)
+                ax.set_xlabel('PC{}'.format(j), size=8)
+
+            if j != 0:
+                ax.tick_params(axis='y', labelleft='off')
+            else:
+                yloc = mticker.MaxNLocator(nbins=5, prune='upper')
+                ax.yaxis.set_major_locator(yloc)
+                ax.tick_params(axis='y', labelsize=6)
+                ax.set_ylabel(self.metadata_TeX[i], size=8)
+
+        fig.suptitle('PCs vs params')
+
+        plt.savefig('PCs_params_{}.png'.format(self.src), dpi=300)
 
     # =====
     # properties
@@ -2051,6 +2146,7 @@ if __name__ == '__main__':
     pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS')
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
+    pca.make_params_vs_PCs_fig()
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
