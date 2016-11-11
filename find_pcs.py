@@ -910,7 +910,7 @@ class StellarPop_PCA(object):
                 xloc = mticker.MaxNLocator(nbins=5, prune='upper')
                 ax.xaxis.set_major_locator(xloc)
                 ax.tick_params(axis='x', labelsize=6)
-                ax.set_xlabel('PC{}'.format(j), size=8)
+                ax.set_xlabel('PC{}'.format(j + 1), size=8)
 
             if j != 0:
                 ax.tick_params(axis='y', labelleft='off')
