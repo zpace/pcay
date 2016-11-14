@@ -34,7 +34,8 @@ import ssp_lib
 import cov_obs
 import figures_tools
 import radial
-from spectrophot import lumdens2bbdlum, color, C_ML_conv_t as CML
+from spectrophot import lumdens2bbdlum, color, C_ML_conv_t as CML,
+                        absmag_sun_band as Msun
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -197,12 +198,12 @@ class StellarPop_PCA(object):
         # compute mass to light ratio
         # convert to Lnu and integrate over bandpass
 
-        L_r = lumdens2bbdlum(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
-                             band='r').value
-        L_i = lumdens2bbdlum(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
-                             band='i').value
-        L_z = lumdens2bbdlum(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
-                             band='z').value
+        L_r = lumspec2lsun(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
+                           band='r')
+        L_i = lumspec2lsun(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
+                           band='i')
+        L_z = lumspec2lsun(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
+                           band='z')
 
         MLr = metadata['cspm_star'] / L_r
         MLi = metadata['cspm_star'] / L_i
@@ -1411,33 +1412,39 @@ class PCA_Result(object):
 
         self.l = 10.**self.pca.logl
 
-    def flux(self, band='i'):
+    def fluxdens(self, band='i'):
         '''
         return spaxel map of flux in the specified bandpass
         '''
 
-        l_ctr = {'r': 6231. * u.AA, 'i': 7625. * u.AA, 'z': 9134. * u.AA}
-
         flux_im = (self.dered.drp_hdulist[
-            '{}IMG'.format(band)].data * 3.631e-6 * u.Jy).to(
-                'erg s-1 cm-2',
-                equivalencies=u.spectral_density(l_ctr[band]))
+            '{}IMG'.format(band)].data * 3.631e-6 * u.Jy)
 
         return flux_im
 
     def lum(self, band='i'):
         '''
-        return spaxel map estimate of luminosity, in Lsun
+        return spaxel map estimate of luminosity, in solar units
 
         Retrieves the correct bandpass image, and converts to Lsun assuming
             some cosmology and redshift
         '''
 
-        flux = self.flux(band=band)
+        # get the flux-density of each spaxel in the band of choice
+        fluxdens = self.fluxdens(band=band)
 
-        stellum = (4 * np.pi * flux * (self.dist)**2.).to('Lsun')
+        # convert flux-density to AB relative magnitude
+        ABmag = -2.5 * np.log10((fluxdens / 3631. u.Jy).to('').value)
 
-        return stellum.value
+        # convert to an absolute magnitude
+        ABMag = ABmag - 5. * np.log10(
+            (self.dist / (10. * u.pc)).to('').value)
+
+        # convert to solar units
+        M_sun = Msun[band]
+        Lsun = 10.**(-0.4 * (ABMag - M_sun))
+
+        return Lsun
 
     def lum_plot(self, ax, band='i'):
 
@@ -1976,14 +1983,6 @@ class PCA_Result(object):
         ML_pred = bell_ML(col_grid)
         ax.plot(col_grid, ML_pred, c='magenta', linestyle='--', label='Bell et al. (2003)')
         ax.legend(loc='best', prop={'size': 6})
-
-        # make contour overlay
-        '''
-        Z, *_ = np.histogram2d(
-            x=col.flatten(), y=np.log10(ml.flatten()), bins=[col_grid, ML_grid])
-        XX, YY = np.meshgrid(midpoints(col_grid), midpoints(ML_grid))
-        ax.contour(XX, YY, np.log10(Z.T), origin='lower', N=2, colors='r', linewidth=.5)
-        '''
 
         ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
         ax.set_ylabel(''.join((r'$\log$',
