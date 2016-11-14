@@ -9,14 +9,57 @@ import astropy.io
 
 l_eff_d = {'r': 6166. * u.AA, 'i': 7480. * u.AA, 'z': 8932. * u.AA}
 l_wid_d = {'r': 550. * u.AA, 'i': 1300. * u.AA, 'z': 1000. * u.AA}
+absmag_sun_band = {'r': 4.68, 'i': 4.57, 'z': 4.60}  # from Sparke & Gallagher
 
 
-def lumdens2bbdlum(lam, Llam, band):
+def spec2mag(lam, Flam, band):
     '''
-    Convert a spectral luminosity density to a broadband luminosity
+    Convolve a source spectrum with a filter to get a magnitude
 
-    Convolve source spectrum/a with a filter; specific routine derived
-        from MaNGA's ml_mangatosdssimage.pro routine from DRP
+    Parameters
+    ----------
+    lam :
+        wavelength array of source spectrum
+
+    Flam :
+        Flux density, units sim to erg/s/cm2/AA
+
+    band :
+        chosen band
+    '''
+
+    # read in filter table
+    band_tab = t.Table.read('filters/{}_SDSS.res'.format(band),
+                            names=['lam', 'f'], format='ascii')
+
+    # set up interpolator
+    band_interp = interp1d(x=band_tab['lam'].quantity.value,
+                           y=band_tab['f'], fill_value=0.,
+                           bounds_error=False)
+
+    # response function
+    Rlam = band_interp(lam)
+
+    # wavelength and frequency
+    lam = lam.to('AA')
+
+    # calculate pivot wavelength of response function
+    l_eff = np.sqrt(np.trapz(x=lam, y=Rlam * lam) /
+                    np.trapz(x=lam, y=Rlam / lam))
+
+    # average flux-density over bandpass
+    Flam_avg = (np.trapz(x=lam, y=lam * Rlam * Flam) /
+                np.trapz(x=lam, y=Rlam * lam))
+
+    Fnu_avg = (Flam_avg * (l_eff**2. / c.c)).to('Jy')
+    mag = -2.5 * np.log10((Fnu_avg / (3631. * u.Jy)).to('').value)
+
+    return mag
+
+def lumspec2absmag(lam, Llam, band):
+    '''
+    Convolve a source (luminosity) spectrum with a filter to get
+        an absolute magnitude
 
     Parameters
     ----------
@@ -30,32 +73,21 @@ def lumdens2bbdlum(lam, Llam, band):
         chosen band
     '''
 
-    # make sure everything's in the right units
-    Llam = Llam.to('erg s-1 AA-1')
-    lam = lam.to('AA')
-    nu = lam.to('Hz', equivalencies=u.spectral())
+    # convert to a spectral flux-density at 10 pc
+    Flam = (Llam / (4 * np.pi * (10. * u.pc)**2.)).to('erg s-1 cm-2 AA-1')
 
-    # read in filter table
-    band_tab = t.Table.read('filters/{}_SDSS.res'.format(band),
-                            names=['lam', 'f'], format='ascii')
+    # absolute magnitude is just Lum at d=10pc
+    M = spec2mag(lam=lam, Flam=Flam, band=band)
 
-    # set up interpolator
-    band_interp = interp1d(x=band_tab['lam'].quantity.value,
-                           y=band_tab['f'], fill_value=0.,
-                           bounds_error=False)
+    return M
 
-    f = band_interp(lam)
+def lumspec2lsun(lam, Llam, band):
 
-    # convert to Lnu, by multiplying by lam^2/c
-    Lnu = (Llam * lam**2. / c.c).to('Lsun Hz-1')
+    M = lumspec2absmag(lam=lam, Llam=Llam, band=band)
+    M_sun = absmag_sun_band[band]
+    L_sun = 10.**(-0.4 * (M - M_sun))
 
-    L = trapz(x=nu.value[::-1], y=f * Lnu.value, axis=-1) * u.Lsun
-    Lnu_avg = L / (trapz(x=nu.value[::-1], y=f) * u.Hz)
-
-    l_eff = l_eff_d[band]
-    L = Lnu_avg * l_eff.to('Hz', equivalencies=u.spectral())
-
-    return L.to('Lsun')
+    return L_sun
 
 def color(hdulist, band1='g', band2='r'):
     '''
