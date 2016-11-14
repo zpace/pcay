@@ -11,6 +11,27 @@ l_eff_d = {'r': 6166. * u.AA, 'i': 7480. * u.AA, 'z': 8932. * u.AA}
 l_wid_d = {'r': 550. * u.AA, 'i': 1300. * u.AA, 'z': 1000. * u.AA}
 absmag_sun_band = {'r': 4.68, 'i': 4.57, 'z': 4.60}  # from Sparke & Gallagher
 
+def l_eff(lam, band):
+    '''
+    Calculate the effective (pivot) wavelength of a response function
+    '''
+
+    # read in filter table
+    band_tab = t.Table.read('filters/{}_SDSS.res'.format(band),
+                            names=['lam', 'f'], format='ascii')
+
+    # set up interpolator
+    band_interp = interp1d(x=band_tab['lam'].quantity.value,
+                           y=band_tab['f'], fill_value=0.,
+                           bounds_error=False)
+
+    # response function
+    Rlam = band_interp(lam)
+
+    l_eff = np.sqrt(np.trapz(x=lam, y=Rlam * lam) /
+                    np.trapz(x=lam, y=Rlam / lam)) * u.AA
+
+    return l_eff
 
 def spec2mag(lam, Flam, band):
     '''
@@ -44,14 +65,13 @@ def spec2mag(lam, Flam, band):
     lam = lam.to('AA')
 
     # calculate pivot wavelength of response function
-    l_eff = np.sqrt(np.trapz(x=lam, y=Rlam * lam) /
-                    np.trapz(x=lam, y=Rlam / lam))
+    l_eff_b = l_eff(band)
 
     # average flux-density over bandpass
     Flam_avg = (np.trapz(x=lam, y=lam * Rlam * Flam) /
                 np.trapz(x=lam, y=Rlam * lam))
 
-    Fnu_avg = (Flam_avg * (l_eff**2. / c.c)).to('Jy')
+    Fnu_avg = (Flam_avg * (l_eff_b**2. / c.c)).to('Jy')
     mag = -2.5 * np.log10((Fnu_avg / (3631. * u.Jy)).to('').value)
 
     return mag
