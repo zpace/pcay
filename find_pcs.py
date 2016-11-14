@@ -1434,7 +1434,7 @@ class PCA_Result(object):
         fluxdens = self.fluxdens(band=band)
 
         # convert flux-density to AB relative magnitude
-        ABmag = -2.5 * np.log10((fluxdens / 3631. u.Jy).to('').value)
+        ABmag = -2.5 * np.log10((fluxdens / (3631. * u.Jy)).to('').value)
 
         # convert to an absolute magnitude
         ABMag = ABmag - 5. * np.log10(

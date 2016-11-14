@@ -22,7 +22,7 @@ import fsps
 
 import multiprocessing as mpc
 
-from spectrophot import lumdens2bbdlum
+from spectrophot import lumspec2lsun
 
 zsol_padova = .019
 zs_padova = t.Table(
@@ -575,19 +575,19 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
     metadata = t.vstack(metadata)
 
     # find luminosity
-    Lr = lumdens2bbdlum(lam=l_full * u.AA,
-                        Llam=specs * u.Unit('Lsun/AA'), band='r')
-    Li = lumdens2bbdlum(lam=l_full * u.AA,
-                        Llam=specs * u.Unit('Lsun/AA'), band='i')
-    Lz = lumdens2bbdlum(lam=l_full * u.AA,
-                        Llam=specs * u.Unit('Lsun/AA'), band='z')
+    Lr = lumspec2lsun(lam=l_full * u.AA,
+                      Llam=specs * u.Unit('Lsun/AA'), band='r')
+    Li = lumspec2lsun(lam=l_full * u.AA,
+                      Llam=specs * u.Unit('Lsun/AA'), band='i')
+    Lz = lumspec2lsun(lam=l_full * u.AA,
+                      Llam=specs * u.Unit('Lsun/AA'), band='z')
 
     specs_interp = interp1d(x=l_full, y=specs, kind='linear', axis=-1)
     specs_reduced = specs_interp(l_final)
 
-    MLr, MLi, MLz = (metadata['mstar'] / Lr.value,
-                     metadata['mstar'] / Li.value,
-                     metadata['mstar'] / Li.value)
+    MLr, MLi, MLz = (metadata['mstar'] / Lr,
+                     metadata['mstar'] / Li,
+                     metadata['mstar'] / Lz)
     ML = t.Table(data=[MLr, MLi, MLz], names=['MLr', 'MLi', 'MLz'])
     metadata = t.hstack([metadata, ML])
 
