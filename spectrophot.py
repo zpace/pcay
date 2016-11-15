@@ -29,7 +29,7 @@ def l_eff(lam, band):
     Rlam = band_interp(lam)
 
     l_eff = np.sqrt(np.trapz(x=lam, y=Rlam * lam) /
-                    np.trapz(x=lam, y=Rlam / lam)) * u.AA
+                    np.trapz(x=lam, y=Rlam / lam))
 
     return l_eff
 
@@ -65,11 +65,11 @@ def spec2mag(lam, Flam, band):
     lam = lam.to('AA')
 
     # calculate pivot wavelength of response function
-    l_eff_b = l_eff(band)
+    l_eff_b = l_eff(lam=lam, band=band)
 
     # average flux-density over bandpass
-    Flam_avg = (np.trapz(x=lam, y=lam * Rlam * Flam) /
-                np.trapz(x=lam, y=Rlam * lam))
+    Flam_avg = (np.trapz(x=lam, y=lam * Rlam * Flam, axis=-1) /
+                (np.trapz(x=lam, y=Rlam * lam, axis=-1)))
 
     Fnu_avg = (Flam_avg * (l_eff_b**2. / c.c)).to('Jy')
     mag = -2.5 * np.log10((Fnu_avg / (3631. * u.Jy)).to('').value)

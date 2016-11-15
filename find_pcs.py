@@ -267,6 +267,9 @@ class StellarPop_PCA(object):
             l=l.value, s=spec.T[..., None]).flatten()
         meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
             l=l.value, s=spec.T[..., None]).flatten()
+        meta['MLr'] = np.log10(meta['MLr'])
+        meta['MLi'] = np.log10(meta['MLi'])
+        meta['MLz'] = np.log10(meta['MLz'])
         meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'zmet', 'tau_V', 'mu',
                     'MLr', 'MLi', 'MLz', 'sigma']
 
@@ -280,6 +283,17 @@ class StellarPop_PCA(object):
         meta['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
         meta['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
+
+        # note that quantity is log-scaled
+        meta['MLr'].meta['scale'] = 'log'
+        meta['MLi'].meta['scale'] = 'log'
+        meta['MLz'].meta['scale'] = 'log'
+
+        # give a minimum uncertainty for M/L
+        # (b/c of magnitude calibration errors)
+        meta['MLr'].meta['unc_incr'] = .01
+        meta['MLi'].meta['unc_incr'] = .01
+        meta['MLz'].meta['unc_incr'] = .01
 
         MLs_good = np.all(np.row_stack([(np.array(meta['MLr']) > 0.),
                                         (np.array(meta['MLi']) > 0.),
@@ -750,7 +764,7 @@ class StellarPop_PCA(object):
 
         return w / w.max()
 
-    def param_pct_map(self, qty, W, P, factor=None):
+    def param_pct_map(self, qty, W, P, factor=None, add=None):
         '''
         This is iteration based, which is not awesome.
 
@@ -762,6 +776,8 @@ class StellarPop_PCA(object):
          - P: percentile(s)
          - factor: array to multiply metadata[qty] by. This basically
             lets you get M by multiplying M/L by L
+         - add: array to add to metadata[qty]. Equivalent to factor for
+             log-space data
         '''
 
         cubeshape = W.shape[-2:]
@@ -770,6 +786,9 @@ class StellarPop_PCA(object):
 
         if factor is None:
             factor = np.ones(cubeshape)
+
+        if add is None:
+            add = np.zeros(cubeshape)
 
         inds = np.ndindex(*cubeshape)
 
@@ -783,7 +802,36 @@ class StellarPop_PCA(object):
             A[:, ind[0], ind[1]] = np.interp(
                 P, 100. * w.cumsum() / w.sum(), q)
 
-        return A * factor[np.newaxis, ...]
+        return (A + add[None, ...]) * factor[None, ...]
+
+    def param_cred_intvl(self, qty, W, factor=None):
+        '''
+        find the median and Bayesian credible interval size (two-sided)
+            of some param's PDF
+        '''
+
+        P = [16., 50., 84.]
+
+        # get scale for qty, default to linear
+        scale = self.meta[qty].meta.get('scale', 'linear')
+
+        if scale == 'log':
+            # it's CRITICAL that factor is in same units as qty
+            add, factor = factor, None
+        else:
+            add = None
+
+        # get uncertainty increase
+        unc_incr = self.meta[qty].meta.get('unc_incr', 0.)
+
+        # get param pctl maps
+        P = self.param_pct_map(qty=qty, W=W, P=P, factor=factor, add=add)
+
+        P16, P50, P84 = P[0, ...], P[1, ...], P[2, ...]
+        l_unc, u_unc = (np.abs(P50 - P16) + unc_incr,
+                        np.abs(P84 - P50) + unc_incr)
+
+        return P50, l_unc, u_unc, scale
 
     def make_PCs_fig(self):
         '''
@@ -1602,21 +1650,18 @@ class PCA_Result(object):
          - log: whether to take log10 of
         '''
 
-        pct_map = self.pca.param_pct_map(
-            qty=qty_str, W=self.w, P=np.array([16., 50., 84.]),
-            factor=f)
+        P50, l_unc, u_unc, scale = self.pca.param_cred_intvl(
+            qty=qty_str, W=self.w, factor=f)
 
         if log:
             pct_map = np.log10(pct_map)
 
         m = ax1.imshow(
-            np.ma.array(pct_map[1, :, :], mask=self.mask_map),
+            np.ma.array(P50, mask=self.mask_map),
             aspect='equal', norm=norm[0])
 
         s = ax2.imshow(
-            np.ma.array(
-                np.abs(pct_map[2, :, :] - pct_map[0, :, :]) / 2.,
-                mask=self.mask_map),
+            np.ma.array((l_unc + u_unc) / 2., mask=self.mask_map),
             aspect='equal', norm=norm[1])
 
         mcb = plt.colorbar(m, ax=ax1, pad=0.025)
@@ -1627,7 +1672,7 @@ class PCA_Result(object):
         scb.set_label('unc.', size=8)
         scb.ax.tick_params(labelsize=8)
 
-        return m, s, mcb, scb
+        return m, s, mcb, scb, scale
 
     def map_add_loc(self, ax, ix, **kwargs):
         '''
@@ -1662,7 +1707,7 @@ class PCA_Result(object):
         ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
         ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
-        m, s, mcb, scb = self.qty_map(
+        m, s, mcb, scb, scale = self.qty_map(
             qty_str=qty_str, ax1=ax1, ax2=ax2, f=f, log=log)
 
         fig.suptitle('{}: {}'.format(self.objname, qty_tex))
@@ -1855,8 +1900,7 @@ class PCA_Result(object):
         for i, (gs_, q, tex) in enum_:
             ax = fig.add_subplot(gs_)
             if 'ML' in q:
-                bins = np.logspace(-2.5, 2, 50)
-                ax.set_xscale('log')
+                bins = np.linspace(-2.5, 2, 50)
             else:
                 bins = 50
             if i == 0:
@@ -1874,7 +1918,7 @@ class PCA_Result(object):
             self.objname, ix_))
 
     def radial_gp_plot(self, qty, qty_tex, dep, f=None, ax=None,
-                       q_bdy=[-np.inf, np.inf]):
+                       q_bdy=[-np.inf, np.inf], log=False):
         '''
         make a radial plot of a quantity + uncertainties using GP regression
         '''
@@ -1882,12 +1926,10 @@ class PCA_Result(object):
         if ax is None:
             ax = plt.gca()
 
-        pct_map = self.pca.param_pct_map(
-            qty=qty, W=self.w, P=np.array([16., 50., 84.]),
-            factor=f)
+        q, l_unc, u_unc, scale = self.pca.param_cred_intvl(
+            qty=qty_str, W=self.w, factor=f)
 
-        q = pct_map[1, ...]
-        q_unc = np.abs(pct_map[2, ...] - pct_map[0, ...]) / 2.
+        q_unc = np.abs(l_unc + u_unc) / 2.
 
         # throw out spaxels at large Re
         # in future, should evaluate spectrum uncertainties directly
@@ -1912,7 +1954,8 @@ class PCA_Result(object):
                     alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
 
         # plot data
-        ax.errorbar(x=r.flatten(), y=q.flatten(), yerr=q_unc.flatten(),
+        ax.errorbar(x=r.flatten(), y=q.flatten(),
+                    yerr=np.row_stack([l_unc.flatten(), u_unc.flatten()]),
                     label='PCA Results', linestyle='None', marker='o',
                     markersize=2, c='k', alpha=0.2, capsize=1.5,
                     markevery=10, errorevery=10)
@@ -1920,9 +1963,11 @@ class PCA_Result(object):
         ax.legend(loc='best', prop={'size': 6})
 
         ax.set_xlabel(r'R [$R_e$]')
+
+        if scale == 'log':
+            qty_tex = r'$\log{{({})}}'.format(qty_tex)
         ax.set_ylabel(qty_tex)
-        ax.set_yscale('log')
-        ax.set_ylim([.01, 100.])
+        ax.set_ylim(q_bdy)
 
         return ax
 
@@ -2017,11 +2062,10 @@ class PCA_Result(object):
         qty_str = 'ML{}'.format(band)
         f = self.lum(band=band)
 
-        pct_map = self.pca.param_pct_map(
-            qty=qty_str, W=self.w, P=np.array([50.]),
-            factor=f)[0, ...]
+        P50, *_ = self.pca.param_cred_intvl(
+            qty=qty_str, W=self.w, factor=f)
 
-        return pct_map
+        return 10.**P50
 
     @property
     def dist(self):
@@ -2175,12 +2219,9 @@ if __name__ == '__main__':
     pca_res.make_Mstar_fig(band='i')
     pca_res.make_Mstar_fig(band='z')
 
-    pca_res.make_qty_fig(qty_str='MLr', qty_tex=r'$\log(\frac{M}{L})^*_r$',
-                         log=True)
-    pca_res.make_qty_fig(qty_str='MLi', qty_tex=r'$\log(\frac{M}{L})^*_i$',
-                         log=True)
-    pca_res.make_qty_fig(qty_str='MLz', qty_tex=r'$\log(\frac{M}{L})^*_z$',
-                         log=True)
+    pca_res.make_qty_fig(qty_str='MLr', qty_tex=r'$\log(\frac{M}{L})^*_r$')
+    pca_res.make_qty_fig(qty_str='MLi', qty_tex=r'$\log(\frac{M}{L})^*_i$')
+    pca_res.make_qty_fig(qty_str='MLz', qty_tex=r'$\log(\frac{M}{L})^*_z$')
 
     pca_res.make_radial_gp_fig(qty='MLr', qty_tex=r'$(\frac{M}{L})^*_r$',
                                dep=dep, q_bdy=[1.0e-2, 1.0e2])
