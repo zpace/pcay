@@ -270,6 +270,7 @@ class StellarPop_PCA(object):
         meta['MLr'] = np.log10(meta['MLr'])
         meta['MLi'] = np.log10(meta['MLi'])
         meta['MLz'] = np.log10(meta['MLz'])
+        meta['MWA'] = np.log10(meta['MWA'])
         meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'zmet', 'tau_V', 'mu',
                     'MLr', 'MLi', 'MLz', 'sigma']
 
@@ -288,6 +289,7 @@ class StellarPop_PCA(object):
         meta['MLr'].meta['scale'] = 'log'
         meta['MLi'].meta['scale'] = 'log'
         meta['MLz'].meta['scale'] = 'log'
+        meta['MWA'].meta['scale'] = 'log'
 
         # give a minimum uncertainty for M/L
         # (b/c of magnitude calibration errors)
@@ -448,6 +450,8 @@ class StellarPop_PCA(object):
             y_regr = x.dot(A[i]).flatten()
             ax.scatter(y_regr, y, marker='.', facecolor='b', edgecolor='None',
                        s=1., alpha=0.4)
+            xgrid = np.linspace(y.min(), y.max())
+            ax.plot(xgrid, xgrid, linestyle='--', c='g', linewidth=1)
 
             ax_ = ax.twinx()
             ax_.set_ylim([0., 1.])
@@ -1538,7 +1542,7 @@ class PCA_Result(object):
 
         ax1.text(x=0.2, y=0.2,
                  s=''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
-                            '{:.2f}'.format(np.log10(mstar_tot)))))
+                            '{:.2f}'.format(mstar_tot.value))))
 
         return m, s, mcb, scb
 
@@ -1780,14 +1784,14 @@ class PCA_Result(object):
                 q, bins=bins, normed=True, histtype='step', color='orange', alpha=0.5,
                 label='prior')
 
-        # Bayesian evidence
+        # log odds ratio
         if kde_prior and kde_post:
             ev_ax_ = ax.twinx()
 
             log_ev = np.log10(postgrid / prigrid)
             try:
                 ev_ax_.plot(qgrid, log_ev, color='g', linestyle='--',
-                            label='log-evidence')
+                            label='log-odds-ratio')
             except ValueError:
                 pass
             he, le = ev_ax_.get_legend_handles_labels()
@@ -2065,7 +2069,7 @@ class PCA_Result(object):
         P50, *_ = self.pca.param_cred_intvl(
             qty=qty_str, W=self.w, factor=f)
 
-        return 10.**P50
+        return P50 * u.Unit('dex(Msun)')
 
     @property
     def dist(self):
@@ -2091,7 +2095,7 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS'):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs_new', base_fname='CSPs')
+                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs')
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
