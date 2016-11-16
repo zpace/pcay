@@ -34,8 +34,8 @@ import ssp_lib
 import cov_obs
 import figures_tools
 import radial
-from spectrophot import lumdens2bbdlum, color, C_ML_conv_t as CML,
-                        absmag_sun_band as Msun
+from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
+                         absmag_sun_band as Msun)
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -231,9 +231,9 @@ class StellarPop_PCA(object):
         metadata['zmet'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
         metadata['Tau_v'].meta['TeX'] = r'$\tau_V$'
         metadata['mu'].meta['TeX'] = r'$\mu$'
-        metadata['MLr'].meta['TeX'] = r'$(M/L)^*_r$'
-        metadata['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
-        metadata['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
+        metadata['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
+        metadata['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
+        metadata['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
 
         return cls(l=l_final * u.AA, trn_spectra=pca_spec,
                    gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
@@ -280,9 +280,9 @@ class StellarPop_PCA(object):
         meta['zmet'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
         meta['tau_V'].meta['TeX'] = r'$\tau_V$'
         meta['mu'].meta['TeX'] = r'$\mu$'
-        meta['MLr'].meta['TeX'] = r'$(M/L)^*_r$'
-        meta['MLi'].meta['TeX'] = r'$(M/L)^*_i$'
-        meta['MLz'].meta['TeX'] = r'$(M/L)^*_z$'
+        meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
+        meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
+        meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
 
         # note that quantity is log-scaled
@@ -817,7 +817,7 @@ class StellarPop_PCA(object):
         P = [16., 50., 84.]
 
         # get scale for qty, default to linear
-        scale = self.meta[qty].meta.get('scale', 'linear')
+        scale = self.metadata[qty].meta.get('scale', 'linear')
 
         if scale == 'log':
             # it's CRITICAL that factor is in same units as qty
@@ -826,7 +826,7 @@ class StellarPop_PCA(object):
             add = None
 
         # get uncertainty increase
-        unc_incr = self.meta[qty].meta.get('unc_incr', 0.)
+        unc_incr = self.metadata[qty].meta.get('unc_incr', 0.)
 
         # get param pctl maps
         P = self.param_pct_map(qty=qty, W=W, P=P, factor=factor, add=add)
@@ -865,7 +865,7 @@ class StellarPop_PCA(object):
                 pcnum = 'PC{}'.format(i)
             ax.text(x=3550., y=np.mean(PCs[i, :]), s=pcnum, size=6)
 
-            loc = mticker.MaxNLocator(nbins=5)
+            loc = mticker.MaxNLocator(nbins=5, prune='upper')
             ax.yaxis.set_major_locator(loc)
 
             if i != q:
@@ -1533,16 +1533,16 @@ class PCA_Result(object):
 
         f = self.lum(band=band)
 
-        m, s, mcb, scb = self.qty_map(
+        m, s, mcb, scb, scale = self.qty_map(
             ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
-            f=f, norm=[None, None], log=True)
+            f=f, norm=[None, None], log=False)
 
         mstar_tot = np.ma.masked_invalid(np.ma.array(
             self.Mstar_tot(band=band), mask=self.mask_map)).sum()
 
         ax1.text(x=0.2, y=0.2,
                  s=''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
-                            '{:.2f}'.format(mstar_tot.value))))
+                            '{:.2f}'.format(np.log10(mstar_tot)))))
 
         return m, s, mcb, scb
 
@@ -1559,8 +1559,7 @@ class PCA_Result(object):
         ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
         ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
 
-        self.Mstar_map(
-            ax1=ax1, ax2=ax2, band=band)
+        self.Mstar_map(ax1=ax1, ax2=ax2, band=band)
         fig.suptitle(self.objname + ': ' + qty_tex)
 
         self.__fix_im_axs__([ax1, ax2])
@@ -1658,7 +1657,7 @@ class PCA_Result(object):
             qty=qty_str, W=self.w, factor=f)
 
         if log:
-            pct_map = np.log10(pct_map)
+            pct_map = np.log10(P50)
 
         m = ax1.imshow(
             np.ma.array(P50, mask=self.mask_map),
@@ -1736,7 +1735,7 @@ class PCA_Result(object):
 
         return qgrid, pgrid
 
-    def qty_hist(self, qty, qty_tex, ix=None, ax=None, f=None, bins=50,
+    def qty_hist(self, qty, ix=None, ax=None, f=None, bins=50,
                  legend=False, kde=(False, False)):
         if ix is None:
             ix = self.ifu_ctr_ix
@@ -1813,7 +1812,12 @@ class PCA_Result(object):
         ax.yaxis.set_major_locator(plt.NullLocator())
         ax_.yaxis.set_major_locator(plt.NullLocator())
 
-        ax.set_xlabel(qty_tex)
+        TeX = self.pca.metadata[qty].meta['TeX']
+
+        if self.pca.metadata[qty].meta.get('scale', 'linear') == 'log':
+            TeX = r'$\log${{({})}}'.format(TeX)
+
+        ax.set_xlabel(TeX)
 
         # value of best-fit spectrum
         ax.axvline(q[np.argmax(w)], color='c')
@@ -1900,8 +1904,8 @@ class PCA_Result(object):
 
         # loop through parameters of interest, and make a weighted
         # histogram for each parameter
-        enum_ = enumerate(zip(gs2, self.pca.metadata.colnames, TeX_labels))
-        for i, (gs_, q, tex) in enum_:
+        enum_ = enumerate(zip(gs2, self.pca.metadata.colnames))
+        for i, (gs_, q) in enum_:
             ax = fig.add_subplot(gs_)
             if 'ML' in q:
                 bins = np.linspace(-2.5, 2, 50)
@@ -1912,7 +1916,7 @@ class PCA_Result(object):
             else:
                 legend = False
             h_, hprior_ = self.qty_hist(
-                qty=q, qty_tex=tex, ix=ix, ax=ax, bins=bins, legend=legend,
+                qty=q, ix=ix, ax=ax, bins=bins, legend=legend,
                 kde=kde)
             ax.tick_params(axis='both', which='major', labelsize=10)
 
@@ -2069,7 +2073,7 @@ class PCA_Result(object):
         P50, *_ = self.pca.param_cred_intvl(
             qty=qty_str, W=self.w, factor=f)
 
-        return P50 * u.Unit('dex(Msun)')
+        return 10.**P50
 
     @property
     def dist(self):
@@ -2223,9 +2227,9 @@ if __name__ == '__main__':
     pca_res.make_Mstar_fig(band='i')
     pca_res.make_Mstar_fig(band='z')
 
-    pca_res.make_qty_fig(qty_str='MLr', qty_tex=r'$\log(\frac{M}{L})^*_r$')
-    pca_res.make_qty_fig(qty_str='MLi', qty_tex=r'$\log(\frac{M}{L})^*_i$')
-    pca_res.make_qty_fig(qty_str='MLz', qty_tex=r'$\log(\frac{M}{L})^*_z$')
+    pca_res.make_qty_fig(qty_str='MLr')
+    pca_res.make_qty_fig(qty_str='MLi')
+    pca_res.make_qty_fig(qty_str='MLz')
 
     pca_res.make_radial_gp_fig(qty='MLr', qty_tex=r'$(\frac{M}{L})^*_r$',
                                dep=dep, q_bdy=[1.0e-2, 1.0e2])
