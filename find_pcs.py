@@ -825,7 +825,10 @@ class StellarPop_PCA(object):
 
         if scale == 'log':
             # it's CRITICAL that factor is in compatible units to qty
-            add, factor = np.log10(factor), None
+            if factor is not None:
+                add, factor = np.log10(factor), None
+            else:
+                add, factor = None, None
         else:
             add = None
 
