@@ -297,9 +297,13 @@ class StellarPop_PCA(object):
         meta['MLi'].meta['unc_incr'] = .01
         meta['MLz'].meta['unc_incr'] = .01
 
-        MLs_good = np.all(np.row_stack([(np.array(meta['MLr']) > 0.),
-                                        (np.array(meta['MLi']) > 0.),
-                                        (np.array(meta['MLz']) > 0.)]), axis=0)
+        ML_ths = [-10 if meta[n].meta.get('scale') == 'log' else 0.
+                       for n in ['MLr', 'MLi', 'MLz']]
+
+        MLs_good = np.all(np.row_stack([(np.array(meta['MLr']) > ML_ths[0]),
+                                        (np.array(meta['MLi']) > ML_ths[1]),
+                                        (np.array(meta['MLz']) > ML_ths[2])]),
+                          axis=0)
 
         dicts = chain.from_iterable([pickle_loader(f)
                                      for (i, f) in enumerate(d_names)
@@ -820,8 +824,8 @@ class StellarPop_PCA(object):
         scale = self.metadata[qty].meta.get('scale', 'linear')
 
         if scale == 'log':
-            # it's CRITICAL that factor is in same units as qty
-            add, factor = factor, None
+            # it's CRITICAL that factor is in compatible units to qty
+            add, factor = np.log10(factor), None
         else:
             add = None
 
@@ -940,7 +944,11 @@ class StellarPop_PCA(object):
             except ValueError:
                 pass
             ax.tick_params(axis='x', labelbottom='off')
-            ax.tick_params(axis='y', labelleft='off')
+            yloc = mticker.MaxNLocator(nbins=5, prune='upper')
+            # tick labels on RHS of hists
+            ax.yaxis.set_major_locator(yloc)
+            ax.tick_params(axis='y', labelleft='off', labelright='on',
+                           labelsize=6)
             param_hist_axes[i] = ax
 
         # scatter plots everywhere else
@@ -1537,12 +1545,15 @@ class PCA_Result(object):
             ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
             f=f, norm=[None, None], log=False)
 
-        mstar_tot = np.ma.masked_invalid(np.ma.array(
-            self.Mstar_tot(band=band), mask=self.mask_map)).sum()
+        logmstar_tot = np.log10(np.ma.masked_invalid(np.ma.array(
+            self.Mstar_tot(band=band), mask=self.mask_map)).sum())
 
-        ax1.text(x=0.2, y=0.2,
-                 s=''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
-                            '{:.2f}'.format(np.log10(mstar_tot)))))
+        print(logmstar_tot)
+
+        TeX = ''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
+                       '{:.2f}'.format(logmstar_tot)))
+
+        ax1.text(x=0.2, y=0.2, s=TeX)
 
         return m, s, mcb, scb
 
@@ -1689,7 +1700,7 @@ class PCA_Result(object):
         ax.axhline(pix_coord[1], **kwargs)
         ax.axvline(pix_coord[0], **kwargs)
 
-    def make_qty_fig(self, qty_str, qty_tex, qty_fname=None, f=None,
+    def make_qty_fig(self, qty_str, qty_tex=None, qty_fname=None, f=None,
                      log=False):
         '''
         make a with a map of the quantity of interest
@@ -1703,6 +1714,10 @@ class PCA_Result(object):
         '''
         if qty_fname is None:
             qty_fname = qty_str
+
+        if qty_tex is None:
+            qty_tex = self.pca.metadata[qty_str].meta.get(
+                'TeX', qty_str)
 
         fig = plt.figure(figsize=(9, 4), dpi=300)
 
@@ -2195,9 +2210,9 @@ if __name__ == '__main__':
         plateifu = '8083-12704'
 
     pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS')
-    pca.make_PCs_fig()
-    pca.make_PC_param_regr_fig()
-    pca.make_params_vs_PCs_fig()
+    #pca.make_PCs_fig()
+    #pca.make_PC_param_regr_fig()
+    #pca.make_params_vs_PCs_fig()
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
@@ -2220,16 +2235,16 @@ if __name__ == '__main__':
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
         norm_params={'norm': 'L2', 'soft': False})
 
-    pca_res.make_full_QA_fig(kde=(True, True))
+    #pca_res.make_full_QA_fig(kde=(True, True))
     #pca_res.make_comp_fig()
-
-    pca_res.make_Mstar_fig(band='r')
-    pca_res.make_Mstar_fig(band='i')
-    pca_res.make_Mstar_fig(band='z')
 
     pca_res.make_qty_fig(qty_str='MLr')
     pca_res.make_qty_fig(qty_str='MLi')
     pca_res.make_qty_fig(qty_str='MLz')
+
+    pca_res.make_Mstar_fig(band='r')
+    pca_res.make_Mstar_fig(band='i')
+    pca_res.make_Mstar_fig(band='z')
 
     pca_res.make_radial_gp_fig(qty='MLr', qty_tex=r'$(\frac{M}{L})^*_r$',
                                dep=dep, q_bdy=[1.0e-2, 1.0e2])
