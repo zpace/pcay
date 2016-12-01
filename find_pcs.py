@@ -224,7 +224,7 @@ class StellarPop_PCA(object):
         metadata.add_column(t.Column(data=MLz, name='MLz'))
 
         # set metadata to enable plotting later
-        metadata['MWA'].meta['TeX'] = r'MWA'
+        metadata['MWA'].meta['TeX'] = r'$\textrm{MWA [Gyr]}$'
         metadata['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
         metadata['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
         metadata['Fstar'].meta['TeX'] = r'$F^*$'
@@ -240,7 +240,8 @@ class StellarPop_PCA(object):
                    K_obs=K_obs, src='YMC')
 
     @classmethod
-    def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs'):
+    def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=None,
+                  log_params=['MWA', 'MLr', 'MLi', 'MLz']):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
         '''
@@ -251,6 +252,10 @@ class StellarPop_PCA(object):
 
         d_names = glob(os.path.join(base_dir,'{}_*.pkl'.format(base_fname)))
         f_names = glob(os.path.join(base_dir,'{}_*.fits'.format(base_fname)))
+
+        if nfiles is not None:
+            d_names = d_names[:nfiles]
+            f_names = f_names[:nfiles]
 
         hdulists = [fits.open(f) for f in f_names]
 
@@ -267,10 +272,6 @@ class StellarPop_PCA(object):
             l=l.value, s=spec.T[..., None]).flatten()
         meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
             l=l.value, s=spec.T[..., None]).flatten()
-        meta['MLr'] = np.log10(meta['MLr'])
-        meta['MLi'] = np.log10(meta['MLi'])
-        meta['MLz'] = np.log10(meta['MLz'])
-        meta['MWA'] = np.log10(meta['MWA'])
         meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'zmet', 'tau_V', 'mu',
                     'MLr', 'MLi', 'MLz', 'sigma']
 
@@ -285,31 +286,35 @@ class StellarPop_PCA(object):
         meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
 
-        # note that quantity is log-scaled
-        meta['MLr'].meta['scale'] = 'log'
-        meta['MLi'].meta['scale'] = 'log'
-        meta['MLz'].meta['scale'] = 'log'
-        meta['MWA'].meta['scale'] = 'log'
+        for n in meta.colnames:
+            if n in log_params:
+                meta[n] = np.log10(meta[n])
+                meta[n].meta['scale'] = 'log'
+                if 'ML' in n:
+                    meta[n].meta['unc_incr'] = .008
 
-        # give a minimum uncertainty for M/L
-        # (b/c of magnitude calibration errors)
-        meta['MLr'].meta['unc_incr'] = .01
-        meta['MLi'].meta['unc_incr'] = .01
-        meta['MLz'].meta['unc_incr'] = .01
+        # M/L thresholds
+        ML_ths = [-10 if meta[n].meta.get('scale', 'linear') == 'log' else 0.
+                  for n in ['MLr', 'MLi', 'MLz']]
 
-        ML_ths = [-10 if meta[n].meta.get('scale') == 'log' else 0.
-                       for n in ['MLr', 'MLi', 'MLz']]
+        # MWA bounds
+        if meta['MWA'].meta.get('scale', 'linear') == 'log':
+            MWA_bds = [-10, 3] # log Gyr
+        else:
+            MWA_bds = [0, 14] # Gyr
 
-        MLs_good = np.all(np.row_stack([(np.array(meta['MLr']) > ML_ths[0]),
-                                        (np.array(meta['MLi']) > ML_ths[1]),
-                                        (np.array(meta['MLz']) > ML_ths[2])]),
-                          axis=0)
+        models_good = np.all(np.row_stack(
+            [(np.array(meta['MLr']) > ML_ths[0]),
+             (np.array(meta['MLi']) > ML_ths[1]),
+             (np.array(meta['MLz']) > ML_ths[2]),
+             (np.array(meta['MWA']) > MWA_bds[0]),
+             (np.array(meta['MWA']) < MWA_bds[1])]), axis=0)
 
-        dicts = chain.from_iterable([pickle_loader(f)
-                                     for (i, f) in enumerate(d_names)
-                                     if MLs_good[i]])
+        dicts = chain.from_iterable(
+            [pickle_loader(f) for (i, f) in enumerate(d_names)
+             if models_good[i]])
 
-        spec, meta = spec[MLs_good, :], meta[MLs_good]
+        spec, meta = spec[models_good, :], meta[models_good]
 
         return cls(l=l, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
                    K_obs=K_obs, dlogl=None, src='FSPS')
@@ -386,93 +391,6 @@ class StellarPop_PCA(object):
                             len(self.metadata.colnames),
                             dim_pc_subspace)
             m_dims_ = (n_, p_, q_)
-
-    def find_PC_param_coeffs(self):
-        '''
-        find the combination of PC amplitudes that predict the parameters
-
-        a X + Z = b
-        '''
-
-        # dependent variable (the parameter values)
-        b_ = self.metadata_a
-
-        # independent variable (the PC weights)
-        a_ = np.column_stack(
-            [self.trn_PC_wts,
-             np.ones(self.trn_PC_wts.shape[0])])
-
-        X = np.stack([np.linalg.lstsq(a=a_, b=b_[:, i])[0]
-                      for i in range(b_.shape[-1])])
-
-        return X
-
-    def make_PC_param_regr_fig(self):
-        '''
-        make a figure that compares each parameter against the PC
-            combination that most closely predicts it
-        '''
-
-        X = self.find_PC_param_coeffs()
-
-        # how many params are there?
-        # try to make a square grid, but if impossible, add another row
-        nparams = self.metadata_a.shape[1]
-        ncols = int(np.sqrt(nparams))
-        n_in_last_row = nparams % ncols
-        nrows = nparams // ncols
-        if n_in_last_row != 0:
-            nrows += 1
-
-        # set up figure
-        # borders in inches
-        lborder, rborder = 0.3, 0.25
-        uborder, dborder = 0.5, 0.25
-        # subplot dimensions
-        spwid, sphgt = 1.75, 1.25
-        figwid, fighgt = (lborder + rborder + (ncols * spwid),
-                          uborder + dborder + (nrows * sphgt))
-
-        fig = plt.figure(figsize=(figwid, fighgt), dpi=300)
-        gs = gridspec.GridSpec(ncols, nrows,
-                               left=(lborder / figwid),
-                               right=1. - (rborder / figwid),
-                               bottom=(dborder / fighgt),
-                               top = 1. - (uborder / fighgt),
-                               wspace=.2, hspace=.15)
-
-        # regresion result
-        A = self.find_PC_param_coeffs()
-
-        for i in range(nparams):
-            # set up subplots
-            ax = fig.add_subplot(gs[i])
-
-            x = np.column_stack([self.trn_PC_wts,
-                                 np.ones(self.trn_PC_wts.shape[0])])
-            y = self.metadata_a[:, i]
-            y_regr = x.dot(A[i]).flatten()
-            ax.scatter(y_regr, y, marker='.', facecolor='b', edgecolor='None',
-                       s=1., alpha=0.4)
-            xgrid = np.linspace(y.min(), y.max())
-            ax.plot(xgrid, xgrid, linestyle='--', c='g', linewidth=1)
-
-            ax_ = ax.twinx()
-            ax_.set_ylim([0., 1.])
-            ax_.text(x=y_regr.min(), y=0.8, s=self.metadata_TeX[i], size=6)
-
-            locx = mticker.MaxNLocator(nbins=5)
-            locy = mticker.MaxNLocator(nbins=5)
-            locy_ = mticker.NullLocator()
-            ax.xaxis.set_major_locator(locx)
-            ax.yaxis.set_major_locator(locy)
-            ax_.yaxis.set_major_locator(locy_)
-
-            ax.tick_params(axis='both', color='k', labelsize=6)
-
-        fig.suptitle(t=r'$Z + A \cdot X$ vs $\{P_i\}$')
-
-        fig.savefig('param_regr_{}.png'.format(self.src), dpi=300)
 
     def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
                      mask_cube=None):
@@ -668,7 +586,7 @@ class StellarPop_PCA(object):
         # cov_obs assumes resids~1 ==> med. SNR~1
         # to get the right order K_obs, multiply normed K_obs by
         # squared reciprocal of desired SNR
-        f = (1. / snr)**2.
+        f = (1. / snr)  # **2.
         K_obs = (f * K_obs)
 
         # and prepare to replace the diag of K_obs with var from datacube
@@ -754,14 +672,22 @@ class StellarPop_PCA(object):
 
         C = self.trn_PC_wts
         # C shape: [MODELNUM, PCNUM]
-        D = C[..., np.newaxis, np.newaxis] - A[np.newaxis, ...]
+        # A shape: [PCNUM, XNUM, YNUM]
+        D = C[..., None, None] - A[None, ...]
         # D shape: [MODELNUM, PCNUM, XNUM, YNUM]
+        nmodels, q, NX, NY = D.shape
+        Xhalf, Yhalf = NX // 2, NY // 2
 
         if norm == 'L2':
             chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
         elif norm == 'L1':
             P_ = np.moveaxis(np.diagonal(P), [0, 1, 2], [1, 2, 0])
             chi2 = (D * P_ * D).sum(axis=1)
+        elif norm == 'cos':
+            C_norm = np.sqrt((C**2.).sum(axis=1))[..., None, None]
+            A_norm = np.sqrt((A**2.).sum(axis=0))[None, ...]
+            chi2 = (np.sqrt(np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)) /
+                    (A_norm * C_norm))
 
         if soft:
             f = C.shape[1]
@@ -770,7 +696,7 @@ class StellarPop_PCA(object):
 
         w = np.exp(-chi2 / (2. * f))
 
-        return w / w.max()
+        return w
 
     def param_pct_map(self, qty, W, P, factor=None, add=None):
         '''
@@ -838,9 +764,13 @@ class StellarPop_PCA(object):
         # get param pctl maps
         P = self.param_pct_map(qty=qty, W=W, P=P, factor=factor, add=add)
 
-        P16, P50, P84 = P[0, ...], P[1, ...], P[2, ...]
-        l_unc, u_unc = (np.abs(P50 - P16) + unc_incr,
-                        np.abs(P84 - P50) + unc_incr)
+        P16, P50, P84 = tuple(map(np.squeeze, np.split(P, 3, axis=0)))
+        if scale == 'log':
+            l_unc, u_unc = (np.abs(P50 - P16) + unc_incr,
+                            np.abs(P84 - P50) + unc_incr)
+        else:
+            l_unc, u_unc = (np.abs(P50 - P16) + unc_incr,
+                            np.abs(P84 - P50) + unc_incr)
 
         return P50, l_unc, u_unc, scale
 
@@ -931,7 +861,13 @@ class StellarPop_PCA(object):
             ax = fig.add_subplot(gs[0, i])
             try:
                 ahist(self.trn_PC_wts[:, i], bins='knuth', ax=ax,
-                      histtype='step', orientation='vertical')
+                      histtype='step', orientation='vertical',
+                      linewidth=0.5)
+            # handle when there are tons and tons of models
+            except MemoryError:
+                ahist(self.trn_PC_wts[:, i], bins=50, ax=ax,
+                      histtype='step', orientation='vertical',
+                      linewidth=0.5)
             except ValueError:
                 pass
             ax.tick_params(axis='x', labelbottom='off')
@@ -943,7 +879,13 @@ class StellarPop_PCA(object):
             ax = fig.add_subplot(gs[i + 1, -1])
             try:
                 ahist(self.metadata_a[:, i], bins='knuth', ax=ax,
-                      histtype='step', orientation='horizontal')
+                      histtype='step', orientation='horizontal',
+                      linewidth=0.5)
+            # handle when there are tons and tons of models
+            except MemoryError:
+                ahist(self.trn_PC_wts[:, i], bins=50, ax=ax,
+                      histtype='step', orientation='horizontal',
+                      linewidth=0.5)
             except ValueError:
                 pass
             ax.tick_params(axis='x', labelbottom='off')
@@ -987,6 +929,97 @@ class StellarPop_PCA(object):
         fig.suptitle('PCs vs params')
 
         plt.savefig('PCs_params_{}.png'.format(self.src), dpi=300)
+
+    def find_PC_param_coeffs(self):
+        '''
+        find the combination of PC amplitudes that predict the parameters
+
+        a X + Z = b
+        '''
+
+        # dependent variable (the parameter values)
+        b_ = self.metadata_a
+
+        # independent variable (the PC weights)
+        a_ = np.column_stack(
+            [self.trn_PC_wts,
+             np.ones(self.trn_PC_wts.shape[0])])
+
+        X = np.stack([np.linalg.lstsq(a=a_, b=b_[:, i])[0]
+                      for i in range(b_.shape[-1])])
+
+        return X
+
+    def make_PC_param_regr_fig(self):
+        '''
+        make a figure that compares each parameter against the PC
+            combination that most closely predicts it
+        '''
+
+        X = self.find_PC_param_coeffs()
+
+        # how many params are there?
+        # try to make a square grid, but if impossible, add another row
+        nparams = self.metadata_a.shape[1]
+        ncols = int(np.sqrt(nparams))
+        n_in_last_row = nparams % ncols
+        nrows = nparams // ncols
+        if n_in_last_row != 0:
+            nrows += 1
+
+        # set up figure
+        # borders in inches
+        lborder, rborder = 0.3, 0.25
+        uborder, dborder = 0.5, 0.25
+        # subplot dimensions
+        spwid, sphgt = 1.75, 1.25
+        figwid, fighgt = (lborder + rborder + (ncols * spwid),
+                          uborder + dborder + (nrows * sphgt))
+
+        fig = plt.figure(figsize=(figwid, fighgt), dpi=300)
+        gs = gridspec.GridSpec(ncols, nrows,
+                               left=(lborder / figwid),
+                               right=1. - (rborder / figwid),
+                               bottom=(dborder / fighgt),
+                               top = 1. - (uborder / fighgt),
+                               wspace=.2, hspace=.15)
+
+        # regresion result
+        A = self.find_PC_param_coeffs()
+
+        for i in range(nparams):
+            # set up subplots
+            ax = fig.add_subplot(gs[i])
+
+            x = np.column_stack([self.trn_PC_wts,
+                                 np.ones(self.trn_PC_wts.shape[0])])
+            y = self.metadata_a[:, i]
+            y_regr = x.dot(A[i]).flatten()
+            ax.scatter(y_regr, y, marker='.', facecolor='b', edgecolor='None',
+                       s=1., alpha=0.4)
+            xgrid = np.linspace(y.min(), y.max())
+            ax.plot(xgrid, xgrid, linestyle='--', c='g', linewidth=1)
+
+            ax_ = ax.twinx()
+            ax_.set_ylim([0., 1.])
+            ax_.text(x=y_regr.min(), y=0.85, s=self.metadata_TeX[i], size=6)
+            # rms
+            rms = np.sqrt(np.mean((y_regr - y)**2))
+            ax_.text(x=y_regr.min(), y=0.775, s='rms = {:.3f}'.format(rms),
+                     size=6)
+
+            locx = mticker.MaxNLocator(nbins=5, steps=[1, 2, 5, 10])
+            locy = mticker.MaxNLocator(nbins=5, steps=[1, 2, 5, 10])
+            locy_ = mticker.NullLocator()
+            ax.xaxis.set_major_locator(locx)
+            ax.yaxis.set_major_locator(locy)
+            ax_.yaxis.set_major_locator(locy_)
+
+            ax.tick_params(axis='both', color='k', labelsize=6)
+
+        fig.suptitle(t=r'$Z + A \cdot X$ vs $\{P_i\}$')
+
+        fig.savefig('param_regr_{}.png'.format(self.src), dpi=300)
 
     # =====
     # properties
@@ -1391,6 +1424,16 @@ class MaNGA_deredshift(object):
     def eline_EW(self, ix):
         return self.dap_hdulist['EMLINE_SEW'].data[ix] * u.Unit('AA')
 
+    def coadd(self):
+        '''
+        return coadded spectrum and ivar
+        '''
+
+        flux = np.sum(self.flux_regr, axis=(1, 2))
+        ivar = np.sum(self.ivar_regr, axis=(1, 2))
+
+        return flux, ivar
+
     # =====
     # properties
     # =====
@@ -1400,6 +1443,7 @@ class MaNGA_deredshift(object):
         # RIMG gives nMgy/pix
         return self.drp_hdulist['RIMG'].data * \
             1.0e-9 * m.Mgy / self.spaxel_side**2.
+
 
     # =====
     # staticmethods
@@ -1431,6 +1475,8 @@ class PCA_Result(object):
         self.dered = dered
         self.cosmo = cosmo
         self.z = z
+        self.norm_params = norm_params
+        self.K_obs = K_obs
 
         self.E = pca.PCs
 
@@ -1462,7 +1508,7 @@ class PCA_Result(object):
 
         self.K_PC = pca.build_PC_cov_full_iter(
             a_map=self.a_map, z_map=dered.z_map,
-            obs_logl=dered.drp_logl, K_obs_=K_obs, ivar=self.ivar.data,
+            obs_logl=dered.drp_logl, K_obs_=self.K_obs, ivar=self.ivar.data,
             snr_map=self.SNR_med, flux=self.O.data)
 
         self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
@@ -1530,57 +1576,6 @@ class PCA_Result(object):
         self.__fix_im_axs__(ax)
 
         return im, cb
-
-    def Mstar_map(self, ax1, ax2, band='i'):
-        '''
-        make two-axes stellar-mass map
-
-        use stellar mass-to-light ratio PDF
-
-        params:
-         - ax1, ax2: axes for median and stdev, passed along
-         - band: what bandpass to use
-        '''
-
-        f = self.lum(band=band)
-
-        m, s, mcb, scb, scale = self.qty_map(
-            ax1=ax1, ax2=ax2, qty_str='ML{}'.format(band),
-            f=f, norm=[None, None], log=False)
-
-        logmstar_tot = np.log10(np.ma.masked_invalid(np.ma.array(
-            self.Mstar_tot(band=band), mask=self.mask_map)).sum())
-
-        print(logmstar_tot)
-
-        TeX = ''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
-                       '{:.2f}'.format(logmstar_tot)))
-
-        ax1.text(x=0.2, y=0.2, s=TeX)
-
-        return m, s, mcb, scb
-
-    def make_Mstar_fig(self, band='i'):
-        '''
-        make stellar-mass figure
-        '''
-
-        qty_str = 'Mstar_{}'.format(band)
-        qty_tex = r'$\log M_{{*,{}}}$'.format(band)
-
-        fig = plt.figure(figsize=(9, 4), dpi=300)
-        gs = gridspec.GridSpec(1, 2, wspace=.175, left=.1, right=.95)
-        ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
-        ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
-
-        self.Mstar_map(ax1=ax1, ax2=ax2, band=band)
-        fig.suptitle(self.objname + ': ' + qty_tex)
-
-        self.__fix_im_axs__([ax1, ax2])
-
-        fig.savefig('{}-{}.png'.format(self.objname, qty_str), dpi=300)
-
-        return fig
 
     def comp_plot(self, ax1, ax2, ix=None):
         '''
@@ -1653,7 +1648,7 @@ class PCA_Result(object):
         return fig
 
     def qty_map(self, qty_str, ax1, ax2, f=None, norm=[None, None],
-                log=False):
+                logify=False, TeX_over=None):
         '''
         make a map of the quantity of interest, based on the constructed
             parameter PDF
@@ -1670,41 +1665,44 @@ class PCA_Result(object):
         P50, l_unc, u_unc, scale = self.pca.param_cred_intvl(
             qty=qty_str, W=self.w, factor=f)
 
-        if log:
-            pct_map = np.log10(P50)
+        if not TeX_over:
+            med_TeX = self.pca.metadata[qty_str].meta.get('TeX', qty_str)
+        else:
+            med_TeX = TeX_over
+
+        # manage logs for computation and display simultaneously
+        if logify and (scale == 'log'):
+            raise ValueError('don\'t double-log a quantity!')
+        elif logify:
+            P50 = np.log10(P50)
+            unc = np.log10((u_unc + l_unc) / 2.)
+            med_TeX = ''.join((r'$\log$', med_TeX))
+        elif (scale == 'log'):
+            unc = (u_unc + l_unc) / 2.
+            med_TeX = ''.join((r'$\log$', med_TeX))
+        else:
+            unc = (l_unc + u_unc) / 2.
 
         m = ax1.imshow(
             np.ma.array(P50, mask=self.mask_map),
             aspect='equal', norm=norm[0])
 
         s = ax2.imshow(
-            np.ma.array((l_unc + u_unc) / 2., mask=self.mask_map),
+            np.ma.array(unc, mask=self.mask_map),
             aspect='equal', norm=norm[1])
 
         mcb = plt.colorbar(m, ax=ax1, pad=0.025)
-        mcb.set_label('med.', size=8)
+        mcb.set_label(med_TeX, size=8)
         mcb.ax.tick_params(labelsize=8)
 
         scb = plt.colorbar(s, ax=ax2, pad=0.025)
-        scb.set_label('unc.', size=8)
+        scb.set_label(r'$\sigma$', size=8)
         scb.ax.tick_params(labelsize=8)
 
         return m, s, mcb, scb, scale
 
-    def map_add_loc(self, ax, ix, **kwargs):
-        '''
-        add axvline and axhline at the location in the map corresponding to
-            some image-frame indices ix
-        '''
-
-        pix_coord = self.wcs_header_offset.all_pix2world(
-            np.atleast_2d(ix), origin=1)
-
-        ax.axhline(pix_coord[1], **kwargs)
-        ax.axvline(pix_coord[0], **kwargs)
-
     def make_qty_fig(self, qty_str, qty_tex=None, qty_fname=None, f=None,
-                     log=False):
+                     logify=False, TeX_over=None):
         '''
         make a with a map of the quantity of interest
 
@@ -1722,20 +1720,159 @@ class PCA_Result(object):
             qty_tex = self.pca.metadata[qty_str].meta.get(
                 'TeX', qty_str)
 
-        fig = plt.figure(figsize=(9, 4), dpi=300)
-
-        gs = gridspec.GridSpec(1, 2, wspace=.175, left=.1, right=.95)
-        ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
-        ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
+        fig, gs, ax1, ax2 = self.__setup_qty_fig__()
 
         m, s, mcb, scb, scale = self.qty_map(
-            qty_str=qty_str, ax1=ax1, ax2=ax2, f=f, log=log)
+            qty_str=qty_str, ax1=ax1, ax2=ax2, f=f, logify=logify,
+            TeX_over=TeX_over)
 
         fig.suptitle('{}: {}'.format(self.objname, qty_tex))
 
         self.__fix_im_axs__([ax1, ax2])
-        # plt.tight_layout()
         fig.savefig('{}-{}.png'.format(self.objname, qty_fname), dpi=300)
+
+        return fig
+
+    def Mstar_tot(self, band='r'):
+        qty_str = 'ML{}'.format(band)
+        f = self.lum(band=band)
+
+        P50, *_, scale = self.pca.param_cred_intvl(
+            qty=qty_str, W=self.w, factor=f)
+
+        if scale == 'log':
+            return 10.**P50
+
+        return P50
+
+    def Mstar_integrated(self, band='i'):
+        '''
+        calculate integrated spectrum, and then compute stellar mass from that
+        '''
+
+        O, ivar = self.dered.coadd()
+        O, ivar = O[..., None, None], ivar[..., None, None]
+
+        mask_cube = (np.sum(self.mask_cube, axis=(1, 2)) > 0)[..., None, None]
+
+        A, M, a_map, O_sub, O_norm = pca.project_cube(
+            f=O, ivar=ivar, mask_spax=None,
+            mask_cube=mask_cube)
+
+        # original spectrum
+        O = np.ma.array(O, mask=mask_cube)
+        ivar = np.ma.array(ivar, mask=mask_cube)
+        O_norm = np.ma.array(O_norm, mask=mask_cube)
+
+        # how to reconstruct datacube from PC weights cube
+        O_recon = np.ma.array(pca.reconstruct_normed(A),
+                              mask=mask_cube)
+
+        resid = np.abs((O_norm - O_recon) / O_norm)
+
+        # redshift is flux-averaged
+        z_map = np.average(dered.z_map, weights=self.O.sum(axis=0))
+        SNR = np.median(O * np.sqrt(ivar))
+        z_map, SNR = (np.atleast_2d(z_map), np.atleast_2d(SNR))
+
+        K_PC = pca.build_PC_cov_full_iter(
+            a_map=a_map, z_map=z_map, obs_logl=self.dered.drp_logl,
+            K_obs_=self.K_obs, ivar=ivar.data, snr_map=SNR, flux=O.data)
+
+        P_PC = StellarPop_PCA.P_from_K_pinv(
+            .1 * K_PC / np.median(np.diag(K_PC[..., 0, 0])))
+
+        w = pca.compute_model_weights(P=P_PC, A=A, **self.norm_params)
+
+        print('good models:', self.sample_diag(f=.01, w=w))
+
+        lum = np.ma.masked_invalid(self.lum(band=band))
+
+        P50, *_, scale = self.pca.param_cred_intvl(
+            qty='ML{}'.format(band), W=w, factor=lum.sum())
+
+        if scale == 'log':
+            return 10.**P50
+
+        return P50
+
+    def Mstar_surf(self, band='r'):
+        spaxel_psize = (self.dered.spaxel_side * self.dist).to(
+            'kpc', equivalencies=u.dimensionless_angles())
+        # print spaxel_psize
+        sig = self.Mstar(band=band) * u.Msun / spaxel_psize**2.
+        return sig.to('Msun pc-2').value
+
+    def Mstar_map(self, ax1, ax2, band='i'):
+        '''
+        make two-axes stellar-mass map
+
+        use stellar mass-to-light ratio PDF
+
+        params:
+         - ax1, ax2: axes for median and stdev, passed along
+         - band: what bandpass to use
+        '''
+
+        from utils import lin_transform as tr
+
+        f = self.lum(band=band)
+
+        qty = 'ML{}'.format(band)
+        # log-ify if ML is in linear space
+        logify = (self.pca.metadata[qty].meta.get(
+                  'scale', 'linear') == 'linear')
+
+        TeX_over = r'$M^*_{{{}}}$'.format(band)
+
+        m, s, mcb, scb, scale = self.qty_map(
+            ax1=ax1, ax2=ax2, qty_str=qty, f=f, norm=[None, None],
+            logify=logify, TeX_over=TeX_over)
+
+        logmstar_tot = np.log10(np.ma.masked_invalid(np.ma.array(
+            self.Mstar_tot(band=band), mask=self.mask_map)).sum())
+
+        logmstar_coadd_tot = np.log10(self.Mstar_integrated(band))
+
+        print(logmstar_tot, logmstar_coadd_tot)
+
+        try:
+            TeX1 = ''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
+                            '{:.2f}'.format(logmstar_tot)))
+        except TypeError:
+            TeX1 = 'ERROR'
+
+        try:
+            TeX2 = ''.join((r'$\log{\frac{M_{*,add}}{M_{\odot}}}$ = ',
+                            '{:.2f}'.format(logmstar_coadd_tot)))
+        except TypeError:
+            TeX2 = 'ERROR'
+
+        ax1xlims, ax1ylims = ax1.get_xlim(), ax1.get_ylim()
+
+        ax1.text(x=tr((0, 1), ax1xlims, 0.05),
+                 y=tr((0, 1), ax1ylims, 0.05), s=TeX1)
+        ax1.text(x=tr((0, 1), ax1xlims, 0.5),
+                 y=tr((0, 1), ax1ylims, 0.05), s=TeX2)
+
+        return m, s, mcb, scb
+
+    def make_Mstar_fig(self, band='i'):
+        '''
+        make stellar-mass figure
+        '''
+
+        qty_str = 'Mstar_{}'.format(band)
+        qty_tex = r'$\log M_{{*,{}}}$'.format(band)
+
+        fig, gs, ax1, ax2 = self.__setup_qty_fig__()
+
+        self.Mstar_map(ax1=ax1, ax2=ax2, band=band)
+        fig.suptitle(' '.join((self.objname, ':', qty_tex)))
+
+        self.__fix_im_axs__([ax1, ax2])
+
+        fig.savefig('{}-{}.png'.format(self.objname, qty_str), dpi=300)
 
         return fig
 
@@ -1754,7 +1891,7 @@ class PCA_Result(object):
         return qgrid, pgrid
 
     def qty_hist(self, qty, ix=None, ax=None, f=None, bins=50,
-                 legend=False, kde=(False, False)):
+                 legend=False, kde=(False, False), logx=False):
         if ix is None:
             ix = self.ifu_ctr_ix
 
@@ -1763,6 +1900,9 @@ class PCA_Result(object):
 
         if f is None:
             f = np.ones_like(self.pca.metadata[qty])
+
+        if logx:
+            ax.set_xscale('log')
 
         # whether to use KDE to plot prior and/or posterior
         kde_prior, kde_post = kde
@@ -1774,6 +1914,12 @@ class PCA_Result(object):
         if len(q) == 0:
             return None
 
+        TeX = self.pca.metadata[qty].meta['TeX']
+
+        scale = self.pca.metadata[qty].meta.get('scale')
+        if scale == 'log':
+            TeX = ''.join((r'$\log$', TeX))
+
         ax_ = ax.twinx()
 
         # marginalized posterior
@@ -1781,25 +1927,26 @@ class PCA_Result(object):
             qgrid, postgrid = self.qty_kde(
                 q=q, weights=w, kernel='gau', bw='scott', fft=False)
             h = ax.plot(qgrid, postgrid, color='k', linestyle='-',
-                        label='posterior')
+                        label='posterior', linewidth=0.5)
         else:
             try:
                 h = ax.hist(
                     q, weights=w, bins=bins, normed=True, histtype='step',
-                    color='k', label='posterior')
+                    color='k', label='posterior', linewidth=0.5)
             except UnboundLocalError:
                 h = None
+                print('{} post. hist failed'.format(qty))
 
         # marginalized prior
         if kde_prior:
             qgrid, prigrid = self.qty_kde(
                 q=q, kernel='gau', bw='scott', fft=False)
-            hprior = ax.plot(qgrid, prigrid, color='orange', linestyle=':',
-                             label='prior')
+            hprior = ax.plot(qgrid, prigrid, color='orange', linestyle='-',
+                             label='prior', linewidth=0.5)
         else:
             hprior = ax_.hist(
-                q, bins=bins, normed=True, histtype='step', color='orange', alpha=0.5,
-                label='prior')
+                q, bins=bins, normed=True, histtype='step', color='orange',
+                label='prior', linewidth=0.5)
 
         # log odds ratio
         if kde_prior and kde_post:
@@ -1830,15 +1977,10 @@ class PCA_Result(object):
         ax.yaxis.set_major_locator(plt.NullLocator())
         ax_.yaxis.set_major_locator(plt.NullLocator())
 
-        TeX = self.pca.metadata[qty].meta['TeX']
-
-        if self.pca.metadata[qty].meta.get('scale', 'linear') == 'log':
-            TeX = r'$\log${{({})}}'.format(TeX)
+        # value of best-fit spectrum
+        ax.axvline(q[np.argmax(w)], color='c', linewidth=0.5)
 
         ax.set_xlabel(TeX)
-
-        # value of best-fit spectrum
-        ax.axvline(q[np.argmax(w)], color='c')
 
         if legend:
             ax.legend(h1 + h2 + he, l1 + l2 + le, loc='best', prop={'size': 8})
@@ -1866,8 +2008,8 @@ class PCA_Result(object):
 
         # over ax objects
         for ax in axs:
-            ax.set_xlabel(r'$\Delta$ RA ["]')
-            ax.set_ylabel(r'$\Delta$ Dec ["]')
+            ax.set_xlabel(' '.join((r'$\Delta$', u.arcsec._repr_latex_())))
+            ax.set_ylabel(' '.join((r'$\Delta$', u.arcsec._repr_latex_())))
 
             # over XOFFSET & YOFFSET
             for i in range(2):
@@ -1875,12 +2017,37 @@ class PCA_Result(object):
                 ax.coords[i].set_ticks(spacing=5. * u.arcsec)
                 ax.coords[i].set_format_unit(u.arcsec)
 
+    def __setup_qty_fig__(self):
+        fig = plt.figure(figsize=(9, 4), dpi=300)
+
+        gs = gridspec.GridSpec(1, 2, wspace=.175, left=.075, right=.975,
+                               bottom=.11, top=.9)
+        ax1 = fig.add_subplot(gs[0], projection=self.wcs_header_offset)
+        ax2 = fig.add_subplot(gs[1], projection=self.wcs_header_offset)
+
+        return fig, gs, ax1, ax2
+
+    def map_add_loc(self, ax, ix, **kwargs):
+        '''
+        add axvline and axhline at the location in the map corresponding to
+            some image-frame indices ix
+        '''
+
+        pix_coord = self.wcs_header_offset.all_pix2world(
+            np.atleast_2d(ix), origin=1)
+
+        ax.axhline(pix_coord[1], **kwargs)
+        ax.axvline(pix_coord[0], **kwargs)
+
     def make_full_QA_fig(self, ix=None, kde=(False, False)):
         '''
         use matplotlib to make a full map of the IFU grasp, including
             diagnostic spectral fits, and histograms of possible
             parameter values for each spaxel
         '''
+
+        from utils import matcher
+
         fig_height = 15
         fig_width = 12
 
@@ -1925,8 +2092,11 @@ class PCA_Result(object):
         enum_ = enumerate(zip(gs2, self.pca.metadata.colnames))
         for i, (gs_, q) in enum_:
             ax = fig.add_subplot(gs_)
-            if 'ML' in q:
-                bins = np.linspace(-2.5, 2, 50)
+            is_ML = matcher(q, 'ML')
+            if is_ML:
+                bins = np.linspace(-1.5, 2, 50)
+                if self.pca.metadata[q].meta.get('scale', 'linear') != 'log':
+                    pass # bins = 10.**bins
             else:
                 bins = 50
             if i == 0:
@@ -1935,7 +2105,7 @@ class PCA_Result(object):
                 legend = False
             h_, hprior_ = self.qty_hist(
                 qty=q, ix=ix, ax=ax, bins=bins, legend=legend,
-                kde=kde)
+                kde=kde, logx=False)
             ax.tick_params(axis='both', which='major', labelsize=10)
 
         plt.suptitle('{0}: ({1[0]}-{1[1]})'.format(self.objname, ix_))
@@ -1943,8 +2113,8 @@ class PCA_Result(object):
         plt.savefig('{0}_fulldiag_{1[0]}-{1[1]}.png'.format(
             self.objname, ix_))
 
-    def radial_gp_plot(self, qty, qty_tex, dep, f=None, ax=None,
-                       q_bdy=[-np.inf, np.inf], log=False):
+    def radial_gp_plot(self, qty, dep, TeX_over=None, f=None, ax=None,
+                       q_bdy=None, logify=False):
         '''
         make a radial plot of a quantity + uncertainties using GP regression
         '''
@@ -1953,9 +2123,28 @@ class PCA_Result(object):
             ax = plt.gca()
 
         q, l_unc, u_unc, scale = self.pca.param_cred_intvl(
-            qty=qty_str, W=self.w, factor=f)
+            qty=qty, W=self.w, factor=f)
 
         q_unc = np.abs(l_unc + u_unc) / 2.
+
+        if not TeX_over:
+            qty_tex = self.pca.metadata[qty].meta.get('TeX', qty)
+        else:
+            qty_tex = TeX_over
+
+        if scale == 'log':
+            qty_tex = ''.join((r'$\log$', qty_tex))
+
+            if not q_bdy:
+                q_bdy = [-10, np.inf]
+            else:
+                q_bdy = list(np.log10(q_bdy))
+
+        else:
+            if not q_bdy:
+                q_bdy = [-np.inf, np.inf]
+            else:
+                pass
 
         # throw out spaxels at large Re
         # in future, should evaluate spectrum uncertainties directly
@@ -1967,7 +2156,7 @@ class PCA_Result(object):
             gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
         except:
             # sometimes it fails when solution space is too sparse
-            pass
+            print('GP regr. failed: {}'.format(qty))
         else:
             r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
             q_pred, sigma2 = gp.predict(r_pred, return_std=True)
@@ -1980,29 +2169,31 @@ class PCA_Result(object):
                     alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
 
         # plot data
-        ax.errorbar(x=r.flatten(), y=q.flatten(),
-                    yerr=np.row_stack([l_unc.flatten(), u_unc.flatten()]),
+        sorter = np.argsort(r.flatten())
+        ax.errorbar(x=r.flatten()[sorter], y=q.flatten()[sorter],
+                    yerr=np.row_stack([l_unc.flatten()[sorter],
+                                       u_unc.flatten()[sorter]]),
                     label='PCA Results', linestyle='None', marker='o',
                     markersize=2, c='k', alpha=0.2, capsize=1.5,
                     markevery=10, errorevery=10)
 
         ax.legend(loc='best', prop={'size': 6})
 
-        ax.set_xlabel(r'R [$R_e$]')
+        ax.set_xlabel(r'$\frac{R}{R_e}$')
 
-        if scale == 'log':
-            qty_tex = r'$\log{{({})}}'.format(qty_tex)
         ax.set_ylabel(qty_tex)
-        ax.set_ylim(q_bdy)
+
+        rng = np.array([q.min(), q.max()])
+        ax.set_ylim(rng + np.array([-.1, .1]))
 
         return ax
 
-    def make_radial_gp_fig(self, qty, qty_tex, dep, q_bdy=[-np.inf, np.inf]):
+    def make_radial_gp_fig(self, qty, dep, TeX_over=None, q_bdy=[-np.inf, np.inf]):
         fig = plt.figure(figsize=(4, 4), dpi=300)
 
         ax = fig.add_subplot(111)
 
-        self.radial_gp_plot(qty=qty, qty_tex=qty_tex, dep=dep, ax=ax)
+        self.radial_gp_plot(qty=qty, TeX_over=None, dep=dep, ax=ax)
         ax.set_title(self.objname)
         plt.tight_layout()
 
@@ -2019,17 +2210,21 @@ class PCA_Result(object):
         # b1 - b2 color
         col = color(self.dered.drp_hdulist, b1, b2)
         # retrieve ML ratio
-        ml = self.pca.param_pct_map('ML{}'.format(mlb), self.w, [50])[0, ...]
+        ml, *_, scale = self.pca.param_cred_intvl(
+            'ML{}'.format(mlb), W=self.w, factor=None)
+
+        if scale == 'linear':
+            ml = np.log10(ml)
 
         # size of points determined by signal in redder band
         b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
-        s = 10.*np.arctan(0.05 * b2_img / np.median(b2_img[b2_img > 0.]))
+        s = 10. * np.arctan(0.05 * b2_img / np.median(b2_img[b2_img > 0.]))
 
-        sc = ax.scatter(col.flatten(), np.log10(ml.flatten()),
+        sc = ax.scatter(col.flatten(), ml.flatten(),
                         facecolor=dep.d, edgecolor='None', s=s.flatten(),
                         label=self.objname)
         cb = plt.colorbar(sc, ax=ax, pad=.025)
-        cb.set_label(r'R [$R_e$]')
+        cb.set_label(r'$\frac{R}{R_e}$')
 
         # spectrophot.py includes conversion from many colors to many M/L ratios
         # from Bell et al -- of form $\log{(M/L)} = a_{\lambda} + b_{\lambda} * C$
@@ -2043,17 +2238,16 @@ class PCA_Result(object):
         def midpoints(a):
             return 0.5*(a[1:] + a[:-1])
 
-        ax.set_xlim([-0.25, 2.25])
-        ax.set_ylim([-2., 1.5])
-
         # plot the predicted Bell et all MLs
+        ax.set_xlim([-0.25, 2.25])
         col_grid = np.linspace(*ax.get_xlim(), 90)
-        ML_grid = np.linspace(*ax.get_ylim(), 100)
 
         # plot the predicted MLRs from Bell
         ML_pred = bell_ML(col_grid)
         ax.plot(col_grid, ML_pred, c='magenta', linestyle='--', label='Bell et al. (2003)')
         ax.legend(loc='best', prop={'size': 6})
+
+        ax.set_ylim([ML_pred.min(), ML_pred.max()])
 
         ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
         ax.set_ylabel(''.join((r'$\log$',
@@ -2074,6 +2268,51 @@ class PCA_Result(object):
 
         plt.savefig('{}_colorML.png'.format(self.objname), dpi=300)
 
+    def sample_diag(self, f=.1, w=None):
+        '''
+        how many models are within factor f of best-fit?
+        '''
+
+        if w == None:
+            w = self.w
+
+        max_w = w.max(axis=0)[None, ...]
+        N = ((w / max_w) > f).sum(axis=0)
+
+        return N
+
+    def make_sample_diag_fig(self, f=[.5, .1]):
+
+        from utils import lin_transform as tr
+
+        fig, gs, ax1, ax2 = self.__setup_qty_fig__()
+        self.__fix_im_axs__([ax1, ax2])
+
+        a1 = np.ma.array(self.sample_diag(f=f[0]), mask=self.mask_map)
+        a2 = np.ma.array(self.sample_diag(f=f[1]), mask=self.mask_map)
+
+        im1 = ax1.imshow(np.log10(a1), aspect='equal', vmin=0)
+        im2 = ax2.imshow(np.log10(a2), aspect='equal', vmin=0)
+        cb1 = plt.colorbar(im1, ax=ax1, shrink=0.8, orientation='vertical')
+        cb2 = plt.colorbar(im2, ax=ax2, shrink=0.8, orientation='vertical')
+
+        lab = ' '.join((r'$\log$', '\# good models'))
+        cb1.set_label(lab, size=8)
+        cb1.ax.tick_params(labelsize=8)
+        cb2.set_label(lab, size=8)
+        cb2.ax.tick_params(labelsize=8)
+
+        for ff, ax in zip(f, [ax1, ax2]):
+            axxlims, axylims = ax.get_xlim(), ax.get_ylim()
+
+            ax.text(x=tr((0, 1), axxlims, 0.05),
+                    y=tr((0, 1), axylims, 0.05),
+                    s=''.join((r'$f = $', '{}'.format(ff))))
+
+        fig.suptitle(' '.join((self.dered.plateifu, 'good models')))
+
+        fig.savefig('_'.join((self.dered.plateifu, 'goodmodels.png')), dpi=300)
+
     @property
     def wcs_header(self):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
@@ -2084,28 +2323,12 @@ class PCA_Result(object):
             self.wcs_header, coord.SkyCoord(
                 *(self.wcs_header.wcs.crval * u.deg)))
 
-    def Mstar_tot(self, band='r'):
-        qty_str = 'ML{}'.format(band)
-        f = self.lum(band=band)
-
-        P50, *_ = self.pca.param_cred_intvl(
-            qty=qty_str, W=self.w, factor=f)
-
-        return 10.**P50
-
     @property
     def dist(self):
         return gal_dist(self.cosmo, self.z)
 
-    def Mstar_surf(self, band='r'):
-        spaxel_psize = (self.dered.spaxel_side * self.dist).to(
-            'kpc', equivalencies=u.dimensionless_angles())
-        # print spaxel_psize
-        sig = self.Mstar(band=band) * u.Msun / spaxel_psize**2.
-        return sig.to('Msun pc-2').value
 
-
-def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS'):
+def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS', nfiles=None):
     import pickle
     if (fname is None):
         redo = True
@@ -2117,7 +2340,7 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS'):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs')
+                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=nfiles)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2212,10 +2435,10 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS')
-    #pca.make_PCs_fig()
-    #pca.make_PC_param_regr_fig()
-    #pca.make_params_vs_PCs_fig()
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=5)
+    pca.make_PCs_fig()
+    pca.make_PC_param_regr_fig()
+    pca.make_params_vs_PCs_fig()
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
@@ -2238,8 +2461,10 @@ if __name__ == '__main__':
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
         norm_params={'norm': 'L2', 'soft': False})
 
-    #pca_res.make_full_QA_fig(kde=(True, True))
-    #pca_res.make_comp_fig()
+    pca_res.make_sample_diag_fig()
+
+    pca_res.make_full_QA_fig(kde=(False, False))
+    pca_res.make_comp_fig()
 
     pca_res.make_qty_fig(qty_str='MLr')
     pca_res.make_qty_fig(qty_str='MLi')
@@ -2249,11 +2474,8 @@ if __name__ == '__main__':
     pca_res.make_Mstar_fig(band='i')
     pca_res.make_Mstar_fig(band='z')
 
-    pca_res.make_radial_gp_fig(qty='MLr', qty_tex=r'$(\frac{M}{L})^*_r$',
-                               dep=dep, q_bdy=[1.0e-2, 1.0e2])
-    pca_res.make_radial_gp_fig(qty='MLi', qty_tex=r'$(\frac{M}{L})^*_i$',
-                               dep=dep, q_bdy=[1.0e-2, 1.0e2])
-    pca_res.make_radial_gp_fig(qty='MLz', qty_tex=r'$(\frac{M}{L})^*_z$',
-                               dep=dep, q_bdy=[1.0e-2, 1.0e2])
+    pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[1.0e-2, 1.0e2])
+    pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[1.0e-2, 1.0e2])
+    pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[1.0e-2, 1.0e2])
 
     pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
