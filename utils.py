@@ -83,3 +83,16 @@ def pickle_loader(fname):
         p = pkl.load(f)
 
     return p
+
+def matcher(x, s):
+    if s in x:
+        return True
+    else:
+        return False
+
+def lin_transform(r1, r2, x):
+    '''
+    transform x from range 1 to range 2
+    '''
+
+    return (((x - r1[0]) * (r2[1] - r2[0])) / (r1[1] - r1[0])) + r2[0]
