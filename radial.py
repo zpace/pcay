@@ -1,6 +1,6 @@
 import numpy as np
 
-from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor as GPR
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as Const
 
 
@@ -23,25 +23,29 @@ def radial_gp(r, q, q_unc, scale, q_bdy=[-np.inf, np.inf]):
 
     assert r.size == q.size == q_unc.size, 'provide same-sized arrays'
 
-    r, q, q_unc = r.flatten(), q.flatten(), q_unc.flatten()
+    if scale == 'log':
+        q_gp, q_unc_gp = 10.**q, 10.**(q_unc) - 1.
+    else:
+        q_gp, q_unc_gp = q, q_unc
+
+    r, q_gp, q_unc_gp = r.flatten(), q_gp.flatten(), q_unc_gp.flatten()
     r = np.ma.masked_outside(r, *q_bdy)
-    r, q, q_unc = r[~r.mask], q[~r.mask], q_unc[~r.mask]
+    r, q_gp, q_unc_gp = r[~r.mask], q_gp[~r.mask], q_unc_gp[~r.mask]
     r = np.atleast_2d(r).T
 
-    # build a very flexible kernel: can nominally handle factor
-    # of 20 variation in 1/4 Re, but may not need to
-    if scale == 'linear':
-        kernel = Const(5., (1.0e-2, 20.)) * RBF(.25, (.05, 2.))
-        nugget = (q_unc / q)**2.
-    elif scale == 'log':
-        kernel = (Const(np.log10(5.), (-2, np.log10(20.))) *
-                  RBF(.25, (.05, 2.)))
-        nugget = 10.**(2. * (q_unc - q))
-    else:
-        raise ValueError('invalid scale!')
+    nugget = (q_unc_gp / q_gp)**2.
 
-    gp = GaussianProcessRegressor(kernel=kernel, alpha=nugget,
-                                  n_restarts_optimizer=10)
-    gp.fit(r, q)
+    # build a very flexible kernel: can nominally handle factor
+    # of 10 variation in 1 Re, but may not need to
+    kernel = Const(.2, (.01, 10.)) * RBF(1, (.5, 3.))
+
+    gp = GPR(kernel=kernel, alpha=nugget, n_restarts_optimizer=10)
+    try:
+        gp.fit(r, q_gp)
+    except GPFitError:
+        raise
 
     return gp
+
+class GPFitError(Exception):
+    pass

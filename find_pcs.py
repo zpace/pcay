@@ -1784,7 +1784,7 @@ class PCA_Result(object):
 
         w = pca.compute_model_weights(P=P_PC, A=A, **self.norm_params)
 
-        print('good models:', self.sample_diag(f=.01, w=w))
+        #print('good models:', self.sample_diag(f=.01, w=w))
 
         lum = np.ma.masked_invalid(self.lum(band=band))
 
@@ -1834,7 +1834,7 @@ class PCA_Result(object):
 
         logmstar_coadd_tot = np.log10(self.Mstar_integrated(band))
 
-        print(logmstar_tot, logmstar_coadd_tot)
+        #print(logmstar_tot, logmstar_coadd_tot)
 
         try:
             TeX1 = ''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
@@ -2135,32 +2135,29 @@ class PCA_Result(object):
         if scale == 'log':
             qty_tex = ''.join((r'$\log$', qty_tex))
 
-            if not q_bdy:
-                q_bdy = [-10, np.inf]
-            else:
-                q_bdy = list(np.log10(q_bdy))
-
-        else:
-            if not q_bdy:
-                q_bdy = [-np.inf, np.inf]
-            else:
-                pass
-
         # throw out spaxels at large Re
         # in future, should evaluate spectrum uncertainties directly
-        rlarge = dep.d > 2.5
+        rlarge = dep.d > 3.5
         r = np.ma.array(dep.d, mask=(rlarge | self.mask_map))
 
         try:
             # radial gaussian process from sklearn (v0.18 or later)
-            gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy)
-        except:
+            gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy,
+                                  scale=scale)
+        except radial.GPFitError:
             # sometimes it fails when solution space is too sparse
             print('GP regr. failed: {}'.format(qty))
+        except:
+            raise
         else:
             r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
             q_pred, sigma2 = gp.predict(r_pred, return_std=True)
-            sigma = np.sqrt(sigma2)
+            if scale == 'log':
+                (q_pred, sigma) = (np.log10(q_pred),
+                                   np.log10(q_pred + np.sqrt(sigma2)) - \
+                                       np.log10(q_pred))
+            else:
+                sigma = np.sqrt(sigma2)
             # plot allowed range
             ax.plot(r_pred, q_pred, c='b', label='Prediction')
             ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
@@ -2183,7 +2180,7 @@ class PCA_Result(object):
 
         ax.set_ylabel(qty_tex)
 
-        rng = np.array([q.min(), q.max()])
+        rng = np.array([np.nanmin(q), np.nanmax(q)])
         ax.set_ylim(rng + np.array([-.1, .1]))
 
         return ax
@@ -2193,7 +2190,8 @@ class PCA_Result(object):
 
         ax = fig.add_subplot(111)
 
-        self.radial_gp_plot(qty=qty, TeX_over=None, dep=dep, ax=ax)
+        self.radial_gp_plot(qty=qty, TeX_over=None, dep=dep, ax=ax,
+                            q_bdy=q_bdy)
         ax.set_title(self.objname)
         plt.tight_layout()
 
@@ -2282,6 +2280,13 @@ class PCA_Result(object):
         return N
 
     def make_sample_diag_fig(self, f=[.5, .1]):
+        '''
+        fraction of models that have weights at least f[0] and f[1]
+            as large as highest-weighted model
+
+        this is basically an estimate of how well the models populate
+            parameter space
+        '''
 
         from utils import lin_transform as tr
 
@@ -2291,12 +2296,16 @@ class PCA_Result(object):
         a1 = np.ma.array(self.sample_diag(f=f[0]), mask=self.mask_map)
         a2 = np.ma.array(self.sample_diag(f=f[1]), mask=self.mask_map)
 
-        im1 = ax1.imshow(np.log10(a1), aspect='equal', vmin=0)
-        im2 = ax2.imshow(np.log10(a2), aspect='equal', vmin=0)
+        nmodels = len(self.pca.metadata)
+
+        im1 = ax1.imshow(np.log10(a1 / nmodels),
+                         aspect='equal', vmin=-np.log10(nmodels), vmax=0)
+        im2 = ax2.imshow(np.log10(a2 / nmodels),
+                         aspect='equal', vmin=-np.log10(nmodels), vmax=0)
         cb1 = plt.colorbar(im1, ax=ax1, shrink=0.8, orientation='vertical')
         cb2 = plt.colorbar(im2, ax=ax2, shrink=0.8, orientation='vertical')
 
-        lab = ' '.join((r'$\log$', '\# good models'))
+        lab = r'$\log \frac{N_{good}}{N_{tot}}$'
         cb1.set_label(lab, size=8)
         cb1.ax.tick_params(labelsize=8)
         cb2.set_label(lab, size=8)
@@ -2309,7 +2318,7 @@ class PCA_Result(object):
                     y=tr((0, 1), axylims, 0.05),
                     s=''.join((r'$f = $', '{}'.format(ff))))
 
-        fig.suptitle(' '.join((self.dered.plateifu, 'good models')))
+        fig.suptitle(' '.join((self.dered.plateifu, 'good model fraction')))
 
         fig.savefig('_'.join((self.dered.plateifu, 'goodmodels.png')), dpi=300)
 
@@ -2435,7 +2444,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=5)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=2)
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
     pca.make_params_vs_PCs_fig()
@@ -2463,7 +2472,7 @@ if __name__ == '__main__':
 
     pca_res.make_sample_diag_fig()
 
-    pca_res.make_full_QA_fig(kde=(False, False))
+    pca_res.make_full_QA_fig(kde=(True, True))
     pca_res.make_comp_fig()
 
     pca_res.make_qty_fig(qty_str='MLr')
@@ -2474,8 +2483,10 @@ if __name__ == '__main__':
     pca_res.make_Mstar_fig(band='i')
     pca_res.make_Mstar_fig(band='z')
 
-    pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[1.0e-2, 1.0e2])
-    pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[1.0e-2, 1.0e2])
-    pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[1.0e-2, 1.0e2])
+    pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[.01, 100.])
+
+    pca_res.make_radial_gp_fig(qty='Dn4000', dep=dep)
 
     pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
