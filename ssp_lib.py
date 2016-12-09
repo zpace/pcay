@@ -50,21 +50,36 @@ class FSPS_SFHBuilder(object):
 
     __version__ = '0.1'
 
+    req_param_keys = ['tf', 'tt', 'd1', 'd2', 'ramp'  #  delayed tau model
+                      'A', 'tb', 'dtb',  #  burst properties
+                      'tau_V', 'mu', 'zmet', 'sigma']  #  other
+
+    FSPS_args = {k: None for k in req_param_keys}
+
     def __init__(self, max_bursts=5, override={}, min_dt_cont=.03):
         '''
         set up star formation history generation to use with FSPS
 
+        General Form:
+
+        SFR = {
+            0                                 : t < tf
+            A (t - tf) exp((t - tf)/d1)       : tf < t < tt
+            A (tt - tf) exp((tt - tf)/d1) +
+                (t - tt) / d2                 : t > tt
+        } * Burst
+
         arguments:
 
         **override:
-            - time_form: time (post-BB) that star formation began
-            - eftu: e-folding time [Gyr] for underlying continuous model
+            - tf: time (post-BB) that star formation began
+            - tt: time of transition to ramp-up or ramp-down
+            - d1: e-folding time of declining tau component
+            - d2: doubling/halving time of ramp component
             - A [array]: total stellar mass produced in each starburst,
                 relative to total produced by continuous model
-            - time_burst [array]: time (post-BB) that each burst began
-            - dt_burst [array]: duration of each burst
-            - time_cut: time (post-BB) of an exponential cutoff in SFH
-            - eftc: e-folding time of exponential cutoff
+            - tb [array]: time (post-BB) that each burst began
+            - dtb [array]: duration of each burst
             - tau_V: V-band optical depth affecting young stars
             - mu: fraction of V-band optical depth affecting old stars
             - zmet: metallicity index
@@ -78,9 +93,12 @@ class FSPS_SFHBuilder(object):
         # how long the universe has been around
         self.time0 = self.cosmo.age(0.).to('Gyr').value
 
-        # call parameter generation method with override values
+        # initialize parameters
         self.override = override
-        self.FSPS_args = self.gen_FSPS_args()
+        self.FSPS_args.update(override)
+
+        # randomize non-overridden parameters
+        self.gen_FSPS_args()
 
         now = datetime.now().strftime('%Y%m%d-%H%M%S')
         self.fname = '-'.join(['sfh', now])
@@ -94,25 +112,19 @@ class FSPS_SFHBuilder(object):
         '''
         generate FSPS arguments
         '''
-        params = self.override.copy()
 
         # underlying
-        params.update(self.time_form_gen())
-        params.update(self.eftu_gen())
+        self.time_form_gen()
+        self.delay_tau_gen()
 
         # incidentals
-        params.update(self.sigma_gen())
-        params.update(self.tau_V_gen())
-        params.update(self.mu_gen())
-        params.update(self.zmet_gen())
-
-        # cuts
-        params.update(self.cut_gen(**params))
+        self.sigma_gen()
+        self.tau_V_gen()
+        self.mu_gen()
+        self.zmet_gen()
 
         # bursts
-        params.update(self.burst_gen(**params))
-
-        return params
+        self.burst_gen()
 
     def run_fsps(self):
         '''
@@ -123,6 +135,7 @@ class FSPS_SFHBuilder(object):
          - spec: flux-density (Lsol/AA)
          - MLr, MLi, MLz: mass-to-light ratios, in r-, i-, and z-band
         '''
+
         sp = fsps.StellarPopulation(zcontinuous=1, add_stellar_remnants=True,
                                     smooth_velocity=True, redshift_colors=False,
                                     vactoair_flag=False, tage=self.time0, masscut=150.)
@@ -149,12 +162,15 @@ class FSPS_SFHBuilder(object):
         if sfrs is None:
             sfrs = self.sfrs
 
+        tf = self.FSPS_args['tf']
+
+        ts, sfrs = ts[ts > tf], sfrs[ts > tf]
+
         plt.close('all')
 
         plt.figure(figsize=(3, 2), dpi=300)
         ax = plt.subplot(111)
-        ax.plot(self.ts[self.ts < self.time0], self.sfrs[self.ts < self.time0],
-                c='b', linewidth=0.5)
+        ax.plot(ts, sfrs, c='b', linewidth=0.5)
         ax.set_xlabel('time [Gyr]', size=8)
         ax.set_ylabel('SFR [sol mass/yr]', size=8)
         ax.set_yscale('log')
@@ -162,12 +178,8 @@ class FSPS_SFHBuilder(object):
 
         # compute y-axis limits
         # cover a dynamic range of a few OOM, plus bursts
-        ylim_cont = [5.0e-3, 1.25]
-        ylim = ylim_cont
-        if self.FSPS_args['nburst'] > 0:
-            ylim[1] = 1.25 * sfrs.max()
-
-        ax.set_ylim(ylim)
+        ax.set_ylim([sfrs.max() * 1.0e-3, sfrs.max() * 1.25])
+        ax.set_xlim([0., self.time0])
 
         plt.tight_layout()
         if save:
@@ -190,204 +202,125 @@ class FSPS_SFHBuilder(object):
         return tab
 
     # =====
-    # properties
-    # =====
-
-    @property
-    def all_sf_v(self):
-        return np.vectorize(
-            self.all_sf)
-
-    @property
-    def ts(self):
-        nburst = self.FSPS_args['nburst']
-        burst_starts = self.FSPS_args['time_burst'][:nburst]
-        burst_ends = (self.FSPS_args['time_burst'] +
-                      self.FSPS_args['dt_burst'])[:nburst]
-
-        discont = self.disconts
-        # ages starting at 1Myr, and going to start of SF
-        ages = 10.**np.linspace(-4., np.log10(self.time0), 300)
-        ts = self.time0 - ages
-        ts = np.unique(np.append(ts, discont))
-        ts.sort()
-        if ts[0] < 0:
-            ts[0] = 0.
-        return ts
-
-    @property
-    def sfrs(self):
-        return self.all_sf_v(self.ts)
-
-    @property
-    def disconts(self):
-        burst_starts = self.FSPS_args['time_burst']
-        burst_ends = burst_starts + self.FSPS_args['dt_burst']
-        dt = .01
-        burst_starts_m = burst_starts - dt
-        burst_ends_p = burst_ends + dt
-        sf_starts = self.FSPS_args['time_form'] + np.array([-dt, dt])
-        points = np.concatenate([sf_starts, burst_starts, burst_starts_m,
-                                 burst_ends, burst_ends_p])
-        points = points[(0. < points) * (points < self.time0)]
-        return points
-
-    @property
-    def mformed_integration(self):
-        FSPS_args = self.FSPS_args
-        mf, mfe = integrate.quad(
-            self.all_sf, 0., self.time0,
-            points=self.disconts, epsrel=5.0e-3, limit=100)
-        return mf * 1.0e9
-
-    @property
-    def mass_weighted_age(self):
-
-        ts = self.ts
-        sfrs = self.sfrs
-        disconts = self.disconts
-
-        # integrating tau * SFR(time0 - tau) wrt tau from 0 to time0
-        num, numerr = integrate.quad(
-            lambda tau: tau * 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
-            points=disconts, epsrel=5.0e-3, limit=100)
-        denom, denomerr = integrate.quad(
-            lambda tau: 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
-            points=disconts, epsrel=5.0e-3, limit=100)
-        return num / denom
-
-    @property
-    def Fstar(self):
-        '''
-        mass fraction formed in last Gyr
-        '''
-        disconts = self.disconts
-        disconts = disconts[disconts > self.time0 - 1.]
-        mf, mfe = integrate.quad(
-            self.all_sf, self.time0 - 1., self.time0,
-            points=disconts, epsrel=5.0e-3, limit=100)
-        F = mf / self.mformed_integration
-        return F
-
-    # =====
     # things to generate parameters
     # (allow master overrides)
     # =====
 
+    def delay_tau_gen(self):
+        '''
+        generate delayed tau-model
+        '''
+
+        tf = self.FSPS_args['tf']
+        d1 = self._d1_gen()  #  eft of tau component
+        tt = self._tt_gen(d1)  #  transition time
+        ud = self._ud_gen()  #  does SFH cut off or increase?
+        d2 = self._d2_gen(ud)  #  doubling/halving time for ramp portion
+
+        params = {'tf': tf, 'd1': d1, 'tt': tt, 'ud': ud, 'd2': d2}
+
+        self.FSPS_args.update(params)
+
     def time_form_gen(self):
-        if 'time_form' in self.override.keys():
-            return {'time_form': self.override['time_form']}
-
-        return {'time_form': np.random.uniform(low=1.5, high=13.5)}
-
-    def eftu_gen(self):
-        if 'eftu' in self.override.keys():
-            return {'eftu': self.override['eftu']}
-
-        return {'eftu': 1. / np.random.rand()}
-
-    def time_cut_gen(self, time_form):
-        if 'time_cut' in self.override.keys():
-            return {'time_cut': self.override['time_cut']}
-
-        # require at least 20 Myr of "continuous" SF before cut
-        return {'time_cut': np.random.uniform(time_form + self.min_dt_cont,
-                                              self.time0)}
-
-    def eftc_gen(self):
-        if 'eftc' in self.override.keys():
-            return {'eftc': self.override['eftc']}
-
-        return {'eftc': 10.**np.random.uniform(-2, 0)}
-
-    def cut_gen(self, time_form, **params):
-        default = {'cut': False, 'time_cut': 0., 'eftc': 0.}
-        cut_yn = np.random.rand() < 0.3
-
-        # if either/both time_cut/eftc are provided, use them!
-        if (('time_cut' in self.override.keys()) or
-            ('eftc' in self.override.keys()) or
-            ('cut' in self.override.keys())):
-
-            return {'cut': self.override['cut'],
-                    **self.time_cut_gen(time_form),
-                    **self.eftc_gen()}
-
-        # if nothing is provided, and there's no random cut, use default
-        elif not cut_yn:
-            return default
-        # require a certain duration of "continuous" SF
-        elif np.abs(time_form - self.time0) < self.min_dt_cont:
-            return default
-        # if nothing is provided, and there is a random cut, generate it!
+        # if param already set on object instantiation, leave it alone
+        if self.FSPS_args['tf']:
+            pass
         else:
-            return {'cut': True, **self.time_cut_gen(time_form),
-                    **self.eftc_gen()}
+            self.FSPS_args.update(
+                {'tf': np.random.uniform(low=1.0, high=13.5)})
 
-    def time_burst_gen(self, time_form, dt, nburst):
-        t_ = np.random.uniform(time_form, time_form + dt, nburst)
+    def _d1_gen(self):
+        if self.FSPS_args['d1']:
+            return self.FSPS_args['d1']
+
+        return 1. / np.random.rand()
+
+    def _tt_gen(self, d1):
+        # if param already set on object instantiation, leave it alone
+        if self.FSPS_args['tt']:
+            return self.FSPS_args['tt']
+
+        tf = self.FSPS_args['tf']
+
+        # transition time can be anytime after tf + d1/3
+        if tf + d1 > self.time0:
+            return self.time0
+        else:
+            return np.random.uniform(tf + d1 / 3., self.time0)
+
+    def _ud_gen(self):
+        '''
+        does ramp go up or down?
+        '''
+        r = np.random.rand()
+
+        if r < 1. / 3.:
+            return -1.
+        elif r < 2. / 3.:
+            return 0.
+        else:
+            return 1.
+
+    def _d2_gen(self, ud):
+        if self.FSPS_args['d2']:
+            return self.FSPS_args['d2']
+
+        if ud < 0.:
+            return np.random.uniform(.1, 2.)
+        elif ud > 0.:
+            return np.random.uniform(1., 10.)
+        else:
+            return 100.
+
+    @property
+    def dt_avail(self):
+        '''
+        time duration available for bursts
+        '''
+
+        # if ramp-up, then anytime after that is good for bursts
+        if self.FSPS_args['ud'] > 0:
+            return self.time0 - self.FSPS_args['tf']
+
+        # otherwise, bursts must occur before ramp-down
+        return self.FSPS_args['tt'] - self.FSPS_args['tf']
+
+    def _time_burst_gen(self, nburst, dt):
+        tf = self.FSPS_args['tf']
+        t_ = np.random.uniform(tf, tf + dt, nburst)
         npad = self.max_bursts - nburst
         t_ = np.pad(t_, (0, npad), mode='constant', constant_values=0.)
-        return {'time_burst': t_}
+        return t_
 
-    def dt_burst_gen(self, nburst):
+    def _dt_burst_gen(self, nburst):
         dt_ = np.random.uniform(.01, .1, nburst)
         npad = self.max_bursts - nburst
         dt_ = np.pad(dt_, (0, npad), mode='constant', constant_values=0.)
-        return {'dt_burst': dt_}
+        return dt_
 
-    def A_burst_gen(self, nburst):
+    def _A_burst_gen(self, nburst):
         A_ = 10.**np.random.uniform(np.log10(1.), np.log10(20.), nburst)
         npad = self.max_bursts - nburst
         A_ = np.pad(A_, (0, npad), mode='constant', constant_values=0.)
-        return {'A': A_}
+        return A_
 
-    def burst_gen(self, cut, time_cut, time_form, **kwargs):
+    def burst_gen(self):
         # statistically, one burst occurs in duration time0
         # but forbidden to happen after cutoff
-        if cut:
-            dt = time_cut - time_form
-        else:
-            dt = self.time0 - time_form
 
-        # =====
+        dt = self.dt_avail
 
-        # handle case that a burst is forbidden, i.e., override is 3 Nones
-        if self.override.get('suppress_bursts', False):
-            return {'A': np.zeros(self.max_bursts),
-                    'dt_burst': np.zeros(self.max_bursts),
-                    'time_burst': np.zeros(self.max_bursts),
-                    'nburst': 0}
+        time_form = self.FSPS_args['tf']
 
-        # =====
+        nburst = stats.poisson.rvs(dt / self.time0)
+        if nburst > self.max_bursts:
+            nburst = self.max_bursts
 
-        # handle case that single burst is specified or
-        # partially specified, and move forward
-        elif (sum(map(lambda k: k in self.override.keys(),
-                      ['time_burst', 'dt_burst', 'A'])) > 0):
+        tb = self._time_burst_gen(nburst, dt)
+        dtb = self._dt_burst_gen(nburst)
+        A = self._A_burst_gen(nburst)
 
-            nburst = self.override.get('nburst', 1)
-
-            time_burst = self.override.get('time_burst', self.time_burst_gen(
-                time_form, dt, nburst))
-            dt_burst = self.override.get('dt_burst', self.dt_burst_gen(nburst))
-            A = self.override.get('A', self.A_burst_gen(nburst))
-
-            return {'time_burst': time_burst, 'dt_burst': dt_burst,
-                    'A': A, 'nburst': nburst}
-
-        # =====
-
-        # handle the case that no burst information is given (3 NaNs)
-        else:
-            # number of bursts
-            nburst = stats.poisson.rvs(dt / self.time0)
-            if nburst > self.max_bursts:
-                nburst = self.max_bursts
-
-            return {'nburst': nburst,
-                    **self.time_burst_gen(time_form, dt, nburst),
-                    **self.dt_burst_gen(nburst), **self.A_burst_gen(nburst)}
+        self.FSPS_args.update({'tb': tb, 'dtb': dtb, 'A': A, 'nburst': nburst})
 
     def zmet_gen(self, zsol=zsol_padova):
         if 'zmet' in self.override.keys():
@@ -439,63 +372,165 @@ class FSPS_SFHBuilder(object):
 
         return {'sigma': np.random.uniform(10., 400.)}
 
-    def continuous_sf(self, t):
+    # =====
+    # properties
+    # =====
+
+    @property
+    def all_sf_v(self):
+        return np.vectorize(
+            self.all_sf)
+
+    @property
+    def ts(self):
+        nburst = self.FSPS_args['nburst']
+        burst_starts = self.FSPS_args['tb'][:nburst]
+        burst_ends = (self.FSPS_args['tb'] +
+                      self.FSPS_args['dtb'])[:nburst]
+
+        discont = self.disconts
+        # ages starting at 1Myr, and going to start of SF
+        ages = 10.**np.linspace(-3., np.log10(self.time0), 300)
+        ts = self.time0 - ages
+        ts = np.unique(np.append(ts, discont))
+        ts.sort()
+        if ts[0] < 0:
+            ts[0] = 0.
+        return ts
+
+    @property
+    def sfrs(self):
+        return self.all_sf_v(self.ts)
+
+    @property
+    def disconts(self):
+        burst_starts = self.FSPS_args['tb']
+        burst_ends = burst_starts + self.FSPS_args['dtb']
+        dt = .01
+        burst_starts_m = burst_starts - dt
+        burst_ends_p = burst_ends + dt
+        sf_starts = self.FSPS_args['tf'] + np.array([-dt, dt])
+        points = np.concatenate([sf_starts, burst_starts, burst_starts_m,
+                                 burst_ends, burst_ends_p])
+        points = points[(0. < points) * (points < self.time0)]
+        return points
+
+    @property
+    def mformed_integration(self):
+        FSPS_args = self.FSPS_args
+        mf, mfe = integrate.quad(
+            self.all_sf, 0., self.time0,
+            points=self.disconts, epsrel=5.0e-3, limit=100)
+        return mf * 1.0e9
+
+    @property
+    def mass_weighted_age(self):
+
+        ts = self.ts
+        sfrs = self.sfrs
+        disconts = self.disconts
+
+        # integrating tau * SFR(time0 - tau) wrt tau from 0 to time0
+        num, numerr = integrate.quad(
+            lambda tau: tau * 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
+            points=disconts, epsrel=5.0e-3, limit=100)
+        denom, denomerr = integrate.quad(
+            lambda tau: 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
+            points=disconts, epsrel=5.0e-3, limit=100)
+        return num / denom
+
+    @property
+    def Fstar(self):
+        '''
+        mass fraction formed in last Gyr
+        '''
+        disconts = self.disconts
+        disconts = disconts[disconts > self.time0 - 1.]
+        mf, mfe = integrate.quad(
+            self.all_sf, self.time0 - 1., self.time0,
+            points=disconts, epsrel=5.0e-3, limit=100)
+        F = mf / self.mformed_integration
+        return F
+
+    # =====
+    # utility methods
+    # =====
+
+    def delay_tau_model(self, t):
         '''
         eval the continuous portion of the SFR at some time
 
         Note: units are Msun/yr, while the time units are Gyr
         '''
-        time_form = self.FSPS_args['time_form']
-        eftu = self.FSPS_args['eftu']
-        if t < time_form:
-            return 0.
+        tf = self.FSPS_args['tf']
+        tt = self.FSPS_args['tt']
+        d1 = self.FSPS_args['d1']
 
-        return self.cut_modifier(t) * np.exp(-(t - time_form) / eftu)
+        return (t - tf) * np.exp(-(t - tf) / d1)
 
-    def cut_modifier(self, t):
+    def ramp(self, t):
         '''
-        eval the SF cut's contribution to the overall SFR at some time
+        additive ramp
         '''
 
-        cut = self.FSPS_args['cut']
-        time_cut = self.FSPS_args['time_cut']
-        eftc = self.FSPS_args['eftc']
+        # transition time
+        tt = self.FSPS_args['tt']
 
-        if not cut:
-            return 1.
-        elif t < time_cut:
-            return 1.
+        # evaluate SFR at transition time
+        sfrb = self.delay_tau_model(t=tt)
+
+        # does the ramp rise or fall?
+        ud = self.FSPS_args['ud']
+
+        # doubling/halving time
+        d2 = self.FSPS_args['d2']
+
+        ramp = sfrb * ((t - tt) / d2)
+        if type(t) is np.ndarray:
+            ramp[t < tt] = 0.
         else:
-            return np.exp(-(t - time_cut) / eftc)
+            if t < tt:
+                ramp = 0.
+
+        return ramp * ud
 
     def burst_modifier(self, t):
         '''
         evaluate the SFR augmentation at some time
         '''
         nburst = self.FSPS_args['nburst']
-        burst_starts = self.FSPS_args['time_burst'][:nburst]
-        burst_ends = (self.FSPS_args['time_burst'] +
-                      self.FSPS_args['dt_burst'])[:nburst]
+        burst_starts = self.FSPS_args['tb'][:nburst]
+        burst_ends = (self.FSPS_args['tb'] +
+                      self.FSPS_args['dtb'])[:nburst]
         A = self.FSPS_args['A'][:nburst]
 
         in_burst = ((t >= burst_starts) * (t <= burst_ends))[:nburst]
         return A.dot(in_burst)
-
-    def mtot_cont(self):
-        # calculate total stellar mass formed in the continuous bit
-        mtot_cont = integrate.quad(
-            self.continuous_sf, 0, self.time0)
-        return mtot_cont[0]
 
     def all_sf(self, t):
         '''
         eval the full SF at some time
         '''
 
-        continuous = self.continuous_sf(t)
+        dtm = self.delay_tau_model(t)
+        ramp = self.ramp(t)
+        cont = dtm + ramp
+        if cont < 0.:
+            cont = 0.
+
         burst = self.burst_modifier(t)
 
-        return continuous * (1. + burst)
+        return cont * (1. + burst)
+
+    def all_sf_a(self, t):
+        dtm = self.delay_tau_model(t)
+        ramp = self.ramp(t)
+        cont = dtm + ramp
+        cont[cont < 0.] = 0.
+
+        burst = self.burst_modifier(t)
+
+        return cont * (1. + burst)
 
     # =====
     # utility methods
