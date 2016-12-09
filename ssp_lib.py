@@ -227,7 +227,7 @@ class FSPS_SFHBuilder(object):
             pass
         else:
             self.FSPS_args.update(
-                {'tf': np.random.uniform(low=1.0, high=13.5)})
+                {'tf': np.random.uniform(low=1.0, high=8.)})
 
     def _d1_gen(self):
         if self.FSPS_args['d1']:
@@ -242,11 +242,11 @@ class FSPS_SFHBuilder(object):
 
         tf = self.FSPS_args['tf']
 
-        # transition time can be anytime after tf + d1/3
+        # transition time can be anytime after tf + 1Gyr
         if tf + d1 > self.time0:
             return self.time0
         else:
-            return np.random.uniform(tf + d1 / 3., self.time0)
+            return np.random.uniform(tf + .5, self.time0)
 
     def _ud_gen(self):
         '''
@@ -449,7 +449,7 @@ class FSPS_SFHBuilder(object):
         mf, mfe = integrate.quad(
             self.all_sf, self.time0 - 1., self.time0,
             points=disconts, epsrel=5.0e-3, limit=100)
-        F = mf / self.mformed_integration
+        F = mf * 1.0e9 / self.mformed_integration
         return F
 
     # =====
