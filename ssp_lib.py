@@ -50,13 +50,7 @@ class FSPS_SFHBuilder(object):
 
     __version__ = '0.1'
 
-    req_param_keys = ['tf', 'tt', 'd1', 'd2', 'ramp'  #  delayed tau model
-                      'A', 'tb', 'dtb',  #  burst properties
-                      'tau_V', 'mu', 'zmet', 'sigma']  #  other
-
-    FSPS_args = {k: None for k in req_param_keys}
-
-    def __init__(self, max_bursts=5, override={}, min_dt_cont=.03):
+    def __init__(self, max_bursts=5, override={}, min_dt_cont=.03, RS=None, seed=None):
         '''
         set up star formation history generation to use with FSPS
 
@@ -84,6 +78,23 @@ class FSPS_SFHBuilder(object):
             - mu: fraction of V-band optical depth affecting old stars
             - zmet: metallicity index
         '''
+
+        self.req_param_keys = [
+            'tf', 'tt', 'd1', 'd2', 'ramp', 'ud',  #  delayed tau model
+            'A', 'tb', 'dtb',  #  burst properties
+            'tau_V', 'mu', 'zmet', 'sigma']  #  other
+
+        self.FSPS_args = {k: None for k in self.req_param_keys}
+
+        if not RS:
+            self.RS = np.random.RandomState()
+        else:
+            self.RS = RS
+
+        if not seed:
+            pass
+        else:
+            self.RS.seed(seed)
 
         self.p_cut = .3
         self.max_bursts = max_bursts
@@ -168,22 +179,22 @@ class FSPS_SFHBuilder(object):
 
         plt.close('all')
 
-        plt.figure(figsize=(3, 2), dpi=300)
-        ax = plt.subplot(111)
+        fig = plt.figure(figsize=(3, 2), dpi=300)
+        ax = fig.add_subplot(111)
         ax.plot(ts, sfrs, c='b', linewidth=0.5)
         ax.set_xlabel('time [Gyr]', size=8)
         ax.set_ylabel('SFR [sol mass/yr]', size=8)
-        ax.set_yscale('log')
+
         ax.tick_params(labelsize=8)
 
         # compute y-axis limits
         # cover a dynamic range of a few OOM, plus bursts
-        ax.set_ylim([sfrs.max() * 1.0e-3, sfrs.max() * 1.25])
+        ax.set_ylim([0., sfrs.max() + .1])
         ax.set_xlim([0., self.time0])
 
-        plt.tight_layout()
+        fig.tight_layout()
         if save:
-            plt.savefig('.'.join([self.fname, 'png']))
+            fig.savefig('.'.join([self.fname, 'png']))
         plt.show()
 
     def dump(self):
@@ -206,34 +217,33 @@ class FSPS_SFHBuilder(object):
     # (allow master overrides)
     # =====
 
+    def time_form_gen(self):
+        # if param already set on object instantiation, leave it alone
+        if not self.FSPS_args['tf']:
+            self.FSPS_args.update(
+                {'tf': self.RS.uniform(low=1.0, high=8.)})
+        else:
+            pass
+
     def delay_tau_gen(self):
         '''
         generate delayed tau-model
         '''
 
-        tf = self.FSPS_args['tf']
         d1 = self._d1_gen()  #  eft of tau component
         tt = self._tt_gen(d1)  #  transition time
         ud = self._ud_gen()  #  does SFH cut off or increase?
         d2 = self._d2_gen(ud)  #  doubling/halving time for ramp portion
 
-        params = {'tf': tf, 'd1': d1, 'tt': tt, 'ud': ud, 'd2': d2}
+        params = {'d1': d1, 'tt': tt, 'ud': ud, 'd2': d2}
 
         self.FSPS_args.update(params)
-
-    def time_form_gen(self):
-        # if param already set on object instantiation, leave it alone
-        if self.FSPS_args['tf']:
-            pass
-        else:
-            self.FSPS_args.update(
-                {'tf': np.random.uniform(low=1.0, high=8.)})
 
     def _d1_gen(self):
         if self.FSPS_args['d1']:
             return self.FSPS_args['d1']
 
-        return 1. / np.random.rand()
+        return 1. / self.RS.rand()
 
     def _tt_gen(self, d1):
         # if param already set on object instantiation, leave it alone
@@ -246,13 +256,13 @@ class FSPS_SFHBuilder(object):
         if tf + d1 > self.time0:
             return self.time0
         else:
-            return np.random.uniform(tf + .5, self.time0)
+            return self.RS.uniform(tf + .5, self.time0)
 
     def _ud_gen(self):
         '''
         does ramp go up or down?
         '''
-        r = np.random.rand()
+        r = self.RS.rand()
 
         if r < 1. / 3.:
             return -1.
@@ -266,9 +276,9 @@ class FSPS_SFHBuilder(object):
             return self.FSPS_args['d2']
 
         if ud < 0.:
-            return np.random.uniform(.1, 2.)
+            return self.RS.uniform(.1, 2.)
         elif ud > 0.:
-            return np.random.uniform(1., 10.)
+            return self.RS.uniform(1., 10.)
         else:
             return 100.
 
@@ -287,19 +297,19 @@ class FSPS_SFHBuilder(object):
 
     def _time_burst_gen(self, nburst, dt):
         tf = self.FSPS_args['tf']
-        t_ = np.random.uniform(tf, tf + dt, nburst)
+        t_ = self.RS.uniform(tf, tf + dt, nburst)
         npad = self.max_bursts - nburst
         t_ = np.pad(t_, (0, npad), mode='constant', constant_values=0.)
         return t_
 
     def _dt_burst_gen(self, nburst):
-        dt_ = np.random.uniform(.01, .1, nburst)
+        dt_ = self.RS.uniform(.01, .1, nburst)
         npad = self.max_bursts - nburst
         dt_ = np.pad(dt_, (0, npad), mode='constant', constant_values=0.)
         return dt_
 
     def _A_burst_gen(self, nburst):
-        A_ = 10.**np.random.uniform(np.log10(1.), np.log10(20.), nburst)
+        A_ = 10.**self.RS.uniform(np.log10(0.5), np.log10(5.), nburst)
         npad = self.max_bursts - nburst
         A_ = np.pad(A_, (0, npad), mode='constant', constant_values=0.)
         return A_
@@ -312,7 +322,7 @@ class FSPS_SFHBuilder(object):
 
         time_form = self.FSPS_args['tf']
 
-        nburst = stats.poisson.rvs(dt / self.time0)
+        nburst = self.RS.poisson(dt / self.time0)
         if nburst > self.max_bursts:
             nburst = self.max_bursts
 
@@ -326,10 +336,10 @@ class FSPS_SFHBuilder(object):
         if 'zmet' in self.override.keys():
             return {'zmet': self.override['zmet']}
 
-        if np.random.rand() < .95:
-            return {'zmet': np.log10(np.random.uniform(0.2, 2.5))}
+        if self.RS.rand() < .95:
+            return {'zmet': np.log10(self.RS.uniform(0.2, 2.5))}
 
-        return {'zmet': np.log10(np.random.uniform(.02, .2))}
+        return {'zmet': np.log10(self.RS.uniform(.02, .2))}
 
     def tau_V_gen(self):
         if 'tau_V' in self.override.keys():
@@ -353,7 +363,7 @@ class FSPS_SFHBuilder(object):
             return {'mu': self.override['mu']}
 
         mu_mu = 0.3
-        std_mu = np.random.uniform(.1, 1)
+        std_mu = self.RS.uniform(.1, 1)
         # 68th percentile range means that stdev is in range .1 - 1
         lclip_mu, uclip_mu = 0., 1.
         a_mu = (lclip_mu - mu_mu) / std_mu
@@ -370,7 +380,7 @@ class FSPS_SFHBuilder(object):
         if 'sigma' in self.override.keys():
             return {'sigma': self.override['sigma']}
 
-        return {'sigma': np.random.uniform(10., 400.)}
+        return {'sigma': self.RS.uniform(10., 400.)}
 
     # =====
     # properties
@@ -645,6 +655,45 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
     hdulist.writeto(os.path.join(loc, '{}.fits'.format(fname)), clobber=True)
 
 # my hobby: needlessly subclassing exceptions
+
+def random_SFH_plots(n=10, save=False):
+    from time import time
+
+    fig = plt.figure(figsize=(3, 2), dpi=300)
+    ax = fig.add_subplot(111)
+
+    # make color cycle
+    c_ix = np.linspace(0., 1., n)
+    RSs = [np.random.RandomState() for _ in range(n)]
+
+    for c, RS in zip(c_ix, RSs):
+        sfh = FSPS_SFHBuilder(RS=RS)
+
+        ts = sfh.ts
+        sfrs = sfh.sfrs
+
+        tf = sfh.FSPS_args['tf']
+        ts, sfrs = ts[ts > tf], sfrs[ts > tf]
+
+        ax.plot(ts, sfrs, color=plt.cm.viridis(c),
+                linewidth=0.5)
+
+        del sfh
+
+    ax.set_xlabel('time [Gyr]', size=8)
+    ax.set_ylabel('SFR [sol mass/yr]', size=8)
+
+    ax.tick_params(labelsize=8)
+
+    # compute y-axis limits
+    # cover a dynamic range of a few OOM, plus bursts
+    ax.set_xlim([0., 13.7])
+
+    fig.tight_layout()
+    if save:
+        fig.savefig('.'.join([self.fname, 'png']))
+    else:
+        plt.show()
 
 
 class TemplateError(Exception):
