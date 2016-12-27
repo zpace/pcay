@@ -81,7 +81,7 @@ class Cov_Obs(object):
 
     @classmethod
     def from_MaNGA_reobs(cls, lllim=3650.059970708618, nspec=4563,
-                         dlogl=1.0e-4, MPL_v=mpl_v, n=None):
+                         dlogl=1.0e-4, MPL_v=mpl_v, n=None, nclip=5, nsig=3):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
@@ -116,7 +116,7 @@ class Cov_Obs(object):
             n = n_unique
 
         groups = [tab for tab in objs_dupl.groups]
-        use = [True if i <= n else False for i in range(n_unique)]
+        use = [True, ] * n + [False, ] * (n_unique - n)
         groups = [g for g, u in zip(groups, use) if u]
 
         # process multiply-observed datacubes, up to limit set
@@ -124,11 +124,11 @@ class Cov_Obs(object):
             *[Cov_Obs.process_MaNGA_mult(grp, nspec)
               for grp in groups])
 
-        diffs = np.row_stack([p for (p, g) in zip(diffs, good) if g]).T
+        diffs = np.row_stack([p for (p, g) in zip(diffs, good) if g])
         n = [nn for (nn, g) in zip(n, good) if g]
         N = np.sum(n)
 
-        cov = np.cov(diffs)
+        cov = np.cov(diffs.T)
         cov /= np.median(np.diag(cov))
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=N)
@@ -205,6 +205,7 @@ class Cov_Obs(object):
 
         from itertools import combinations as comb
         from scipy.signal import medfilt
+        from astropy.stats import sigma_clip
 
         # load all LOGCUBES for a given MaNGA-ID
         # files have form 'manga-<PLATE>-<IFU>-LOGCUBE.fits.gz'
@@ -257,6 +258,11 @@ class Cov_Obs(object):
         pairs_ixs = comb(range(n_reobs), 2)
         diffs = np.row_stack([specs[i1, ...] - specs[i2, ...]
                           for (i1, i2) in pairs_ixs])
+
+        # iterative sigma-clipping
+        diffs_ = sigma_clip(diffs, sigma=3, iters=10, axis=0)
+        bad = np.any(diffs_.mask, axis=1)
+        diffs = diffs[~bad]
 
         return diffs, True, n_reobs * good.sum()
 
@@ -408,6 +414,6 @@ if __name__ == '__main__':
     '''
     # =====
 
-    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=10)
+    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=5)
     Cov_manga.write_fits('manga_Kspec.fits')
     Cov_manga.make_im(kind='manga')
