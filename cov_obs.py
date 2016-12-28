@@ -81,7 +81,7 @@ class Cov_Obs(object):
 
     @classmethod
     def from_MaNGA_reobs(cls, lllim=3650.059970708618, nspec=4563,
-                         dlogl=1.0e-4, MPL_v=mpl_v, n=None, nclip=5, nsig=3):
+                         dlogl=1.0e-4, MPL_v=mpl_v, n=None):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
@@ -154,19 +154,23 @@ class Cov_Obs(object):
         hdu.header['DLOGL'] = self.dlogl
         hdu.header['NOBJ'] = self.nobj
         hdulist = fits.HDUList([hdu_, hdu])
-        hdulist.writeto(fname, clobber=True)
+        hdulist.writeto(fname, overwrite=True)
 
     def make_im(self, kind):
         l = self.l
         fig = plt.figure(figsize=(6, 6), dpi=300)
         ax = fig.add_subplot(111)
+
+        vmax = np.abs(self.cov).max()**0.3
+
         im = ax.imshow(
-            np.abs(self.cov), extent=[l.min(), l.max(), l.min(), l.max()],
-            vmax=100., vmin=1.0e-8, interpolation='None',
-            aspect='equal', norm=LogNorm())
+            np.sign(self.cov) * (np.abs(self.cov))**0.3,
+            extent=[l.min(), l.max(), l.min(), l.max()],
+            vmax=vmax, vmin=-vmax, interpolation='None', aspect='equal')
         ax.set_xlabel(r'$\lambda$', size=8)
         ax.set_ylabel(r'$\lambda$', size=8)
-        plt.colorbar(im, ax=ax, shrink=0.8)
+        cb = plt.colorbar(im, ax=ax, shrink=0.8)
+        cb.set_label(r'$\textrm{sgn}(K) ~ K^{0.3}$')
         plt.savefig('cov_obs_{}.png'.format(kind), dpi=300)
 
     # =====
@@ -263,8 +267,9 @@ class Cov_Obs(object):
         diffs_ = sigma_clip(diffs, sigma=3, iters=10, axis=0)
         bad = np.any(diffs_.mask, axis=1)
         diffs = diffs[~bad]
+        print(diffs.shape[0])
 
-        return diffs, True, n_reobs * good.sum()
+        return diffs, True, diffs.shape[0]
 
     @staticmethod
     def _mults(spAll, i_lim=10):
@@ -414,6 +419,6 @@ if __name__ == '__main__':
     '''
     # =====
 
-    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=5)
+    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=None)
     Cov_manga.write_fits('manga_Kspec.fits')
     Cov_manga.make_im(kind='manga')
