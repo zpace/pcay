@@ -353,7 +353,8 @@ class FSPS_SFHBuilder(object):
         b_tau_V = (uclip_tau_V - mu_tau_V) / std_tau_V
 
         pdf_tau_V = stats.truncnorm(
-            a=a_tau_V, b=b_tau_V, loc=mu_tau_V, scale=std_tau_V)
+            a=a_tau_V, b=b_tau_V, loc=mu_tau_V, scale=std_tau_V,
+            seed=self.RS)
 
         tau_V = pdf_tau_V.rvs()
 
@@ -371,7 +372,7 @@ class FSPS_SFHBuilder(object):
         b_mu = (uclip_mu - mu_mu) / std_mu
 
         pdf_mu = stats.truncnorm(
-            a=a_mu, b=b_mu, loc=mu_mu, scale=std_mu)
+            a=a_mu, b=b_mu, loc=mu_mu, scale=std_mu, seed=self.RS)
 
         mu = pdf_mu.rvs()
 
