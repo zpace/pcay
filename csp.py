@@ -575,9 +575,10 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
     if not pkl:
         if n is None:
             n = 1
+        RSs = [np.random.RandomState() for _ in range(n)]
         # generate CSPs and cache them
-        CSPs = [FSPS_SFHBuilder(max_bursts=5).FSPS_args
-                for _ in range(n)]
+        CSPs = [FSPS_SFHBuilder(max_bursts=5, RS=rs).FSPS_args
+                for rs in RSs]
         with open(os.path.join(loc, '{}.pkl'.format(fname)), 'wb') as f:
             pickle.dump(CSPs, f)
     else:

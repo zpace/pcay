@@ -30,7 +30,7 @@ from sklearn.model_selection import GridSearchCV
 from statsmodels.nonparametric.kde import KDEUnivariate
 
 # local
-import ssp_lib
+import csp
 import cov_obs
 import figures_tools
 import radial
@@ -348,8 +348,8 @@ class StellarPop_PCA(object):
         # this does not keep record of each iteration's output, even at end
         if max_q is not None:
             res_q = [None, ] * max_q
-            for dim_pc_subspace in range(1, max_q):
-                PCs = self.PCA(self.S, dims=dim_pc_subspace)
+            for dim in range(1, max_q):
+                PCs, PVE = self.PCA(self.S, dims=dim)
                 # transformation matrix: spectra -> PC amplitudes
                 tfm_sp2PC = PCs.T
 
@@ -364,16 +364,14 @@ class StellarPop_PCA(object):
 
                 # find weights of each PC in determining parameters in metadata
                 (n_, p_, q_) = (self.trn_spectra.shape[0],
-                                len(self.metadata.colnames),
-                                dim_pc_subspace)
+                                len(self.metadata.colnames), dim)
                 m_dims_ = (n_, p_, q_)
 
         # if user asks to run parameter regression of specific # of PCs
         # this also sets self attributes, so that everything is kept
         if q is not None:
-            dim_pc_subspace = q
-            self.PCs = self.PCA(
-                self.normed_trn - self.M, dims=dim_pc_subspace)
+            dim = q
+            self.PCs, self.PVE = self.PCA(self.S, dims=dim)
             # transformation matrix: spectra -> PC amplitudes
             self.tfm_sp2PC = self.PCs.T
 
@@ -388,8 +386,7 @@ class StellarPop_PCA(object):
 
             # find weights of each PC in determining parameters in metadata
             (n_, p_, q_) = (self.trn_spectra.shape[0],
-                            len(self.metadata.colnames),
-                            dim_pc_subspace)
+                            len(self.metadata.colnames), dim)
             m_dims_ = (n_, p_, q_)
 
     def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
@@ -1107,23 +1104,24 @@ class StellarPop_PCA(object):
         # the performance gain is substantial
         evals, evecs = np.linalg.eigh(R)
 
-        # sort eigenvalue in decreasing order
+        # sort evals and evecs in decreasing order
         idx = np.argsort(evals)[::-1]
-        evecs = evecs[:, idx]
+        evals, evecs = evals[idx], evecs[:, idx]
 
-        # sort eigenvectors according to same index
-        evals = evals[idx]
+        # proportion of variance explained
+        PVE = evals[:dims] / evals.sum()
 
         # select the first n eigenvectors (n is desired dimension
         # of rescaled data array, or dims_rescaled_data)
         evecs = evecs[:, :dims].T
 
         # make the mean of each eigenvector positive
-        evecs /= np.sign(evecs.mean(axis=1))[:, None]
+        # if mean is zero, leave it as is
+        sign = np.sign(evecs.mean(axis=1))[:, None]
+        sign[sign == 0.] = 1.
+        evecs /= sign
 
-        # transformation matrix takes (scaled) data to array of PC weights
-
-        return evecs
+        return evecs, PVE
 
     @staticmethod
     def P_from_K(K):
@@ -1305,7 +1303,7 @@ class MaNGA_deredshift(object):
             template_dlogl = spec_tools.determine_dlogl(template_logl)
 
         if template_dlogl != self.drp_dlogl:
-            raise ssp_lib.TemplateCoverageError(
+            raise csp.TemplateCoverageError(
                 'template and input spectra must have same dlogl: ' +
                 'template\'s is {}; input spectra\'s is {}'.format(
                     template_dlogl, self.drp_dlogl))
@@ -2349,7 +2347,7 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS', nfiles=None):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=nfiles)
+                K_obs=K_obs, base_dir='CSPs_new', base_fname='CSP', nfiles=nfiles)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2444,7 +2442,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=2)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=10)
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
     pca.make_params_vs_PCs_fig()
