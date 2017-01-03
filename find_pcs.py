@@ -1422,13 +1422,20 @@ class MaNGA_deredshift(object):
     def eline_EW(self, ix):
         return self.dap_hdulist['EMLINE_SEW'].data[ix] * u.Unit('AA')
 
-    def coadd(self):
+    def coadd(self, good=None):
         '''
         return coadded spectrum and ivar
+
+        par
         '''
 
-        flux = np.sum(self.flux_regr, axis=(1, 2))
-        ivar = np.sum(self.ivar_regr, axis=(1, 2))
+        if good:
+            pass
+        else:
+            good = np.ones_like(self.flux_regr[0, ...])
+
+        flux = np.sum(self.flux_regr * good[None, ...], axis=(1, 2))
+        ivar = np.sum(self.ivar_regr * good[None, ...], axis=(1, 2))
 
         return flux, ivar
 
@@ -1486,9 +1493,6 @@ class PCA_Result(object):
         self.SNR_med = np.median(self.O * np.sqrt(self.ivar) + eps,
                                  axis=0)
 
-        self.mask_map = np.logical_or(
-            mask_spax, dered.drp_hdulist['RIMG'].data == 0.)
-
         self.A, self.M, self.a_map, self.O_sub, self.O_norm = pca.project_cube(
             f=self.O, ivar=self.ivar, mask_spax=mask_spax,
             mask_cube=self.mask_cube)
@@ -1516,6 +1520,13 @@ class PCA_Result(object):
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A,
                                            **norm_params)
+
+        # spaxel is good if at least 10 models have weights 1/10 max
+        goodPDF = self.sample_diag(f=.1) >= 10
+
+        self.mask_map = np.logical_or.reduce(
+            (mask_spax, dered.drp_hdulist['RIMG'].data == 0.,
+             ~goodPDF))
 
         self.l = 10.**self.pca.logl
 
@@ -1748,7 +1759,7 @@ class PCA_Result(object):
         calculate integrated spectrum, and then compute stellar mass from that
         '''
 
-        O, ivar = self.dered.coadd()
+        O, ivar = self.dered.coadd(good=~self.mask_map)
         O, ivar = O[..., None, None], ivar[..., None, None]
 
         mask_cube = (np.sum(self.mask_cube, axis=(1, 2)) > 0)[..., None, None]
@@ -2347,7 +2358,7 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS', nfiles=None):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs_new', base_fname='CSP', nfiles=nfiles)
+                K_obs=K_obs, base_dir='CSPs_new', base_fname='CSPs', nfiles=nfiles)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2442,7 +2453,7 @@ if __name__ == '__main__':
     if not plateifu:
         plateifu = '8083-12704'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=10)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7, src='FSPS', nfiles=None)
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
     pca.make_params_vs_PCs_fig()
@@ -2476,6 +2487,8 @@ if __name__ == '__main__':
     pca_res.make_qty_fig(qty_str='MLr')
     pca_res.make_qty_fig(qty_str='MLi')
     pca_res.make_qty_fig(qty_str='MLz')
+
+    pca_res.make_qty_fig(qty_str='MWA')
 
     pca_res.make_Mstar_fig(band='r')
     pca_res.make_Mstar_fig(band='i')
