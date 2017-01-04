@@ -1,3 +1,5 @@
+import os
+
 from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel, proj_plane_pixel_scales
 import astropy.coordinates as coords
@@ -33,3 +35,7 @@ def linear_offset_coordinates(wcs, center):
     new_wcs.wcs.cunit = 'deg', 'deg'
 
     return new_wcs
+
+def savefig(fig, name, dir, **kwargs):
+    fpath = os.path.join(self.figdir, fname)
+    fig.savefig(path, **kwargs)

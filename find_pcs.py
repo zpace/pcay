@@ -1429,9 +1429,7 @@ class MaNGA_deredshift(object):
         par
         '''
 
-        if good:
-            pass
-        else:
+        if good is None:
             good = np.ones_like(self.flux_regr[0, ...])
 
         flux = np.sum(self.flux_regr * good[None, ...], axis=(1, 2))
@@ -1474,7 +1472,7 @@ class PCA_Result(object):
     store results of PCA for one galaxy using this
     '''
 
-    def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}):
+    def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}, figdir='.'):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
@@ -1482,6 +1480,10 @@ class PCA_Result(object):
         self.z = z
         self.norm_params = norm_params
         self.K_obs = K_obs
+
+        # where to save all figures
+        self.figdir = figdir
+        self.__setup_figdir__()
 
         self.E = pca.PCs
 
@@ -1521,8 +1523,8 @@ class PCA_Result(object):
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A,
                                            **norm_params)
 
-        # spaxel is good if at least 10 models have weights 1/10 max
-        goodPDF = self.sample_diag(f=.1) >= 10
+        # spaxel is good if at least 100 models have weights 1/100 max
+        goodPDF = self.sample_diag(f=.01) >= 100
 
         self.mask_map = np.logical_or.reduce(
             (mask_spax, dered.drp_hdulist['RIMG'].data == 0.,
@@ -1651,8 +1653,9 @@ class PCA_Result(object):
         plt.tight_layout()
         plt.subplots_adjust(top=0.9)
 
-        fig.savefig('comp_{0}_{1[0]}-{1[1]}.png'.format(
-            self.objname, ix), dpi=300)
+        fname = 'comp_{0}_{1[0]}-{1[1]}.png'.format(self.objname, ix)
+
+        self.savefig(fig, fname, self.figdir, dpi=300)
 
         return fig
 
@@ -1738,7 +1741,8 @@ class PCA_Result(object):
         fig.suptitle('{}: {}'.format(self.objname, qty_tex))
 
         self.__fix_im_axs__([ax1, ax2])
-        fig.savefig('{}-{}.png'.format(self.objname, qty_fname), dpi=300)
+        fname = '{}-{}.png'.format(self.objname, qty_fname)
+        self.savefig(fig, fname, self.figdir, dpi=300)
 
         return fig
 
@@ -1881,7 +1885,8 @@ class PCA_Result(object):
 
         self.__fix_im_axs__([ax1, ax2])
 
-        fig.savefig('{}-{}.png'.format(self.objname, qty_str), dpi=300)
+        fname = '{}-{}.png'.format(self.objname, qty_str)
+        self.savefig(fig, fname, self.figdir, dpi=300)
 
         return fig
 
@@ -2036,6 +2041,16 @@ class PCA_Result(object):
 
         return fig, gs, ax1, ax2
 
+    def __setup_figdir__(self):
+        if not os.path.isdir(self.figdir):
+            os.makedirs(self.figdir)
+
+    def savefig(self, *args, **kwargs):
+        '''
+        wrapper around figures_tools.savefig
+        '''
+        figures_tools.savefig(*args, **kwargs)
+
     def map_add_loc(self, ax, ix, **kwargs):
         '''
         add axvline and axhline at the location in the map corresponding to
@@ -2119,8 +2134,8 @@ class PCA_Result(object):
 
         plt.suptitle('{0}: ({1[0]}-{1[1]})'.format(self.objname, ix_))
 
-        plt.savefig('{0}_fulldiag_{1[0]}-{1[1]}.png'.format(
-            self.objname, ix_))
+        fname = '{0}_fulldiag_{1[0]}-{1[1]}.png'.format(self.objname, ix_)
+        self.savefig(fig, fname, self.figdir, dpi=300)
 
     def radial_gp_plot(self, qty, dep, TeX_over=None, f=None, ax=None,
                        q_bdy=None, logify=False):
@@ -2204,7 +2219,8 @@ class PCA_Result(object):
         ax.set_title(self.objname)
         plt.tight_layout()
 
-        plt.savefig('{}-{}_radGP.png'.format(self.objname, qty), dpi=300)
+        fname = '{}-{}_radGP.png'.format(self.objname, qty)
+        self.savefig(fig, fname, self.figdir, dpi=300)
 
     def color_ML_plot(self, dep, mlb='i', b1='g', b2='r', ax=None):
         '''
@@ -2216,6 +2232,7 @@ class PCA_Result(object):
 
         # b1 - b2 color
         col = color(self.dered.drp_hdulist, b1, b2)
+        col = np.ma.array(col, mask=self.mask_map)
         # retrieve ML ratio
         ml, *_, scale = self.pca.param_cred_intvl(
             'ML{}'.format(mlb), W=self.w, factor=None)
@@ -2273,7 +2290,8 @@ class PCA_Result(object):
 
         plt.tight_layout()
 
-        plt.savefig('{}_colorML.png'.format(self.objname), dpi=300)
+        fname = '{}_colorML.png'.format(self.objname)
+        self.savefig(fig, fname, self.figdir, dpi=300)
 
     def sample_diag(self, f=.1, w=None):
         '''
@@ -2329,7 +2347,8 @@ class PCA_Result(object):
 
         fig.suptitle(' '.join((self.dered.plateifu, 'good model fraction')))
 
-        fig.savefig('_'.join((self.dered.plateifu, 'goodmodels.png')), dpi=300)
+        fname = '_'.join((self.dered.plateifu, 'goodmodels.png'))
+        self.savefig(fig, fname, self.figdir, dpi=300)
 
     @property
     def wcs_header(self):
