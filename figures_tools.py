@@ -36,6 +36,6 @@ def linear_offset_coordinates(wcs, center):
 
     return new_wcs
 
-def savefig(fig, name, fdir, **kwargs):
+def savefig(fig, fname, fdir, **kwargs):
     fpath = os.path.join(fdir, fname)
     fig.savefig(path, **kwargs)
