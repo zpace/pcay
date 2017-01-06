@@ -1,6 +1,12 @@
 import numpy as np
 import pickle as pkl
 
+from astropy import units as u, constants as c, table as t
+
+from scipy.ndimage.filters import gaussian_filter1d as gf
+
+ln10 = np.log(10.)
+
 class ArrayPartitioner(object):
     '''
     partition arrays along an axis, and return an iterator
@@ -96,3 +102,56 @@ def lin_transform(r1, r2, x):
     '''
 
     return (((x - r1[0]) * (r2[1] - r2[0])) / (r1[1] - r1[0])) + r2[0]
+
+def gaussian_filter(spec, sig):
+    '''
+    variable-width convolution of a spectrum
+
+    inspired by Michele Cappellari's similar routine
+
+    params:
+        - spec: vector of a single spectrum
+        - sig: vector giving width of gaussian peak (in pixels)
+    '''
+
+    # don't allow zero widths
+    sig = sig.clip(.01)
+
+    a = np.diag(spec)
+
+    for i in range(len(sig)):
+        a[i, :] = gf(a[i, :], sig[i], axis=-1, mode='nearest')
+
+    return a.sum(axis=0)
+
+def add_losvds(meta, spec, dlogl, vmin=10, vmax=500, nv=10, LSF=None):
+    '''
+    take spectra and blur each one a few times
+    '''
+
+    if LSF is None:
+        LSF = np.zeros_like(spec[0, :])
+
+    RS = np.random.RandomState()
+
+    meta, spec = zip(*[_add_losvd_single(m, s, dlogl, vmin, vmax, nv, LSF, RS)
+                       for m, s in zip(meta, spec)])
+    meta = t.vstack(meta)
+    spec = np.row_stack(spec)
+
+    return meta, spec
+
+def _add_losvd_single(meta, spec, dlogl, vmin, vmax, nv, LSF, RS):
+    # dlogl is just redshift per pixel
+    vels = RS.uniform(vmin, vmax, nv) * u.Unit('km/s')
+    z_ = (vels / c.c).value
+    sig = ln10 * (z_ / dlogl)
+    sig = np.atleast_2d(sig).T
+    sig = np.sqrt(sig**2. + LSF**2.)
+
+    meta = t.vstack([meta, ] * nv)
+    meta['sigma'] = vels.value
+
+    spec = np.row_stack([gaussian_filter(spec, s) for s in sig])
+
+    return meta, spec

@@ -241,13 +241,13 @@ class StellarPop_PCA(object):
 
     @classmethod
     def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=None,
-                  log_params=['MWA', 'MLr', 'MLi', 'MLz']):
+                  log_params=['MWA', 'MLr', 'MLi', 'MLz'], vel_params={}):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
         '''
 
         from glob import glob
-        from utils import pickle_loader
+        from utils import pickle_loader, add_losvds
         from itertools import chain
 
         d_names = glob(os.path.join(base_dir,'{}_*.pkl'.format(base_fname)))
@@ -260,25 +260,29 @@ class StellarPop_PCA(object):
         hdulists = [fits.open(f) for f in f_names]
 
         l = hdulists[0][2].data * u.AA
+        dlogl = hdulists[0]['lam'].header['DLOGL']
 
         *_, specs = zip(*hdulists)
 
         meta = t.vstack([t.Table.read(f, format='fits', hdu=1)
                          for f in f_names])
-
         spec = np.row_stack([s.data for s in specs])
+
+        # now take spectrum-metadata pairs, randomize a bunch of velocities
+        # for each, and convolve!
+        meta, spec = add_losvds(meta, spec, dlogl=dlogl, **vel_params)
 
         meta['Dn4000'] = spec_tools.Dn4000_index(
             l=l.value, s=spec.T[..., None]).flatten()
         meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
             l=l.value, s=spec.T[..., None]).flatten()
-        meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'zmet', 'tau_V', 'mu',
+        meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'logzsol', 'tau_V', 'mu',
                     'MLr', 'MLi', 'MLz', 'sigma']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
         meta['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
-        meta['zmet'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
+        meta['logzsol'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
         meta['tau_V'].meta['TeX'] = r'$\tau_V$'
         meta['mu'].meta['TeX'] = r'$\mu$'
         meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
@@ -299,7 +303,7 @@ class StellarPop_PCA(object):
 
         # MWA bounds
         if meta['MWA'].meta.get('scale', 'linear') == 'log':
-            MWA_bds = [-10, 3] # log Gyr
+            MWA_bds = [-10, 2] # log Gyr
         else:
             MWA_bds = [0, 14] # Gyr
 
@@ -2377,7 +2381,7 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS', nfiles=None):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs_new', base_fname='CSPs', nfiles=nfiles)
+                K_obs=K_obs, base_dir='CSPs_test', base_fname='CSPs', nfiles=nfiles)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2469,9 +2473,6 @@ if __name__ == '__main__':
 
     plateifu = input('What galaxy? ')
 
-    if not plateifu:
-        plateifu = '8083-12704'
-
     pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7, src='FSPS', nfiles=None)
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
@@ -2481,42 +2482,46 @@ if __name__ == '__main__':
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
     drpall = t.Table.read(drpall_path)
 
-    plate, ifu = plateifu.split('-')
+    while plateifu != '':
 
-    dered = MaNGA_deredshift.from_plateifu(
-        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
-    obj = drpall[drpall['plateifu'] == plateifu]
-    dep = m.deproject.from_plateifu(plate=plate, ifu=ifu, MPL_v=mpl_v)
+        plate, ifu = plateifu.split('-')
 
-    z_dist = m.get_drpall_val(
-        os.path.join(
-            mangarc.manga_data_loc[mpl_v],
-            'drpall-{}.fits'.format(m.MPL_versions[mpl_v])),
-        ['nsa_zdist'], plateifu)[0]['nsa_zdist']
+        dered = MaNGA_deredshift.from_plateifu(
+            plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
+        obj = drpall[drpall['plateifu'] == plateifu]
+        dep = m.deproject.from_plateifu(plate=plate, ifu=ifu, MPL_v=mpl_v)
 
-    pca_res = PCA_Result(
-        pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
-        norm_params={'norm': 'L2', 'soft': False})
+        z_dist = m.get_drpall_val(
+            os.path.join(
+                mangarc.manga_data_loc[mpl_v],
+                'drpall-{}.fits'.format(m.MPL_versions[mpl_v])),
+            ['nsa_zdist'], plateifu)[0]['nsa_zdist']
 
-    pca_res.make_sample_diag_fig()
+        pca_res = PCA_Result(
+            pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
+            norm_params={'norm': 'L2', 'soft': False}, figdir=plateifu)
 
-    pca_res.make_full_QA_fig(kde=(True, True))
-    pca_res.make_comp_fig()
+        pca_res.make_sample_diag_fig()
 
-    pca_res.make_qty_fig(qty_str='MLr')
-    pca_res.make_qty_fig(qty_str='MLi')
-    pca_res.make_qty_fig(qty_str='MLz')
+        pca_res.make_full_QA_fig(kde=(True, True))
+        pca_res.make_comp_fig()
 
-    pca_res.make_qty_fig(qty_str='MWA')
+        pca_res.make_qty_fig(qty_str='MLr')
+        pca_res.make_qty_fig(qty_str='MLi')
+        pca_res.make_qty_fig(qty_str='MLz')
 
-    pca_res.make_Mstar_fig(band='r')
-    pca_res.make_Mstar_fig(band='i')
-    pca_res.make_Mstar_fig(band='z')
+        pca_res.make_qty_fig(qty_str='MWA')
 
-    pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[.01, 100.])
-    pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[.01, 100.])
-    pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[.01, 100.])
+        pca_res.make_Mstar_fig(band='r')
+        pca_res.make_Mstar_fig(band='i')
+        pca_res.make_Mstar_fig(band='z')
 
-    pca_res.make_radial_gp_fig(qty='Dn4000', dep=dep)
+        pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[.01, 100.])
+        pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[.01, 100.])
+        pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[.01, 100.])
 
-    pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
+        pca_res.make_radial_gp_fig(qty='Dn4000', dep=dep)
+
+        pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
+
+        plateifu = input('Input next galaxy: ')

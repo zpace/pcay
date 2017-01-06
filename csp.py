@@ -50,7 +50,8 @@ class FSPS_SFHBuilder(object):
 
     __version__ = '0.2'
 
-    def __init__(self, max_bursts=5, override={}, min_dt_cont=.03, RS=None, seed=None):
+    def __init__(self, max_bursts=5, override={}, min_dt_cont=.03, RS=None, seed=None,
+                 subsample_keys=['tau_V', 'mu'], Nsubsample=20):
         '''
         set up star formation history generation to use with FSPS
 
@@ -76,15 +77,18 @@ class FSPS_SFHBuilder(object):
             - dtb [array]: duration of each burst
             - tau_V: V-band optical depth affecting young stars
             - mu: fraction of V-band optical depth affecting old stars
-            - zmet: metallicity index
+            - logzsol: metallicity index
         '''
 
         self.req_param_keys = [
             'tf', 'tt', 'd1', 'd2', 'ud',  #  delayed tau model, ramp
             'A', 'tb', 'dtb',  #  burst properties
-            'tau_V', 'mu', 'zmet', 'sigma']  #  other
+            'tau_V', 'mu', 'logzsol']  #  other
 
         self.FSPS_args = {k: None for k in self.req_param_keys}
+
+        self.subsample_keys = subsample_keys
+        self.Nsubsample = Nsubsample
 
         if not RS:
             self.RS = np.random.RandomState()
@@ -129,10 +133,10 @@ class FSPS_SFHBuilder(object):
         self.delay_tau_gen()
 
         # incidentals
-        self.sigma_gen()
+        # self.sigma_gen()
         self.tau_V_gen()
         self.mu_gen()
-        self.zmet_gen()
+        self.logzsol_gen()
 
         # bursts
         self.burst_gen()
@@ -153,17 +157,32 @@ class FSPS_SFHBuilder(object):
         sp.params['imf_type'] = 2
         sp.params['tage'] = self.time0
         sp.params['sfh'] = 3
-        sp.params['logzsol'] = self.FSPS_args['zmet']
-        sp.params['sigma_smooth'] = self.FSPS_args['sigma']
-        sp.params['dust1'] = self.FSPS_args['tau_V']
-        sp.params['dust2'] = self.FSPS_args['tau_V'] * self.FSPS_args['mu']
+        sp.params['logzsol'] = self.FSPS_args['logzsol']
+        sp.params['dust1'] = 0.
+        sp.params['dust2'] = 0.
 
         sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
 
-        l, spec = sp.get_spectrum(tage=self.time0, peraa=True)
         mstar = sp.stellar_mass
 
+        l, spec = zip(*[self._run_fsps_newparams(SP=sp, tage=self.time0,
+                                                 d={'dust1': tau,
+                                                    'dust2': tau * mu})
+                        for tau, mu in zip(self.FSPS_args['tau_V'],
+                                           self.FSPS_args['mu'])])
+
+        l = l[0]
+        spec = np.row_stack(spec)
+
         return l, spec, mstar
+
+    def _run_fsps_newparams(self, SP, tage, d):
+        for k in d:
+            SP.params[k] = d[k]
+
+        l, spec = SP.get_spectrum(tage=tage, peraa=True)
+
+        return l, spec
 
     def plot_sfh(self, ts=None, sfrs=None, save=False):
 
@@ -206,9 +225,21 @@ class FSPS_SFHBuilder(object):
             pickle.dump(self.FSPS_args, f)
 
     def to_table(self):
+
+        ks = self.subsample_keys
         tab = t.Table(rows=[self.FSPS_args])
+
+        # make way for properly separated columns!
+        for k in ks:
+            del tab[k]
+
         tab.add_column(t.Column(data=[self.Fstar], name='Fstar'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
+
+        tab = t.vstack([tab, ] * self.Nsubsample)
+
+        for k in ks:
+            tab.add_column(t.Column(data=self.FSPS_args[k], name=k))
 
         return tab
 
@@ -332,15 +363,15 @@ class FSPS_SFHBuilder(object):
 
         self.FSPS_args.update({'tb': tb, 'dtb': dtb, 'A': A, 'nburst': nburst})
 
-    def zmet_gen(self, zsol=zsol_padova):
-        if 'zmet' in self.override.keys():
-            self.FSPS_args.update({'zmet': self.override['zmet']})
+    def logzsol_gen(self, zsol=zsol_padova):
+        if 'logzsol' in self.override.keys():
+            self.FSPS_args.update({'logzsol': self.override['logzsol']})
 
         if self.RS.rand() < .95:
             self.FSPS_args.update(
-                {'zmet': np.log10(self.RS.uniform(0.2, 2.5))})
+                {'logzsol': np.log10(self.RS.uniform(0.2, 2.5))})
 
-        self.FSPS_args.update({'zmet': np.log10(self.RS.uniform(.02, .2))})
+        self.FSPS_args.update({'logzsol': np.log10(self.RS.uniform(.02, .2))})
 
     def tau_V_gen(self):
         if 'tau_V' in self.override.keys():
@@ -356,7 +387,7 @@ class FSPS_SFHBuilder(object):
             a=a_tau_V, b=b_tau_V, loc=mu_tau_V, scale=std_tau_V)
         pdf_tau_V.random_state = self.RS
 
-        tau_V = pdf_tau_V.rvs()
+        tau_V = pdf_tau_V.rvs(size=self.Nsubsample)
 
         self.FSPS_args.update({'tau_V': tau_V})
 
@@ -375,7 +406,7 @@ class FSPS_SFHBuilder(object):
             a=a_mu, b=b_mu, loc=mu_mu, scale=std_mu)
         pdf_mu.random_state = self.RS
 
-        mu = pdf_mu.rvs()
+        mu = pdf_mu.rvs(size=self.Nsubsample)
 
         self.FSPS_args.update({'mu': mu})
 
@@ -572,14 +603,15 @@ def make_csp(params={}, return_l=False):
 
 def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
                           lllim=3700., lulim=8900., dlogl=1.0e-4,
-                          multiproc=False, nproc=8):
+                          multiproc=False, nproc=8, Nsubsample=20):
 
     if not pkl:
         if n is None:
             n = 1
         RSs = [np.random.RandomState() for _ in range(n)]
         # generate CSPs and cache them
-        CSPs = [FSPS_SFHBuilder(max_bursts=5, RS=rs).FSPS_args
+        CSPs = [FSPS_SFHBuilder(max_bursts=5, RS=rs,
+                                Nsubsample=Nsubsample).FSPS_args
                 for rs in RSs]
         with open(os.path.join(loc, '{}.pkl'.format(fname)), 'wb') as f:
             pickle.dump(CSPs, f)
@@ -605,6 +637,7 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
 
         # now build specs and metadata
         specs, metadata = zip(*res)
+        specs = np.row_stack(specs)
 
     else:
         # otherwise, build each entry individually
@@ -656,9 +689,7 @@ def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
         wavelength grid
     '''
 
-    hdulist.writeto(os.path.join(loc, '{}.fits'.format(fname)), clobber=True)
-
-# my hobby: needlessly subclassing exceptions
+    hdulist.writeto(os.path.join(loc, '{}.fits'.format(fname)), overwrite=True)
 
 def random_SFH_plots(n=10, save=False):
     from time import time
@@ -699,6 +730,8 @@ def random_SFH_plots(n=10, save=False):
     else:
         plt.show()
 
+
+# my hobby: needlessly subclassing exceptions
 
 class TemplateError(Exception):
     '''
