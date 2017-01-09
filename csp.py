@@ -366,12 +366,11 @@ class FSPS_SFHBuilder(object):
     def logzsol_gen(self, zsol=zsol_padova):
         if 'logzsol' in self.override.keys():
             self.FSPS_args.update({'logzsol': self.override['logzsol']})
-
-        if self.RS.rand() < .95:
+        elif self.RS.rand() < .95:
             self.FSPS_args.update(
                 {'logzsol': np.log10(self.RS.uniform(0.2, 2.5))})
-
-        self.FSPS_args.update({'logzsol': np.log10(self.RS.uniform(.02, .2))})
+        else:
+            self.FSPS_args.update({'logzsol': np.log10(self.RS.uniform(.02, .2))})
 
     def tau_V_gen(self):
         if 'tau_V' in self.override.keys():
