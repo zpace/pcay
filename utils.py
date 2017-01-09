@@ -114,15 +114,21 @@ def gaussian_filter(spec, sig):
         - sig: vector giving width of gaussian peak (in pixels)
     '''
 
-    # don't allow zero widths
-    sig = sig.clip(.01)
+    p = int(np.ceil(3. * np.max(sig)))
+    m = 2 * p + 1  # kernel size
+    x2 = np.linspace(-p, p, m)**2
 
-    a = np.diag(spec)
+    n = spec.size
+    a = np.zeros((m, n))
+    for j in range(m):   # Loop over the small size of the kernel
+        a[j, p:-p] = spec[j:n - m + j + 1]
 
-    for i in range(len(sig)):
-        a[i, :] = gf(a[i, :], sig[i], axis=-1, mode='nearest')
+    gau = np.exp(-x2[:, None] / (2 * sig**2.))
+    gau /= np.sum(gau, axis=0)[None, :]  # Normalize kernel
 
-    return a.sum(axis=0)
+    f = np.sum(a * gau, axis=0)
+
+    return f
 
 def add_losvds(meta, spec, dlogl, vmin=10, vmax=500, nv=10, LSF=None):
     '''
@@ -134,24 +140,33 @@ def add_losvds(meta, spec, dlogl, vmin=10, vmax=500, nv=10, LSF=None):
 
     RS = np.random.RandomState()
 
-    meta, spec = zip(*[_add_losvd_single(m, s, dlogl, vmin, vmax, nv, LSF, RS)
-                       for m, s in zip(meta, spec)])
+    i_s = range(spec.shape[0])
+
+    meta, spec = zip(*[_add_losvds_single(m, s, dlogl, vmin, vmax, nv,
+                                          RS, LSF, i)
+                       for m, s, i in zip(meta, spec, i_s)])
     meta = t.vstack(meta)
     spec = np.row_stack(spec)
 
     return meta, spec
 
-def _add_losvd_single(meta, spec, dlogl, vmin, vmax, nv, LSF, RS):
-    # dlogl is just redshift per pixel
+def _add_losvds_single(meta, spec, dlogl, vmin, vmax, nv, RS, LSF, i):
+
     vels = RS.uniform(vmin, vmax, nv) * u.Unit('km/s')
-    z_ = (vels / c.c).value
+
+    # dlogl is just redshift per pixel
+    z_ = (vels / c.c).decompose().value
     sig = ln10 * (z_ / dlogl)
     sig = np.atleast_2d(sig).T
     sig = np.sqrt(sig**2. + LSF**2.)
+    sig = sig.clip(min=.01, max=None)
 
-    meta = t.vstack([meta, ] * nv)
+    meta = t.vstack([meta, ] * len(vels))
     meta['sigma'] = vels.value
 
     spec = np.row_stack([gaussian_filter(spec, s) for s in sig])
+
+    if i % 10 == 0:
+        print('Done with {}'.format(i))
 
     return meta, spec
