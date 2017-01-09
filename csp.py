@@ -376,9 +376,9 @@ class FSPS_SFHBuilder(object):
         if 'tau_V' in self.override.keys():
             self.FSPS_args.update({'tau_V': self.override['tau_V']})
 
-        mu_tau_V = 1.2
-        std_tau_V = 1.272  # set to ensure 68% of prob mass lies < 2
-        lclip_tau_V, uclip_tau_V = 0., 6.
+        mu_tau_V = 2.
+        std_tau_V = 3.  # set to ensure 68% of prob mass lies < 2
+        lclip_tau_V, uclip_tau_V = 0., 7.
         a_tau_V = (lclip_tau_V - mu_tau_V) / std_tau_V
         b_tau_V = (uclip_tau_V - mu_tau_V) / std_tau_V
 
