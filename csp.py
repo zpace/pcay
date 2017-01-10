@@ -51,7 +51,7 @@ class FSPS_SFHBuilder(object):
     __version__ = '0.2'
 
     def __init__(self, max_bursts=5, override={}, min_dt_cont=.03, RS=None, seed=None,
-                 subsample_keys=['tau_V', 'mu'], Nsubsample=20):
+                 subsample_keys=['tau_V', 'mu', 'sigma'], Nsubsample=20):
         '''
         set up star formation history generation to use with FSPS
 
@@ -112,8 +112,11 @@ class FSPS_SFHBuilder(object):
         self.override = override
         self.FSPS_args.update(override)
 
-        # randomize non-overridden parameters
-        self.gen_FSPS_args()
+        # initialize fsps.StellarPopulation object
+        self._init_sp_()
+
+        # has the sfh been changed?
+        self.sfh_changeflag = False
 
         now = datetime.now().strftime('%Y%m%d-%H%M%S')
         self.fname = '-'.join(['sfh', now])
@@ -133,7 +136,7 @@ class FSPS_SFHBuilder(object):
         self.delay_tau_gen()
 
         # incidentals
-        # self.sigma_gen()
+        self.sigma_gen()
         self.tau_V_gen()
         self.mu_gen()
         self.logzsol_gen()
@@ -141,48 +144,51 @@ class FSPS_SFHBuilder(object):
         # bursts
         self.burst_gen()
 
+    def _init_sp_(self):
+        self.sp = fsps.StellarPopulation(
+            zcontinuous=1, add_stellar_remnants=True,
+            smooth_velocity=True, redshift_colors=False,
+            vactoair_flag=False, tage=self.time0, masscut=150.)
+
+        self.sp.params['imf_type'] = 2
+        self.sp.params['tage'] = self.time0
+        self.sp.params['sfh'] = 3
+        self.sp.params['dust1'] = 0.
+        self.sp.params['dust2'] = 0.
+
     def run_fsps(self):
         '''
         run FSPS with given CSP parameters, using continuous SFH
 
         returns:
-         - l: wavelength grid
          - spec: flux-density (Lsol/AA)
-         - MLr, MLi, MLz: mass-to-light ratios, in r-, i-, and z-band
         '''
 
-        sp = fsps.StellarPopulation(zcontinuous=1, add_stellar_remnants=True,
-                                    smooth_velocity=True, redshift_colors=False,
-                                    vactoair_flag=False, tage=self.time0, masscut=150.)
-        sp.params['imf_type'] = 2
-        sp.params['tage'] = self.time0
-        sp.params['sfh'] = 3
-        sp.params['logzsol'] = self.FSPS_args['logzsol']
-        sp.params['dust1'] = 0.
-        sp.params['dust2'] = 0.
+        self.sp.params['logzsol'] = self.FSPS_args['logzsol']
 
-        sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
+        self.sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
 
-        mstar = sp.stellar_mass
+        spec = [self._run_fsps_newparams(
+                    tage=self.time0,
+                    d={'dust1': tau, 'dust2': tau * mu,
+                       'sigma_smooth': sigma})
+                for tau, mu, sigma in zip(
+                    self.FSPS_args['tau_V'], self.FSPS_args['mu'],
+                    self.FSPS_args['sigma'])]
 
-        l, spec = zip(*[self._run_fsps_newparams(SP=sp, tage=self.time0,
-                                                 d={'dust1': tau,
-                                                    'dust2': tau * mu})
-                        for tau, mu in zip(self.FSPS_args['tau_V'],
-                                           self.FSPS_args['mu'])])
-
-        l = l[0]
         spec = np.row_stack(spec)
 
-        return l, spec, mstar
+        return spec
 
-    def _run_fsps_newparams(self, SP, tage, d):
+    def _run_fsps_newparams(self, tage, d):
         for k in d:
-            SP.params[k] = d[k]
+            self.sp.params[k] = d[k]
 
-        l, spec = SP.get_spectrum(tage=tage, peraa=True)
+        _, spec = self.sp.get_spectrum(tage=tage, peraa=True)
 
-        return l, spec
+        self.sfh_changeflag = False
+
+        return spec
 
     def plot_sfh(self, ts=None, sfrs=None, save=False):
 
@@ -235,6 +241,7 @@ class FSPS_SFHBuilder(object):
 
         tab.add_column(t.Column(data=[self.Fstar], name='Fstar'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
+        tab.add_column(t.Column(data=[self.mstar], name='mstar'))
 
         tab = t.vstack([tab, ] * self.Nsubsample)
 
@@ -250,9 +257,10 @@ class FSPS_SFHBuilder(object):
 
     def time_form_gen(self):
         # if param already set on object instantiation, leave it alone
-        if not self.FSPS_args['tf']:
+        if 'tf' not in self.override:
             self.FSPS_args.update(
                 {'tf': self.RS.uniform(low=1.0, high=8.)})
+            self.sfh_changeflag = True
         else:
             pass
 
@@ -269,21 +277,22 @@ class FSPS_SFHBuilder(object):
         params = {'d1': d1, 'tt': tt, 'ud': ud, 'd2': d2}
 
         self.FSPS_args.update(params)
+        self.sfh_changeflag = True
 
     def _d1_gen(self):
-        if self.FSPS_args['d1']:
-            return self.FSPS_args['d1']
+        if 'd1' not in self.override:
+            return 1. / self.RS.rand()
 
-        return 1. / self.RS.rand()
+        return self.FSPS_args['d1']
 
     def _tt_gen(self, d1):
         # if param already set on object instantiation, leave it alone
-        if self.FSPS_args['tt']:
-            return self.FSPS_args['tt']
+        if 'tt' in self.override:
+            return self.override['tt']
 
         tf = self.FSPS_args['tf']
 
-        # transition time can be anytime after tf + 1Gyr
+        # transition time can be anytime after tf + .5Gyr
         if tf + d1 > self.time0:
             return self.time0
         else:
@@ -303,10 +312,10 @@ class FSPS_SFHBuilder(object):
             return 1.
 
     def _d2_gen(self, ud):
-        if self.FSPS_args['d2']:
+        if 'd2' in self.override:
             return self.FSPS_args['d2']
 
-        if ud < 0.:
+        elif ud < 0.:
             return self.RS.uniform(.1, 2.)
         elif ud > 0.:
             return self.RS.uniform(1., 10.)
@@ -362,9 +371,10 @@ class FSPS_SFHBuilder(object):
         A = self._A_burst_gen(nburst)
 
         self.FSPS_args.update({'tb': tb, 'dtb': dtb, 'A': A, 'nburst': nburst})
+        self.sfh_changeflag = True
 
     def logzsol_gen(self, zsol=zsol_padova):
-        if 'logzsol' in self.override.keys():
+        if 'logzsol' in self.override:
             self.FSPS_args.update({'logzsol': self.override['logzsol']})
         elif self.RS.rand() < .95:
             self.FSPS_args.update(
@@ -373,7 +383,7 @@ class FSPS_SFHBuilder(object):
             self.FSPS_args.update({'logzsol': np.log10(self.RS.uniform(.02, .2))})
 
     def tau_V_gen(self):
-        if 'tau_V' in self.override.keys():
+        if 'tau_V' in self.override:
             self.FSPS_args.update({'tau_V': self.override['tau_V']})
 
         mu_tau_V = 2.
@@ -391,7 +401,7 @@ class FSPS_SFHBuilder(object):
         self.FSPS_args.update({'tau_V': tau_V})
 
     def mu_gen(self):
-        if 'mu' in self.override.keys():
+        if 'mu' in self.override:
             self.FSPS_args.update({'mu': self.override['mu']})
 
         mu_mu = 0.3
@@ -410,14 +420,23 @@ class FSPS_SFHBuilder(object):
         self.FSPS_args.update({'mu': mu})
 
     def sigma_gen(self):
-        if 'sigma' in self.override.keys():
+        if 'sigma' in self.override:
             self.FSPS_args.update({'sigma': self.override['sigma']})
-
-        self.FSPS_args.update({'sigma': self.RS.uniform(10., 400.)})
+        elif 'sigma' in self.subsample_keys:
+            self.FSPS_args.update({'sigma': self.RS.uniform(10., 500., self.Nsubsample)})
+        else:
+            self.FSPS_args.update({'sigma': self.RS.uniform(10., 500.)})
 
     # =====
     # properties
     # =====
+
+    @property
+    def mstar(self):
+        if self.sfh_changeflag:
+            _ = self.run_fsps()
+
+        return self.sp.stellar_mass
 
     @property
     def all_sf_v(self):
@@ -584,76 +603,33 @@ class FSPS_SFHBuilder(object):
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.items()])
 
 
-def make_csp(params={}, return_l=False):
-    #print(os.getpid())
-    sfh = FSPS_SFHBuilder(max_bursts=5, override=params)
-
+def make_csp(sfh):
+    sfh.gen_FSPS_args()
+    spec = sfh.run_fsps()
     tab = sfh.to_table()
-    l, spec, mstar = sfh.run_fsps()
-    mstar = t.Table(
-        rows=np.atleast_2d(mstar), names=['mstar'])
-    tab = t.hstack([tab, mstar])
+    tab.add_column(t.Column(
+        data=[sfh.sp.stellar_mass, ] * len(tab), name='mstar'))
 
-    if return_l:
-        return spec, tab, l
-    else:
-        return spec, tab
+    return spec, tab, sfh.FSPS_args
 
 
-def make_spectral_library(fname, loc='CSPs', n=1, pkl=True,
-                          lllim=3700., lulim=8900., dlogl=1.0e-4,
-                          multiproc=False, nproc=8, Nsubsample=20):
+def make_spectral_library(fname, loc='CSPs', n=1, lllim=3700., lulim=8900.,
+                          dlogl=1.0e-4, Nsubsample=20):
 
-    if not pkl:
-        if n is None:
-            n = 1
-        RSs = [np.random.RandomState() for _ in range(n)]
-        # generate CSPs and cache them
-        CSPs = [FSPS_SFHBuilder(max_bursts=5, RS=rs,
-                                Nsubsample=Nsubsample).FSPS_args
-                for rs in RSs]
-        with open(os.path.join(loc, '{}.pkl'.format(fname)), 'wb') as f:
-            pickle.dump(CSPs, f)
-    else:
-        with open(os.path.join(loc, '{}.pkl'.format(fname)), 'rb') as f:
-            CSPs = pickle.load(f)
-        if n is None:
-            n = len(CSPs)
-
+    RS = np.random.RandomState()
+    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample)
+    l_full = sfh.sp.wavelengths
     l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), dlogl)
-    # dummy full-lambda-range array
-    spec0, meta0, l_full = make_csp(params=CSPs[0], return_l=True)
 
-    if multiproc:
-        # poolify the boring stuff
-        p = mpc.Pool(processes=nproc, maxtasksperchild=1)
-        res = p.map(make_csp, CSPs[1:n], chunksize=1)
+    specs, metadata, dicts = zip(*[make_csp(sfh) for _ in range(n)])
 
-        p.close()
-        p.join()
+    # write out dict to pickle
+    with open(os.path.join(loc, '{}.pkl'.format(fname)), 'wb') as f:
+        pickle.dump(dicts, f)
 
-        res = [(spec0, meta0), ] + res
-
-        # now build specs and metadata
-        specs, metadata = zip(*res)
-        specs = np.row_stack(specs)
-
-    else:
-        # otherwise, build each entry individually
-        # initialize array to hold the spectra
-        specs = np.nan * np.ones((n, len(l_full)))
-
-        # initialize list to hold all metadata
-        metadata = [None for _ in range(n)]
-
-        metadata[0] = meta0
-        specs[0, :] = spec0
-
-        for i in range(1, n):
-            specs[i, :], metadata[i] = make_csp(params=CSPs[i])
-
-    # assemble the full table
+    # assemble the full table & spectra
     metadata = t.vstack(metadata)
+    specs = np.row_stack(specs)
 
     # find luminosity
     Lr = lumspec2lsun(lam=l_full * u.AA,

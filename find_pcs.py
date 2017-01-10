@@ -268,10 +268,6 @@ class StellarPop_PCA(object):
                          for f in f_names])
         spec = np.row_stack([s.data for s in specs])
 
-        # now take spectrum-metadata pairs, randomize a bunch of velocities
-        # for each, and convolve!
-        meta, spec = add_losvds(meta, spec, dlogl=dlogl, **vel_params)
-
         meta['Dn4000'] = spec_tools.Dn4000_index(
             l=l.value, s=spec.T[..., None]).flatten()
         meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
@@ -1528,7 +1524,7 @@ class PCA_Result(object):
                                            **norm_params)
 
         # spaxel is good if at least 100 models have weights 1/100 max
-        goodPDF = self.sample_diag(f=.01) >= 100
+        goodPDF = self.sample_diag(f=.01) >= 25
 
         self.mask_map = np.logical_or.reduce(
             (mask_spax, dered.drp_hdulist['RIMG'].data == 0.,
@@ -2369,7 +2365,7 @@ class PCA_Result(object):
         return gal_dist(self.cosmo, self.z)
 
 
-def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS', nfiles=None):
+def setup_pca(fname=None, redo=True, pkl=True, q=7, src='FSPS', nfiles=15):
     import pickle
     if (fname is None):
         redo = True
@@ -2381,7 +2377,7 @@ def setup_pca(fname=None, redo=False, pkl=True, q=7, src='FSPS', nfiles=None):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs_test', base_fname='CSPs', nfiles=nfiles)
+                K_obs=K_obs, base_dir='CSPs_regen', base_fname='CSPs', nfiles=nfiles)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2473,7 +2469,7 @@ if __name__ == '__main__':
 
     plateifu = input('What galaxy? ')
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7, src='FSPS', nfiles=None)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=1)
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
     pca.make_params_vs_PCs_fig()
