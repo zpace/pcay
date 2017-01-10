@@ -607,8 +607,6 @@ def make_csp(sfh):
     sfh.gen_FSPS_args()
     spec = sfh.run_fsps()
     tab = sfh.to_table()
-    tab.add_column(t.Column(
-        data=[sfh.sp.stellar_mass, ] * len(tab), name='mstar'))
 
     return spec, tab, sfh.FSPS_args
 

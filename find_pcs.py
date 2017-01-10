@@ -2469,7 +2469,7 @@ if __name__ == '__main__':
 
     plateifu = input('What galaxy? ')
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=1)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=None)
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
     pca.make_params_vs_PCs_fig()
