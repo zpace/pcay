@@ -2204,8 +2204,10 @@ class PCA_Result(object):
 
         ax.set_ylabel(qty_tex)
 
-        rng = np.array([np.nanmin(q), np.nanmax(q)])
-        ax.set_ylim(rng + np.array([-.1, .1]))
+        lpred = np.min(q_pred - 2.5 * sigma)
+        upred = np.max(q_pred + 2.5 * sigma)
+
+        ax.set_ylim([lpred, upred])
 
         return ax
 
@@ -2461,15 +2463,53 @@ def get_col_metadata(col, k, notfound=''):
 
     return res
 
+def run_object(plateifu, pca):
+    plate, ifu = plateifu.split('-')
+
+    dered = MaNGA_deredshift.from_plateifu(
+        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
+    obj = drpall[drpall['plateifu'] == plateifu]
+    dep = m.deproject.from_plateifu(plate=plate, ifu=ifu, MPL_v=mpl_v)
+
+    z_dist = m.get_drpall_val(
+        os.path.join(
+            mangarc.manga_data_loc[mpl_v],
+            'drpall-{}.fits'.format(m.MPL_versions[mpl_v])),
+        ['nsa_zdist'], plateifu)[0]['nsa_zdist']
+
+    pca_res = PCA_Result(
+        pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
+        norm_params={'norm': 'L2', 'soft': False}, figdir=plateifu)
+
+    pca_res.make_sample_diag_fig()
+
+    pca_res.make_full_QA_fig(kde=(True, True))
+    pca_res.make_comp_fig()
+
+    pca_res.make_qty_fig(qty_str='MLr')
+    pca_res.make_qty_fig(qty_str='MLi')
+    pca_res.make_qty_fig(qty_str='MLz')
+
+    pca_res.make_qty_fig(qty_str='MWA')
+
+    pca_res.make_Mstar_fig(band='r')
+    pca_res.make_Mstar_fig(band='i')
+    pca_res.make_Mstar_fig(band='z')
+
+    pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[.01, 100.])
+
+    pca_res.make_radial_gp_fig(qty='Dn4000', dep=dep)
+
+    pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
 
 if __name__ == '__main__':
     cosmo = WMAP9
 
     mpl_v = 'MPL-5'
 
-    plateifu = input('What galaxy? ')
-
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=True, pkl=True, q=7, src='FSPS', nfiles=None)
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7, src='FSPS', nfiles=10)
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
     pca.make_params_vs_PCs_fig()
@@ -2478,46 +2518,11 @@ if __name__ == '__main__':
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
     drpall = t.Table.read(drpall_path)
 
-    while plateifu != '':
+    for plateifu in drpall['plateifu']:
 
-        plate, ifu = plateifu.split('-')
-
-        dered = MaNGA_deredshift.from_plateifu(
-            plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
-        obj = drpall[drpall['plateifu'] == plateifu]
-        dep = m.deproject.from_plateifu(plate=plate, ifu=ifu, MPL_v=mpl_v)
-
-        z_dist = m.get_drpall_val(
-            os.path.join(
-                mangarc.manga_data_loc[mpl_v],
-                'drpall-{}.fits'.format(m.MPL_versions[mpl_v])),
-            ['nsa_zdist'], plateifu)[0]['nsa_zdist']
-
-        pca_res = PCA_Result(
-            pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
-            norm_params={'norm': 'L2', 'soft': False}, figdir=plateifu)
-
-        pca_res.make_sample_diag_fig()
-
-        pca_res.make_full_QA_fig(kde=(True, True))
-        pca_res.make_comp_fig()
-
-        pca_res.make_qty_fig(qty_str='MLr')
-        pca_res.make_qty_fig(qty_str='MLi')
-        pca_res.make_qty_fig(qty_str='MLz')
-
-        pca_res.make_qty_fig(qty_str='MWA')
-
-        pca_res.make_Mstar_fig(band='r')
-        pca_res.make_Mstar_fig(band='i')
-        pca_res.make_Mstar_fig(band='z')
-
-        pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[.01, 100.])
-        pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[.01, 100.])
-        pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[.01, 100.])
-
-        pca_res.make_radial_gp_fig(qty='Dn4000', dep=dep)
-
-        pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
-
-        plateifu = input('Input next galaxy: ')
+        try:
+            run_object(plateifu, pca)
+        except e:
+            print('ERROR: {}'.format(plateifu))
+            print(e)
+            continue
