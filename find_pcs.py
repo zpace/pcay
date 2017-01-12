@@ -2377,7 +2377,8 @@ class PCA_Result(object):
         return gal_dist(self.cosmo, self.z)
 
 
-def setup_pca(fname=None, redo=True, pkl=True, q=7, src='FSPS', nfiles=15):
+def setup_pca(base_dir, base_fname, fname=None,
+              redo=True, pkl=True, q=7, src='FSPS', nfiles=15):
     import pickle
     if (fname is None):
         redo = True
@@ -2389,7 +2390,7 @@ def setup_pca(fname=None, redo=True, pkl=True, q=7, src='FSPS', nfiles=15):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=nfiles)
+                K_obs=K_obs, base_dir=base_dir, base_fname=base_fname, nfiles=nfiles)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2529,11 +2530,15 @@ if __name__ == '__main__':
 
     mpl_v = 'MPL-5'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=10, src='FSPS', nfiles=8)
+    pca, K_obs = setup_pca(
+        fname='pca.pkl', base_dir='CSPs_new', base_fname='CSPs',
+        redo=True, pkl=True, q=10, src='FSPS', nfiles=1)
+
+    print(len(pca.metadata))
     #pca.make_PCs_fig()
     #pca.make_PC_param_regr_fig()
     #pca.make_params_vs_PCs_fig()
-
+    '''
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
     drpall = t.Table.read(drpall_path)
@@ -2552,3 +2557,4 @@ if __name__ == '__main__':
         finally:
             if i + 1 >= howmany:
                 break
+    '''
