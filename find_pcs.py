@@ -241,7 +241,8 @@ class StellarPop_PCA(object):
 
     @classmethod
     def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=None,
-                  log_params=['MWA', 'MLr', 'MLi', 'MLz'], vel_params={}):
+                  log_params=['MWA', 'MLr', 'MLi', 'MLz', 'Fstar'],
+                  vel_params={}):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
         '''
@@ -273,7 +274,7 @@ class StellarPop_PCA(object):
         meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
             l=l.value, s=spec.T[..., None]).flatten()
         meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'logzsol', 'tau_V', 'mu',
-                    'MLr', 'MLi', 'MLz', 'sigma']
+                    'MLr', 'MLi', 'MLz', 'sigma', 'Fstar']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
@@ -285,6 +286,7 @@ class StellarPop_PCA(object):
         meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
         meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
+        meta['Fstar'].meta['TeX'] = r'$F_*$'
 
         for n in meta.colnames:
             if n in log_params:
@@ -1232,11 +1234,12 @@ class MaNGA_deredshift(object):
 
     spaxel_side = 0.5 * u.arcsec
 
-    def __init__(self, drp_hdulist, dap_hdulist,
+    def __init__(self, drp_hdulist, dap_hdulist, drpall_row,
                  max_vel_unc=500. * u.Unit('km/s'), drp_dlogl=None,
                  MPL_v='MPL-5'):
         self.drp_hdulist = drp_hdulist
         self.dap_hdulist = dap_hdulist
+        self.drpall_row = drpall_row
         self.plateifu = self.drp_hdulist[0].header['PLATEIFU']
 
         self.vel = dap_hdulist['STELLAR_VEL'].data * u.Unit('km/s')
@@ -1268,7 +1271,7 @@ class MaNGA_deredshift(object):
         return cls(drp_hdulist, dap_hdulist)
 
     @classmethod
-    def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC'):
+    def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC', **kwargs):
         '''
         load a MaNGA galaxy from a plateifu specification
         '''
@@ -1287,7 +1290,7 @@ class MaNGA_deredshift(object):
 
         drp_hdulist = fits.open(drp_fname)
         dap_hdulist = fits.open(dap_fname)
-        return cls(drp_hdulist, dap_hdulist)
+        return cls(drp_hdulist, dap_hdulist, **kwargs)
 
     def regrid_to_rest(self, template_logl, template_dlogl=None):
         '''
@@ -1447,6 +1450,11 @@ class MaNGA_deredshift(object):
         return self.drp_hdulist['RIMG'].data * \
             1.0e-9 * m.Mgy / self.spaxel_side**2.
 
+    @property
+    def Reff(self):
+        r_ang = self.dap_hdulist['SPX_ELLCOO'].data[0, ...]
+        Re_ang = self.drpall_row['nsa_elpetro_th50_r']
+        return r_ang / Re_ang
 
     # =====
     # staticmethods
@@ -1784,7 +1792,7 @@ class PCA_Result(object):
         resid = np.abs((O_norm - O_recon) / O_norm)
 
         # redshift is flux-averaged
-        z_map = np.average(dered.z_map, weights=self.O.sum(axis=0))
+        z_map = np.average(self.dered.z_map, weights=self.O.sum(axis=0))
         SNR = np.median(O * np.sqrt(ivar))
         z_map, SNR = (np.atleast_2d(z_map), np.atleast_2d(SNR))
 
@@ -2137,7 +2145,7 @@ class PCA_Result(object):
         fname = '{0}_fulldiag_{1[0]}-{1[1]}.png'.format(self.objname, ix_)
         self.savefig(fig, fname, self.figdir, dpi=300)
 
-    def radial_gp_plot(self, qty, dep, TeX_over=None, f=None, ax=None,
+    def radial_gp_plot(self, qty, TeX_over=None, f=None, ax=None,
                        q_bdy=None, logify=False):
         '''
         make a radial plot of a quantity + uncertainties using GP regression
@@ -2161,8 +2169,8 @@ class PCA_Result(object):
 
         # throw out spaxels at large Re
         # in future, should evaluate spectrum uncertainties directly
-        rlarge = dep.d > 3.5
-        r = np.ma.array(dep.d, mask=(rlarge | self.mask_map))
+        rlarge = self.dered.Reff > 3.5
+        r = np.ma.array(self.dered.Reff, mask=(rlarge | self.mask_map))
 
         try:
             # radial gaussian process from sklearn (v0.18 or later)
@@ -2211,12 +2219,12 @@ class PCA_Result(object):
 
         return ax
 
-    def make_radial_gp_fig(self, qty, dep, TeX_over=None, q_bdy=[-np.inf, np.inf]):
+    def make_radial_gp_fig(self, qty,TeX_over=None, q_bdy=[-np.inf, np.inf]):
         fig = plt.figure(figsize=(4, 4), dpi=300)
 
         ax = fig.add_subplot(111)
 
-        self.radial_gp_plot(qty=qty, TeX_over=None, dep=dep, ax=ax,
+        self.radial_gp_plot(qty=qty, TeX_over=None, ax=ax,
                             q_bdy=q_bdy)
         ax.set_title(self.objname)
         plt.tight_layout()
@@ -2224,7 +2232,7 @@ class PCA_Result(object):
         fname = '{}-{}_radGP.png'.format(self.objname, qty)
         self.savefig(fig, fname, self.figdir, dpi=300)
 
-    def color_ML_plot(self, dep, mlb='i', b1='g', b2='r', ax=None):
+    def color_ML_plot(self, mlb='i', b1='g', b2='r', ax=None):
         '''
         plot color vs mass-to-light ratio, colored by radius/Re
         '''
@@ -2246,8 +2254,10 @@ class PCA_Result(object):
         b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
         s = 10. * np.arctan(0.05 * b2_img / np.median(b2_img[b2_img > 0.]))
 
+        Reff = self.dered.Reff
+
         sc = ax.scatter(col.flatten(), ml.flatten(),
-                        facecolor=dep.d, edgecolor='None', s=s.flatten(),
+                        facecolor=Reff, edgecolor='None', s=s.flatten(),
                         label=self.objname)
         cb = plt.colorbar(sc, ax=ax, pad=.025)
         cb.set_label(r'$\frac{R}{R_e}$')
@@ -2281,14 +2291,14 @@ class PCA_Result(object):
 
         return sc
 
-    def make_color_ML_fig(self, dep, mlb='i', b1='g', b2='r'):
+    def make_color_ML_fig(self, mlb='i', b1='g', b2='r'):
 
         fig = plt.figure(figsize=(5, 5), dpi=300)
 
         ax = fig.add_subplot(111)
         ax.set_title(self.objname)
 
-        self.color_ML_plot(dep, mlb, b1, b2)
+        self.color_ML_plot(mlb, b1, b2)
 
         plt.tight_layout()
 
@@ -2379,7 +2389,7 @@ def setup_pca(fname=None, redo=True, pkl=True, q=7, src='FSPS', nfiles=15):
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir='CSPs_regen', base_fname='CSPs', nfiles=nfiles)
+                K_obs=K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=nfiles)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2463,13 +2473,20 @@ def get_col_metadata(col, k, notfound=''):
 
     return res
 
-def run_object(plateifu, pca):
+def run_object(row, pca, force_redo=False):
+
+    if not force_redo:
+        if os.path.isdir(plateifu):
+            return
+
+    plateifu = row['plateifu']
+
     plate, ifu = plateifu.split('-')
 
     dered = MaNGA_deredshift.from_plateifu(
-        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
+        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
+        drpall_row=row)
     obj = drpall[drpall['plateifu'] == plateifu]
-    dep = m.deproject.from_plateifu(plate=plate, ifu=ifu, MPL_v=mpl_v)
 
     z_dist = m.get_drpall_val(
         os.path.join(
@@ -2483,7 +2500,7 @@ def run_object(plateifu, pca):
 
     pca_res.make_sample_diag_fig()
 
-    pca_res.make_full_QA_fig(kde=(True, True))
+    pca_res.make_full_QA_fig(kde=(False, False))
     pca_res.make_comp_fig()
 
     pca_res.make_qty_fig(qty_str='MLr')
@@ -2496,33 +2513,42 @@ def run_object(plateifu, pca):
     pca_res.make_Mstar_fig(band='i')
     pca_res.make_Mstar_fig(band='z')
 
-    pca_res.make_radial_gp_fig(qty='MLr', dep=dep, q_bdy=[.01, 100.])
-    pca_res.make_radial_gp_fig(qty='MLi', dep=dep, q_bdy=[.01, 100.])
-    pca_res.make_radial_gp_fig(qty='MLz', dep=dep, q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLr', q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLi', q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLz', q_bdy=[.01, 100.])
 
-    pca_res.make_radial_gp_fig(qty='Dn4000', dep=dep)
+    pca_res.make_qty_fig('Dn4000')
 
-    pca_res.make_color_ML_fig(dep, mlb='i', b1='g', b2='i')
+    pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i')
+
+    return
 
 if __name__ == '__main__':
+    howmany = 10
     cosmo = WMAP9
 
     mpl_v = 'MPL-5'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7, src='FSPS', nfiles=10)
-    pca.make_PCs_fig()
-    pca.make_PC_param_regr_fig()
-    pca.make_params_vs_PCs_fig()
+    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=10, src='FSPS', nfiles=8)
+    #pca.make_PCs_fig()
+    #pca.make_PC_param_regr_fig()
+    #pca.make_params_vs_PCs_fig()
 
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
     drpall = t.Table.read(drpall_path)
+    drpall = drpall[drpall['ifudesignsize'] > 0.]
+    drpall = m.shuffle_table(drpall)
 
-    for plateifu in drpall['plateifu']:
+    for i, row in enumerate(drpall):
+        plateifu = row['plateifu']
 
         try:
-            run_object(plateifu, pca)
-        except e:
+            run_object(row=row, pca=pca, force_redo=True)
+        except Exception as e:
             print('ERROR: {}'.format(plateifu))
             print(e)
             continue
+        finally:
+            if i + 1 >= howmany:
+                break
