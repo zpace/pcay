@@ -259,7 +259,7 @@ class FSPS_SFHBuilder(object):
         # if param already set on object instantiation, leave it alone
         if 'tf' not in self.override:
             self.FSPS_args.update(
-                {'tf': self.RS.uniform(low=1.0, high=8.)})
+                {'tf': self.RS.uniform(low=1.0, high=13.5)})
             self.sfh_changeflag = True
         else:
             pass
@@ -373,7 +373,7 @@ class FSPS_SFHBuilder(object):
         self.FSPS_args.update({'tb': tb, 'dtb': dtb, 'A': A, 'nburst': nburst})
         self.sfh_changeflag = True
 
-    def logzsol_gen(self, zsol=zsol_padova):
+    def logzsol_gen(self):
         if 'logzsol' in self.override:
             self.FSPS_args.update({'logzsol': self.override['logzsol']})
         elif self.RS.rand() < .95:
