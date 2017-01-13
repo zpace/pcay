@@ -386,8 +386,8 @@ class FSPS_SFHBuilder(object):
         if 'tau_V' in self.override:
             self.FSPS_args.update({'tau_V': self.override['tau_V']})
 
-        mu_tau_V = 2.
-        std_tau_V = 3.  # set to ensure 68% of prob mass lies < 2
+        mu_tau_V = 1.2
+        std_tau_V = 3.
         lclip_tau_V, uclip_tau_V = 0., 7.
         a_tau_V = (lclip_tau_V - mu_tau_V) / std_tau_V
         b_tau_V = (uclip_tau_V - mu_tau_V) / std_tau_V
@@ -405,7 +405,8 @@ class FSPS_SFHBuilder(object):
             self.FSPS_args.update({'mu': self.override['mu']})
 
         mu_mu = 0.3
-        std_mu = self.RS.uniform(.1, 1)
+        # std_mu = self.RS.uniform(.1, 1)
+        std_mu = 0.3
         # 68th percentile range means that stdev is in range .1 - 1
         lclip_mu, uclip_mu = 0., 1.
         a_mu = (lclip_mu - mu_mu) / std_mu
@@ -611,11 +612,9 @@ def make_csp(sfh):
     return spec, tab, sfh.FSPS_args
 
 
-def make_spectral_library(fname, loc='CSPs', n=1, lllim=3700., lulim=8900.,
-                          dlogl=1.0e-4, Nsubsample=20):
+def make_spectral_library(fname, sfh, loc='CSPs', n=1, lllim=3700., lulim=8900.,
+                          dlogl=1.0e-4):
 
-    RS = np.random.RandomState()
-    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample)
     l_full = sfh.sp.wavelengths
     l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), dlogl)
 
@@ -663,6 +662,8 @@ def make_spectral_library(fname, loc='CSPs', n=1, lllim=3700., lulim=8900.,
     '''
 
     hdulist.writeto(os.path.join(loc, '{}.fits'.format(fname)), overwrite=True)
+
+    return sfh
 
 def random_SFH_plots(n=10, save=False):
     from time import time
@@ -716,3 +717,17 @@ class TemplateCoverageError(TemplateError):
     '''
     when there's something wrong with the wavelength coverage of a template
     '''
+
+
+if __name__ == '__main__':
+
+    nfiles, nper, Nsubsample = 50, 100, 10
+
+    RS = np.random.RandomState()
+    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample)
+
+    for i in range(nfiles):
+        sfh = make_spectral_library(
+            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_new', n=nper,
+            lllim=3800., lulim=7400., dlogl=1.0e-4)
+        print('Done with {} of {}'.format(i + 1, nfiles))
