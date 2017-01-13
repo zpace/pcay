@@ -1,5 +1,9 @@
 import os
 
+import numpy as np
+import matplotlib.pyplot as plt
+from copy import copy
+
 from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel, proj_plane_pixel_scales
 import astropy.coordinates as coords
@@ -13,6 +17,9 @@ except ImportError:
 else:
     warnings.warn('linear_offset_coordinates now available! Use it instead!')
 
+cm = copy(plt.cm.viridis)
+cm.set_under(color='gray', alpha=0.5)
+cm.set_bad(alpha=1.)
 
 def linear_offset_coordinates(wcs, center):
     '''
@@ -36,6 +43,19 @@ def linear_offset_coordinates(wcs, center):
 
     return new_wcs
 
-def savefig(fig, fname, fdir, **kwargs):
+def savefig(fig, fname, fdir, close=True, **kwargs):
     fpath = os.path.join(fdir, fname)
     fig.savefig(fpath, **kwargs)
+    if close:
+        plt.close(fig)
+
+def annotate_badPDF(ax, mask):
+    # place little, red 'x' markers where mask is true
+
+    x = np.array(range(mask.shape[0]))
+    y = np.array(range(mask.shape[1]))
+    XX, YY = np.meshgrid(x, y)
+    XX, YY = XX[mask], YY[mask]
+
+    ax.scatter(XX, YY, facecolor='r', edgecolor='None', s=5, marker='.',
+               zorder=10)
