@@ -274,7 +274,7 @@ class StellarPop_PCA(object):
         meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
             l=l.value, s=spec.T[..., None]).flatten()
         meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'logzsol', 'tau_V', 'mu',
-                    'MLr', 'MLi', 'MLz', 'sigma', 'Fstar']
+                    'MLr', 'MLi', 'MLz', 'sigma']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
@@ -286,7 +286,6 @@ class StellarPop_PCA(object):
         meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
         meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
-        meta['Fstar'].meta['TeX'] = r'$F_*$'
 
         for n in meta.colnames:
             if n in log_params:
@@ -947,6 +946,7 @@ class StellarPop_PCA(object):
         X = np.stack([np.linalg.lstsq(a=a_, b=b_[:, i])[0]
                       for i in range(b_.shape[-1])])
 
+        # X has shape (nparams, q)
         return X
 
     def make_PC_param_regr_fig(self):
@@ -955,14 +955,12 @@ class StellarPop_PCA(object):
             combination that most closely predicts it
         '''
 
-        X = self.find_PC_param_coeffs()
-
         # how many params are there?
         # try to make a square grid, but if impossible, add another row
         nparams = self.metadata_a.shape[1]
         ncols = int(np.sqrt(nparams))
         n_in_last_row = nparams % ncols
-        nrows = nparams // ncols
+        nrows = (nparams // ncols)
         if n_in_last_row != 0:
             nrows += 1
 
@@ -983,7 +981,7 @@ class StellarPop_PCA(object):
                                top = 1. - (uborder / fighgt),
                                wspace=.2, hspace=.15)
 
-        # regresion result
+        # regression result
         A = self.find_PC_param_coeffs()
 
         for i in range(nparams):
@@ -993,7 +991,7 @@ class StellarPop_PCA(object):
             x = np.column_stack([self.trn_PC_wts,
                                  np.ones(self.trn_PC_wts.shape[0])])
             y = self.metadata_a[:, i]
-            y_regr = x.dot(A[i]).flatten()
+            y_regr = A[i].dot(x.T).flatten()
             ax.scatter(y_regr, y, marker='.', facecolor='b', edgecolor='None',
                        s=1., alpha=0.4)
             xgrid = np.linspace(y.min(), y.max())
@@ -1019,6 +1017,32 @@ class StellarPop_PCA(object):
         fig.suptitle(t=r'$Z + A \cdot X$ vs $\{P_i\}$')
 
         fig.savefig('param_regr_{}.png'.format(self.src), dpi=300)
+
+    def make_PC_param_importance_fig(self):
+
+        fig = plt.figure(figsize=(4, 3), dpi=300)
+        ax = fig.add_subplot(111)
+
+        X = self.find_PC_param_coeffs()[:, :-1] #  (p, q)
+        C = self.trn_PC_wts #  (n, q)
+        P = self.metadata_a #  (n, p)
+
+        N_PC_a = np.abs(X[:, None, :] * C[None, :, :]).sum(axis=1)
+
+        F_PC_a = N_PC_a / N_PC_a.sum(axis=1)[:, None]
+
+        q = X.shape[1]
+        for i, k in enumerate(self.metadata.colnames):
+            # plot each param's dependence on each PC
+            TeX = self.metadata[k].meta['TeX']
+            ax.plot(np.linspace(1, q, q), F_PC_a[i, :], label=TeX,
+                    drawstyle='steps-mid', c=plt.cm.jet(i / q))
+
+        ax.set_xlim([-.75, q + .5])
+        ax.set_xlabel('PC')
+        ax.set_ylabel(r'$F_{PC}(\alpha)$')
+        ax.legend(loc='best', prop={'size': 6})
+        plt.savefig('PC_param_importance_{}.png'.format(self.src), dpi=300)
 
     # =====
     # properties
@@ -1116,12 +1140,6 @@ class StellarPop_PCA(object):
         # select the first n eigenvectors (n is desired dimension
         # of rescaled data array, or dims_rescaled_data)
         evecs = evecs[:, :dims].T
-
-        # make the mean of each eigenvector positive
-        # if mean is zero, leave it as is
-        sign = np.sign(evecs.mean(axis=1))[:, None]
-        sign[sign == 0.] = 1.
-        evecs /= sign
 
         return evecs, PVE
 
@@ -1386,11 +1404,11 @@ class MaNGA_deredshift(object):
         # proposed values... balmer_low: 0, balmer_high: 2, helium: 2
         #                    brightmetal: 0, faintmetal: 5, paschen: 10
         add_balmer_low = (EW >= 0. * u.AA)
-        add_balmer_high = (EW >= 0. * u.AA)
-        add_helium = (EW >= 0. * u.AA)
+        add_balmer_high = (EW >= 2. * u.AA)
+        add_helium = (EW >= 2. * u.AA)
         add_brightmetal = (EW >= 0. * u.AA)
-        add_faintmetal = (EW >= 0. * u.AA)
-        add_paschen = (EW >= 0. * u.AA)
+        add_faintmetal = (EW >= 5. * u.AA)
+        add_paschen = (EW >= 10. * u.AA)
 
         template_l = 10.**template_logl * u.AA
 
@@ -1530,13 +1548,16 @@ class PCA_Result(object):
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A,
                                            **norm_params)
-
-        # spaxel is good if at least 100 models have weights 1/100 max
-        goodPDF = self.sample_diag(f=.01) >= 25
+        # no data
+        self.nodata = (dered.drp_hdulist['RIMG'].data == 0.)
 
         self.mask_map = np.logical_or.reduce(
-            (mask_spax, dered.drp_hdulist['RIMG'].data == 0.,
-             ~goodPDF))
+            (mask_spax, self.nodata))
+
+        # spaxel is bad if < 25 models have weights 1/100 max, and no other problems
+        self.badPDF = np.logical_and.reduce(
+            ((self.sample_diag(f=.01) < 25), ~self.mask_map))
+        self.goodPDF = ~self.badPDF
 
         self.l = 10.**self.pca.logl
 
@@ -1574,7 +1595,7 @@ class PCA_Result(object):
 
         return Lsun
 
-    def lum_plot(self, ax, band='i'):
+    def lum_plot(self, ax, ix, band='i'):
 
         im = ax.imshow(
             np.log10(np.ma.array(self.lum(band=band), mask=self.mask_map)),
@@ -1585,6 +1606,8 @@ class PCA_Result(object):
         cb.ax.tick_params(labelsize=8)
 
         Lstar_tot = np.ma.array(self.lum(band=band), mask=self.mask_map).sum()
+        ax.axhline(ix[0])
+        ax.axvline(ix[1])
 
         ax.text(x=0.2, y=0.2,
                 s=''.join((r'$\log{\frac{\mathcal{L}_{*}}{L_{\odot}}}$ = ',
@@ -1592,7 +1615,7 @@ class PCA_Result(object):
 
         ax.set_title('{}-band luminosity'.format(band), size=8)
 
-        self.__fix_im_axs__(ax)
+        self.__fix_im_axs__(ax, bad=False)
 
         return im, cb
 
@@ -1612,25 +1635,27 @@ class PCA_Result(object):
                             linewidth=0.5)
 
         # original & reconstructed
+        O_norm = self.O_norm[:, ix[0], ix[1]]
+        O_recon = self.O_recon[:, ix[0], ix[1]]
         orig_ = ax1.plot(
-            self.l, self.O_norm[:, ix[0], ix[1]], drawstyle='steps-mid',
+            self.l, O_norm, drawstyle='steps-mid',
             c='b', label='Orig.', linewidth=0.5)
         recon_ = ax1.plot(
-            self.l, self.O_recon[:, ix[0], ix[1]], drawstyle='steps-mid',
+            self.l, O_recon, drawstyle='steps-mid',
             c='g', label='Recon.', linewidth=0.5)
+
+        # inverse-variance (weight) plot
+        ax1.set_yticklabels([])
+        ivar = self.ivar[:, ix[0], ix[1]]
+        ivar_ = ax1.plot(
+            self.l, (ivar / ivar.max()) * O_norm.max(),
+            drawstyle='steps-mid', c='m', label='Wt.', linewidth=0.25)
 
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$')
         ax1.set_ylim([-0.1 * self.O_norm[:, ix[0], ix[1]].mean(),
                       2.25 * self.O_norm[:, ix[0], ix[1]].mean()])
         ax1.set_xticklabels([])
-
-        # inverse-variance (weight) plot
-        ax1_ivar = ax1.twinx()
-        ax1_ivar.set_yticklabels([])
-        ivar_ = ax1_ivar.plot(
-            self.l, self.ivar[:, ix[0], ix[1]], drawstyle='steps-mid',
-            c='m', label='Wt.', linewidth=0.25)
 
         # residual
         resid_ = ax2.plot(
@@ -2021,7 +2046,7 @@ class PCA_Result(object):
     def param_vals_wts(self, ixx, ixy, pname):
         return np.array(self.pca.metadata[pname]), self.w[:, ixx, ixy]
 
-    def __fix_im_axs__(self, axs):
+    def __fix_im_axs__(self, axs, bad=True):
         '''
         do all the fixes to make quantity maps look nice in wcsaxes
         '''
@@ -2038,6 +2063,10 @@ class PCA_Result(object):
                 ax.coords[i].set_major_formatter('x')
                 ax.coords[i].set_ticks(spacing=5. * u.arcsec)
                 ax.coords[i].set_format_unit(u.arcsec)
+
+            if bad:
+                # figures_tools.annotate_badPDF(ax, self.goodPDF)
+                pass
 
     def __setup_qty_fig__(self):
         fig = plt.figure(figsize=(9, 4), dpi=300)
@@ -2115,7 +2144,7 @@ class PCA_Result(object):
         # image of galaxy in integrated light
         im_ax = fig.add_subplot(gs1[:-1, 0],
                                 projection=self.wcs_header_offset)
-        lumim, lcb = self.lum_plot(im_ax, band='r')
+        lumim, lcb = self.lum_plot(im_ax, ix=ix_, band='r')
         # self.map_add_loc(ix=ix_, ax=im_ax, color='gray', linewidth=1.,
         #                  linestyle=':')
 
@@ -2460,7 +2489,6 @@ class Test_PCA_Result(PCA_Result):
 def gal_dist(cosmo, z):
     return cosmo.luminosity_distance(z)
 
-
 def get_col_metadata(col, k, notfound=''):
     '''
     Retrieve a specific metadata keyword `k` from the given column `col`.
@@ -2532,16 +2560,21 @@ if __name__ == '__main__':
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_new', base_fname='CSPs',
-        redo=True, pkl=True, q=10, src='FSPS', nfiles=1)
+        redo=True, pkl=True, q=7, src='FSPS', nfiles=12)
 
-    print(len(pca.metadata))
-    #pca.make_PCs_fig()
-    #pca.make_PC_param_regr_fig()
-    #pca.make_params_vs_PCs_fig()
-    '''
+    pca.make_PCs_fig()
+    pca.make_PC_param_regr_fig()
+    pca.make_params_vs_PCs_fig()
+    pca.make_PC_param_importance_fig()
+
     drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
                                'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
     drpall = t.Table.read(drpall_path)
+
+    row = drpall[drpall['plateifu'] == '8083-12704'][0]
+    run_object(row=row, pca=pca, force_redo=True)
+
+    '''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
     drpall = m.shuffle_table(drpall)
 
