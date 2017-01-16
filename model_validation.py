@@ -45,8 +45,7 @@ class ModelDataCompare(object):
         self.rimgs = np.concatenate(
             [r.flatten() for r in rimgs])
 
-        self.dep_d = np.concatenate(
-            [dep.d.flatten() for dep in deps])
+        self.Reff = np.concatenate([d.Reff.flatten() for d in dereds])
 
         for p in ['Hdelta_A', 'Dn4000']:
             # retrieve appropriate function from spec_tools
@@ -113,7 +112,7 @@ class ModelDataCompare(object):
              np.concatenate(self.Hdelta_A) + self.Hd_em_EWs])
         data = data[~self.mask]
 
-        KDE_models = KDEMultivariate(data=[self.pca.metadata['D4000'],
+        KDE_models = KDEMultivariate(data=[self.pca.metadata['Dn4000'],
                                            self.pca.metadata['Hdelta_A']],
                                      var_type='cc')
 
@@ -129,8 +128,8 @@ class ModelDataCompare(object):
         ax.contour(XX, YY, ZZ_models, colors='b')
 
         # define alpha-less color
-        d = self.dep_d[~self.mask]
-        c = mplcm.viridis(d)
+        d = self.Reff[~self.mask]
+        c = mplcm.viridis(d / d.max())
 
         # make a dummy plot to reflect color dist, at alpha=1
         imin, imax = np.argmin(d), np.argmax(d)
@@ -155,7 +154,7 @@ class ModelDataCompare(object):
         ax.set_ylim([-6., 12.])
         ax.set_xlim([1., 2.5])
 
-        ax.set_xlabel(self.pca.metadata['D4000'].meta['TeX'])
+        ax.set_xlabel(self.pca.metadata['Dn4000'].meta['TeX'])
         ax.set_ylabel(self.pca.metadata['Hdelta_A'].meta['TeX'])
 
         plt.tight_layout()
@@ -169,15 +168,16 @@ if __name__ == '__main__':
 
     mpl_v = 'MPL-5'
 
-    pca, K_obs = setup_pca(fname='pca.pkl', redo=False, pkl=True, q=7)
+    pca, K_obs = setup_pca(
+        fname='pca.pkl', base_dir='CSPs_new', base_fname='CSPs',
+        redo=False, pkl=True, q=7, src='FSPS', nfiles=50)
 
-    gals = ['8566-12705']
-    ''', '8567-12701', '8939-12704', '8083-12704',
+    gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704',
             '8134-12702', '8134-9102', '8135-12701', '8137-12703',
             '8140-12703', '8140-12701', '8140-3701', '8243-12704',
             '8244-9101', '8247-9101', '8249-12703', '8249-12704',
             '8252-12705', '8252-6102', '8253-6104', '8254-3704', '8254-9101',
-            '8257-12701', '8257-6101', '8257-6103', '8258-12704']'''
+            '8257-12701', '8257-6101', '8257-6103', '8258-12704']
 
     #gals = ['8567-12701']
 
@@ -194,3 +194,6 @@ if __name__ == '__main__':
                               Hd_em_EWs=Hdelt_em_EWs, deps=deps)
     mdcomp_fig = MDComp.D4000_Hd_scatter_fig()
     mdcomp_fig.savefig('D4000-HdA_scatter.png', dpi=300)
+
+    mdcont_fig = MDComp.D4000_Hd_fig()
+    mdcont_fig.savefig('D4000-HdA_scatter.png', dpi=300)
