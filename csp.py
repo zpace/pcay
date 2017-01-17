@@ -51,7 +51,7 @@ class FSPS_SFHBuilder(object):
     __version__ = '0.2'
 
     def __init__(self, max_bursts=5, override={}, min_dt_cont=.03, RS=None, seed=None,
-                 subsample_keys=['tau_V', 'mu', 'sigma'], Nsubsample=20):
+                 subsample_keys=['tau_V', 'mu', 'sigma'], Nsubsample=20, NBB=3.):
         '''
         set up star formation history generation to use with FSPS
 
@@ -87,8 +87,12 @@ class FSPS_SFHBuilder(object):
 
         self.FSPS_args = {k: None for k in self.req_param_keys}
 
+        # manage parameter subsampling
         self.subsample_keys = subsample_keys
         self.Nsubsample = Nsubsample
+
+        # in a full SFH of length time0, avg # of bursts (Poisson)
+        self.NBB = NBB
 
         if not RS:
             self.RS = np.random.RandomState()
@@ -281,22 +285,25 @@ class FSPS_SFHBuilder(object):
 
     def _d1_gen(self):
         if 'd1' not in self.override:
-            return 1. / self.RS.rand()
+            return 1. / self.RS.uniform(0.1, 5.)
 
         return self.FSPS_args['d1']
 
-    def _tt_gen(self, d1):
+    def _tt_gen(self, d1, d1delay=False, ddt=0.):
         # if param already set on object instantiation, leave it alone
         if 'tt' in self.override:
             return self.override['tt']
 
         tf = self.FSPS_args['tf']
 
+        # option to delay ramp by d1 + ddt
+        dt = d1 * d1delay + ddt
+
         # transition time can be anytime after tf + .5Gyr
-        if tf + d1 > self.time0:
+        if tf + dt > self.time0:
             return self.time0
         else:
-            return self.RS.uniform(tf + .5, self.time0)
+            return self.RS.uniform(tf + dt, self.time0)
 
     def _ud_gen(self):
         '''
@@ -316,7 +323,7 @@ class FSPS_SFHBuilder(object):
             return self.FSPS_args['d2']
 
         elif ud < 0.:
-            return self.RS.uniform(.1, 2.)
+            return self.RS.uniform(.15, 1.5)
         elif ud > 0.:
             return self.RS.uniform(1., 10.)
         else:
@@ -355,14 +362,14 @@ class FSPS_SFHBuilder(object):
         return A_
 
     def burst_gen(self):
-        # statistically, one burst occurs in duration time0
+        # statistically, `self.NBB` bursts occur in duration time0
         # but forbidden to happen after cutoff
 
         dt = self.dt_avail
 
         time_form = self.FSPS_args['tf']
 
-        nburst = self.RS.poisson(dt / self.time0)
+        nburst = self.RS.poisson(self.NBB * dt / self.time0)
         if nburst > self.max_bursts:
             nburst = self.max_bursts
 
