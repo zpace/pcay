@@ -316,6 +316,11 @@ class StellarPop_PCA(object):
              if models_good[i]])
 
         spec, meta = spec[models_good, :], meta[models_good]
+        spec /= spec.max(axis=1)[..., None]
+        spec = spec.astype(np.float32)
+
+        for k in meta.colnames:
+            meta[k] = meta[k].astype(np.float32)
 
         return cls(l=l, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
                    K_obs=K_obs, dlogl=None, src='FSPS')
@@ -626,17 +631,17 @@ class StellarPop_PCA(object):
         mapshape = a_map.shape
 
         # build an array to hold covariances
-        K_PC = np.empty((q, q) + mapshape)
+        K_PC = 10. * np.ones((q, q) + mapshape)
 
         # compute starting indices for covariance matrix
         i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
 
-        inds = np.ndindex(mapshape)  # iterator over physical shape of cube
+        inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
 
         for ind in inds:
             # handle bad (SNR < 1) spaxels
             if snr_map[ind[0], ind[1]] < 1.:
-                K_PC[..., ind[0], ind[1]] = 10. * np.ones((q, q))
+                pass
             else:
                 K_spec = self._compute_spec_cov_spax(
                     K_obs_=K_obs_, ivar=ivar[:, ind[0], ind[1]],
@@ -1035,13 +1040,16 @@ class StellarPop_PCA(object):
         for i, k in enumerate(self.metadata.colnames):
             # plot each param's dependence on each PC
             TeX = self.metadata[k].meta['TeX']
-            ax.plot(np.linspace(1, q, q), F_PC_a[i, :], label=TeX,
-                    drawstyle='steps-mid', c=plt.cm.jet(i / q))
+            pc_num = np.linspace(0, q, q + 1)
+            fpc = np.concatenate([np.array([0.]), F_PC_a[i, :]])
+            ax.plot(pc_num, fpc, label=TeX,
+                    drawstyle='steps-post', c=plt.cm.jet(i / q))
 
-        ax.set_xlim([-.75, q + .5])
+        ax.set_xlim([.25, q + .5])
         ax.set_xlabel('PC')
         ax.set_ylabel(r'$F_{PC}(\alpha)$')
         ax.legend(loc='best', prop={'size': 6})
+        plt.tight_layout()
         plt.savefig('PC_param_importance_{}.png'.format(self.src), dpi=300)
 
     # =====
@@ -1264,11 +1272,7 @@ class MaNGA_deredshift(object):
         self.vel_ivar = dap_hdulist['STELLAR_VEL_IVAR'].data * u.Unit(
             'km-2s2')
 
-        self.z = m.get_drpall_val(
-            os.path.join(
-                mangarc.manga_data_loc[MPL_v],
-                'drpall-{}.fits'.format(m.MPL_versions[MPL_v])),
-            ['nsa_z'], self.plateifu)[0]['nsa_z']
+        self.z = drpall_row['nsa_z'][0]
 
         # mask all the spaxels that have high stellar velocity uncertainty
         self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
@@ -1300,15 +1304,22 @@ class MaNGA_deredshift(object):
             mangarc.manga_data_loc[MPL_v], 'dap/', kind, str(plate), str(ifu),
             '-'.join(('manga', str(plate), str(ifu), 'MAPS',
                       '{}.fits.gz'.format(kind))))
+        drpall_fname = os.path.join(
+            mangarc.manga_data_loc[MPL_v],
+            'drpall-{}.fits'.format(m.MPL_versions[MPL_v]))
 
         if not os.path.isfile(drp_fname):
             raise m.DRP_IFU_DNE_Error(plate, ifu)
         if not os.path.isfile(dap_fname):
             raise m.DAP_IFU_DNE_Error(plate, ifu, kind)
 
+        plateifu = '{}-{}'.format(plate, ifu)
+        drpall = t.Table.read(drpall_fname)
+        row = drpall[drpall['plateifu'] == plateifu]
+
         drp_hdulist = fits.open(drp_fname)
         dap_hdulist = fits.open(dap_fname)
-        return cls(drp_hdulist, dap_hdulist, **kwargs)
+        return cls(drp_hdulist, dap_hdulist, row, **kwargs)
 
     def regrid_to_rest(self, template_logl, template_dlogl=None):
         '''
@@ -1390,7 +1401,7 @@ class MaNGA_deredshift(object):
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
     def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
-                           half_dv=500. * u.Unit('km/s')):
+                           half_dv=200. * u.Unit('km/s')):
 
         from elines import (balmer_low, balmer_high, paschen, helium,
                             bright_metal, faint_metal)
@@ -1404,11 +1415,11 @@ class MaNGA_deredshift(object):
         # proposed values... balmer_low: 0, balmer_high: 2, helium: 2
         #                    brightmetal: 0, faintmetal: 5, paschen: 10
         add_balmer_low = (EW >= 0. * u.AA)
-        add_balmer_high = (EW >= 2. * u.AA)
-        add_helium = (EW >= 2. * u.AA)
+        add_balmer_high = (EW >= .5 * u.AA)
+        add_helium = (EW >= .5 * u.AA)
         add_brightmetal = (EW >= 0. * u.AA)
-        add_faintmetal = (EW >= 5. * u.AA)
-        add_paschen = (EW >= 10. * u.AA)
+        add_faintmetal = (EW >= .5 * u.AA)
+        add_paschen = (EW >= 2. * u.AA)
 
         template_l = 10.**template_logl * u.AA
 
@@ -2199,7 +2210,8 @@ class PCA_Result(object):
         # throw out spaxels at large Re
         # in future, should evaluate spectrum uncertainties directly
         rlarge = self.dered.Reff > 3.5
-        r = np.ma.array(self.dered.Reff, mask=(rlarge | self.mask_map))
+        r = np.ma.array(self.dered.Reff,
+                        mask=(rlarge | self.mask_map | self.badPDF))
 
         try:
             # radial gaussian process from sklearn (v0.18 or later)
@@ -2241,8 +2253,9 @@ class PCA_Result(object):
 
         ax.set_ylabel(qty_tex)
 
-        lpred = np.min(q_pred - 2.5 * sigma)
-        upred = np.max(q_pred + 2.5 * sigma)
+        pad = np.maximum(.1 * np.ones_like(sigma), 2.5 * sigma)
+        lpred = np.min(q_pred - pad)
+        upred = np.max(q_pred + pad)
 
         ax.set_ylim([lpred, upred])
 
@@ -2513,8 +2526,7 @@ def run_object(row, pca, force_redo=False):
     plate, ifu = plateifu.split('-')
 
     dered = MaNGA_deredshift.from_plateifu(
-        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
-        drpall_row=row)
+        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
     obj = drpall[drpall['plateifu'] == plateifu]
 
     z_dist = m.get_drpall_val(
@@ -2560,7 +2572,7 @@ if __name__ == '__main__':
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_new', base_fname='CSPs',
-        redo=True, pkl=True, q=7, src='FSPS', nfiles=12)
+        redo=True, pkl=True, q=7, src='FSPS', nfiles=2)
 
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
