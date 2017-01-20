@@ -152,7 +152,8 @@ class FSPS_SFHBuilder(object):
         self.sp = fsps.StellarPopulation(
             zcontinuous=1, add_stellar_remnants=True,
             smooth_velocity=True, redshift_colors=False,
-            vactoair_flag=False, tage=self.time0, masscut=150.)
+            vactoair_flag=False, tage=self.time0, masscut=150.,
+            add_neb_continuum=False)
 
         self.sp.params['imf_type'] = 2
         self.sp.params['tage'] = self.time0
@@ -263,7 +264,7 @@ class FSPS_SFHBuilder(object):
         # if param already set on object instantiation, leave it alone
         if 'tf' not in self.override:
             self.FSPS_args.update(
-                {'tf': self.RS.uniform(low=1.0, high=13.5)})
+                {'tf': self.RS.uniform(low=0.4, high=13.7)})
             self.sfh_changeflag = True
         else:
             pass
@@ -383,11 +384,14 @@ class FSPS_SFHBuilder(object):
     def logzsol_gen(self):
         if 'logzsol' in self.override:
             self.FSPS_args.update({'logzsol': self.override['logzsol']})
+        # 95% chance of linearly-uniform in (.15, 2.5)
         elif self.RS.rand() < .95:
             self.FSPS_args.update(
-                {'logzsol': np.log10(self.RS.uniform(0.2, 2.5))})
+                {'logzsol': np.log10(self.RS.uniform(.15, 2.5))})
+        # 5% chance of log-uniform in (.02)
         else:
-            self.FSPS_args.update({'logzsol': np.log10(self.RS.uniform(.02, .2))})
+            self.FSPS_args.update(
+                {'logzsol': self.RS.uniform(np.log10(.02), np.log10(.2))})
 
     def tau_V_gen(self):
         if 'tau_V' in self.override:
@@ -453,19 +457,14 @@ class FSPS_SFHBuilder(object):
 
     @property
     def ts(self):
-        nburst = self.FSPS_args['nburst']
-        burst_starts = self.FSPS_args['tb'][:nburst]
-        burst_ends = (self.FSPS_args['tb'] +
-                      self.FSPS_args['dtb'])[:nburst]
-
         discont = self.disconts
         # ages starting at 1Myr, and going to start of SF
         ages = 10.**np.linspace(-3., np.log10(self.time0), 300)
         ts = self.time0 - ages
-        ts = np.unique(np.append(ts, discont))
+        ts = np.unique(np.concatenate(
+            [np.array([0, self.FSPS_args['tf']]), ts, discont]))
+        ts = ts[ts >= 0]
         ts.sort()
-        if ts[0] < 0:
-            ts[0] = 0.
         return ts
 
     @property
@@ -497,16 +496,15 @@ class FSPS_SFHBuilder(object):
     def mass_weighted_age(self):
 
         ts = self.ts
+        ages = self.time0 - ts
         sfrs = self.sfrs
-        disconts = self.disconts
+
+        args = np.argsort(ages)
+        ages, sfrs = ages[args], sfrs[args]
 
         # integrating tau * SFR(time0 - tau) wrt tau from 0 to time0
-        num, numerr = integrate.quad(
-            lambda tau: tau * 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
-            points=disconts, epsrel=5.0e-3, limit=100)
-        denom, denomerr = integrate.quad(
-            lambda tau: 1.0e9 * self.all_sf(self.time0 - tau), 0., self.time0,
-            points=disconts, epsrel=5.0e-3, limit=100)
+        num = np.trapz(x=ages, y=ages * sfrs)
+        denom = np.trapz(x=ages, y=sfrs)
         return num / denom
 
     @property
@@ -729,12 +727,14 @@ class TemplateCoverageError(TemplateError):
 if __name__ == '__main__':
 
     nfiles, nper, Nsubsample = 50, 100, 10
+    name_ix0 = 0
+    name_ixf = name_ix0 + nfiles
 
     RS = np.random.RandomState()
-    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample)
+    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=10)
 
-    for i in range(nfiles):
+    for i in range(name_ix0, name_ixf):
         sfh = make_spectral_library(
-            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_new', n=nper,
-            lllim=3800., lulim=7400., dlogl=1.0e-4)
-        print('Done with {} of {}'.format(i + 1, nfiles))
+            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA',
+            n=nper, lllim=3800., lulim=9400., dlogl=1.0e-4)
+        print('Done with {} of {}'.format(i + 1, name_ixf))
