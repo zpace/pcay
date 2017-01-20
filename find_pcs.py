@@ -242,7 +242,7 @@ class StellarPop_PCA(object):
     @classmethod
     def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=None,
                   log_params=['MWA', 'MLr', 'MLi', 'MLz', 'Fstar'],
-                  vel_params={}):
+                  vel_params={}, **kwargs):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
         '''
@@ -323,7 +323,7 @@ class StellarPop_PCA(object):
             meta[k] = meta[k].astype(np.float32)
 
         return cls(l=l, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
-                   K_obs=K_obs, dlogl=None, src='FSPS')
+                   K_obs=K_obs, dlogl=None, src='FSPS', **kwargs)
 
     # =====
     # methods
@@ -1344,23 +1344,20 @@ class MaNGA_deredshift(object):
         template_logl0 = template_logl[0]
 
         # total redshift of each spaxel
-        z_map = self.z + (self.vel / c.c).to('').value
+        z_map = (1. + self.z) * (1. + (self.vel / c.c).to('').value) - 1.
         self.z_map = z_map
 
-        # redshift the template grid starting wavelenth per-spaxel
-        template_logl0_z = np.log10(
-            10.**template_logl0 * (1. + z_map))
-        template_logl0_z_ = template_logl0_z[None, ...]
+        # spectral bin num. (in observed spectra) of template logl0
+        obs_ix_logl0 = np.argmin(np.abs(template_logl0 - self.drp_logl))
 
-        # cube of logl
-        drp_logl_tiled = np.tile(
-            self.drp_logl[:, np.newaxis, np.newaxis],
-            self.vel.shape)
+        # change of base
+        eto10 = 1. / np.log10(np.e)
 
-        # find the index for the wavelength that best corresponds to
-        # an appropriately redshifted wavelength grid
-        logl_diff = template_logl0_z_ - drp_logl_tiled
-        ix_logl0_z = np.argmin(np.abs(logl_diff), axis=0)
+        # starting index per-spaxel
+        ix_logl0_z = obs_ix_logl0
+        ix_logl0_z += (np.log10(
+            ((1. + self.z) * (1. + self.vel / c.c)).value) * \
+            (eto10 / template_dlogl)).astype(int)
 
         # test whether wavelength grid extends beyond MaNGA coverage
         # in any spaxels
@@ -1390,7 +1387,8 @@ class MaNGA_deredshift(object):
         r_v = 3.1
         mpt = [i // 2 for i in self.z_map.shape]
         obs_l = 10.**(
-            template_logl[:len(template_logl)]) * (1. + z_map[mpt[0], mpt[1]])
+            template_logl[:len(template_logl)]) + \
+                np.log10(np.e) * z_map[mpt[0], mpt[1]]
         atten = reddening(
             wave=obs_l * u.AA, a_v=r_v * self.drp_hdulist[0].header['EBVGAL'],
             r_v=r_v, model='f99')
@@ -1401,7 +1399,7 @@ class MaNGA_deredshift(object):
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
     def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
-                           half_dv=200. * u.Unit('km/s')):
+                           half_dv=500. * u.Unit('km/s')):
 
         from elines import (balmer_low, balmer_high, paschen, helium,
                             bright_metal, faint_metal)
@@ -1421,9 +1419,9 @@ class MaNGA_deredshift(object):
         add_faintmetal = (EW >= .5 * u.AA)
         add_paschen = (EW >= 2. * u.AA)
 
-        template_l = 10.**template_logl * u.AA
+        temlogl = template_logl
 
-        full_mask = np.zeros((len(template_l),) + EW.shape, dtype=bool)
+        full_mask = np.zeros((len(temlogl),) + EW.shape, dtype=bool)
 
         for (add_, d) in zip([add_balmer_low, add_balmer_high, add_helium,
                               add_brightmetal, add_faintmetal,
@@ -1431,16 +1429,17 @@ class MaNGA_deredshift(object):
                              [balmer_low, balmer_high, paschen,
                               helium, bright_metal, faint_metal]):
 
-            line_ctrs = spec_tools.air2vac(
-                np.array(list(d.values())) * u.AA)
+            logl_el = np.log10(
+                spec_tools.air2vac(np.array(list(d.values())), u.AA).value)
 
             # compute mask edges
-            mask_ledges = line_ctrs * (1 - (half_dv / c.c).to(''))
-            mask_uedges = line_ctrs * (1 + (half_dv / c.c).to(''))
+            hdz = (half_dv / c.c).to('')
+            mask_ledges = logl_el - np.log10(np.e) * hdz
+            mask_uedges = logl_el + np.log10(np.e) * hdz
 
             # is a given wavelength bin within half_dv of a line center?
             mask = np.row_stack(
-                [(lo < template_l) * (template_l < up)
+                [(lo < temlogl) * (temlogl < up)
                  for lo, up in zip(mask_ledges, mask_uedges)])
             mask = np.any(mask, axis=0)  # OR along axis 0
 
@@ -1656,16 +1655,14 @@ class PCA_Result(object):
             c='g', label='Recon.', linewidth=0.5)
 
         # inverse-variance (weight) plot
-        ax1.set_yticklabels([])
         ivar = self.ivar[:, ix[0], ix[1]]
         ivar_ = ax1.plot(
-            self.l, (ivar / ivar.max()) * O_norm.max(),
+            self.l, (ivar / np.median(ivar)) * np.median(O_norm),
             drawstyle='steps-mid', c='m', label='Wt.', linewidth=0.25)
 
         ax1.legend(loc='best', prop={'size': 6})
-        ax1.set_ylabel(r'$F_{\lambda}$')
-        ax1.set_ylim([-0.1 * self.O_norm[:, ix[0], ix[1]].mean(),
-                      2.25 * self.O_norm[:, ix[0], ix[1]].mean()])
+        ax1.set_ylabel(r'$F_{\lambda}$ (rel)')
+        ax1.set_ylim([-0.1 * np.median(O_norm), 2.25 * np.median(O_norm)])
         ax1.set_xticklabels([])
 
         # residual
@@ -2420,7 +2417,8 @@ class PCA_Result(object):
 
 
 def setup_pca(base_dir, base_fname, fname=None,
-              redo=True, pkl=True, q=7, src='FSPS', nfiles=15):
+              redo=True, pkl=True, q=7, src='FSPS', nfiles=15,
+              pca_kwargs={}):
     import pickle
     if (fname is None):
         redo = True
@@ -2432,7 +2430,8 @@ def setup_pca(base_dir, base_fname, fname=None,
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir=base_dir, base_fname=base_fname, nfiles=nfiles)
+                K_obs=K_obs, base_dir=base_dir, base_fname=base_fname,
+                nfiles=nfiles, **pca_kwargs)
         elif src == 'YMC':
             pca = StellarPop_PCA.from_YMC(
                 base_dir=mangarc.BC03_CSP_loc,
@@ -2517,11 +2516,10 @@ def get_col_metadata(col, k, notfound=''):
 
 def run_object(row, pca, force_redo=False):
 
-    if not force_redo:
-        if os.path.isdir(plateifu):
-            return
-
     plateifu = row['plateifu']
+
+    if (not force_redo) and (os.path.isdir(plateifu)):
+        return
 
     plate, ifu = plateifu.split('-')
 
@@ -2565,14 +2563,17 @@ def run_object(row, pca, force_redo=False):
     return
 
 if __name__ == '__main__':
-    howmany = 10
+    howmany = 20
     cosmo = WMAP9
 
     mpl_v = 'MPL-5'
 
+    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 9400. * u.AA}
+
     pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_new', base_fname='CSPs',
-        redo=True, pkl=True, q=7, src='FSPS', nfiles=2)
+        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
+        redo=True, pkl=True, q=9, src='FSPS', nfiles=None,
+        pca_kwargs=pca_kwargs)
 
     pca.make_PCs_fig()
     pca.make_PC_param_regr_fig()
@@ -2594,7 +2595,7 @@ if __name__ == '__main__':
         plateifu = row['plateifu']
 
         try:
-            run_object(row=row, pca=pca, force_redo=True)
+            run_object(row=row, pca=pca, force_redo=False)
         except Exception as e:
             print('ERROR: {}'.format(plateifu))
             print(e)
