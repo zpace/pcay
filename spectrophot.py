@@ -4,12 +4,33 @@ from scipy.interpolate import interp1d
 from scipy.integrate import trapz
 
 from astropy import units as u, constants as c, table as t
+from speclite import filters
 import astropy.io
 
 
 l_eff_d = {'r': 6166. * u.AA, 'i': 7480. * u.AA, 'z': 8932. * u.AA}
 l_wid_d = {'r': 550. * u.AA, 'i': 1300. * u.AA, 'z': 1000. * u.AA}
 absmag_sun_band = {'r': 4.68, 'i': 4.57, 'z': 4.60}  # from Sparke & Gallagher
+
+class Spec2Phot(object):
+    '''
+    object to convert spectra into photometric magnitudes
+    '''
+    def __init__(self, lam, flam, family='sdss2010-*', axis=0):
+
+        self.filters = filters.load_filters(family)
+        # spectral dimension has to be the final one
+        flam, self.lam = self.filters.pad_spectrum(
+            spectrum=np.moveaxis(flam, axis, -1),
+            wavelength=lam, method='zero')
+        self.flam = np.moveaxis(flam, -1, axis)
+
+        self.ABmags = self.filters.get_ab_magnitudes(
+            spectrum=self.flam, wavelength=self.lam,
+            axis=axis).as_array()
+
+    def color(self, b1, b2):
+        return self.ABmags[b1] - self.ABmags[b2]
 
 def l_eff(lam, band):
     '''
@@ -60,8 +81,6 @@ def spec2mag(lam, Flam, band):
 
     # response function
     Rlam = band_interp(lam)
-
-    # wavelength and frequency
     lam = lam.to('AA')
 
     # calculate pivot wavelength of response function
@@ -69,7 +88,7 @@ def spec2mag(lam, Flam, band):
 
     # average flux-density over bandpass
     Flam_avg = (np.trapz(x=lam, y=lam * Rlam * Flam, axis=-1) /
-                (np.trapz(x=lam, y=Rlam * lam, axis=-1)))
+               (np.trapz(x=lam, y=Rlam * lam, axis=-1)))
 
     Fnu_avg = (Flam_avg * (l_eff_b**2. / c.c)).to('Jy')
     mag = -2.5 * np.log10((Fnu_avg / (3631. * u.Jy)).to('').value)
@@ -121,6 +140,42 @@ def color(hdulist, band1='g', band2='r'):
     color = -2.5 * np.log10(img1 / img2)
 
     return color
+
+def kcorr(l_o, fl_o, band, z, axis=0):
+    '''
+
+    '''
+    # read in filter table
+    band_tab = t.Table.read('filters/{}_SDSS.res'.format(band),
+                            names=['lam', 'f'], format='ascii')
+
+    # set up interpolator
+    band_interp = interp1d(x=band_tab['lam'].quantity.value,
+                           y=band_tab['f'], fill_value=0.,
+                           bounds_error=False)
+    l_o = l_o.to('AA')
+    l_e = l_o / (1. + z)
+
+    R_o = band_interp(l_o)
+    R_e = band_interp(l_e)
+
+    fl_e_ = interp1d(x=l_e, y=fl_o,
+                     bounds_error=False, fill_value='extrapolate')
+    fl_o_ = interp1d(x=l_o, y=fl_o,
+                     bounds_error=False, fill_value='extrapolate')
+
+    n = np.trapz(x=l_o,
+                 y=(R_o * l_o * fl_o_(l_o / (1. + z))),
+                 axis=axis)
+    d = np.trapz(x=l_e,
+                 y=(R_e * l_e * fl_e_(l_e)),
+                 axis=axis)
+
+    F = n / d
+
+    K_QR = -2.5 * np.log10(F.to('').value / (1. + z))
+
+    return K_QR
 
 color_ml_conv = '''
  C     a_g   b_g    a_r   b_r    a_i   b_i    a_z   b_z    a_J   b_J    a_H   b_H    a_K   b_K
