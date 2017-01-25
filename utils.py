@@ -2,6 +2,8 @@ import numpy as np
 import pickle as pkl
 
 from astropy import units as u, constants as c, table as t
+from specutils import extinction
+from speclite import redshift as slrs
 
 from scipy.ndimage.filters import gaussian_filter1d as gf
 
@@ -170,3 +172,68 @@ def _add_losvds_single(meta, spec, dlogl, vmin, vmax, nv, RS, LSF, i):
         print('Done with {}'.format(i))
 
     return meta, spec
+
+def weighted_quantile(p, w, q):
+    '''
+    like numpy.percentile, but supports weights and behaves in
+        vectorized fashion. Basically computes pctls of n samples
+        in (X, Y) grid
+
+    params:
+        - p: array-like, shape (n): parameter values
+        - w: array-like, shape (n, X, Y): weights of parameters
+        - q: array-like, shape (p): quantiles needed
+
+    Note: assumes that map-like axes are final 2
+    '''
+
+    # sort p and w by increasing value of p
+    sorter = np.argsort(p)
+    p, w = p[sorter], w[sorter]
+
+    wt_qtls = np.cumsum(w, axis=0) - 0.5 * w.sum(axis=0)
+    wt_qtls /= w.sum(axis=0)
+
+    interp = np.interp(q, wt_qtls, p)
+
+def extinction_correct(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
+    '''
+    wraps around specutils.extinction.reddening
+    '''
+
+    a_v = r_v * EBV
+    r = extinction.reddening
+
+    # output from reddening is inverse-flux-transmission
+    f_itr = r(wave=l, a_v=a_v, r_v=r_v, **kwargs)[..., None, None]
+    # to deredden, divide f by f_itr
+
+    f /= f_itr
+
+    if ivar is not None:
+        ivar *= f_itr**2.
+        return f, ivar
+    else:
+        return f
+
+def redshift(l, f, ivar, **kwargs):
+    '''
+    wraps around speclite.redshift, and does all the rule-making, etc
+
+    assumes l, flam, ivar of flam
+    '''
+
+    s = f.shape
+    l = np.tile(l[..., None, None], (1, ) + s[-2:])
+    data = np.empty_like(
+        f, dtype=[('l', float), ('f', float), ('ivar', float)])
+    data['l'] = l
+    data['f'] = f
+    data['ivar'] = ivar
+    rules = [dict(name='l', exponent=+1),
+             dict(name='f', exponent=-1),
+             dict(name='ivar', exponent=+2)]
+
+    res = slrs(data_in=data, rules=rules, **kwargs)
+
+    return res['l'], res['f'], res['ivar']
