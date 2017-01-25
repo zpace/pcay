@@ -36,6 +36,7 @@ import figures_tools
 import radial
 from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
                          absmag_sun_band as Msun)
+import utils as ut
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -329,14 +330,10 @@ class StellarPop_PCA(object):
     # methods
     # =====
 
-    def run_pca_models(self, mask_half_dv=500. * u.Unit('km/s'),
-                       q=None, max_q=None):
+    def run_pca_models(self, q):
         '''
         run PCA on library of model spectra
         '''
-
-        if (q is None) and (max_q is None):
-            raise ValueError('must provide either or both `q`/`max_q`!')
 
         # first run some prep on the model spectra
 
@@ -349,51 +346,16 @@ class StellarPop_PCA(object):
         self.M = np.mean(self.normed_trn, axis=0)
         self.S = self.normed_trn - self.M
 
-        # if user asks to test param reconstruction from PCs over range
-        # of # of PCs kept
-        # this does not keep record of each iteration's output, even at end
-        if max_q is not None:
-            res_q = [None, ] * max_q
-            for dim in range(1, max_q):
-                PCs, PVE = self.PCA(self.S, dims=dim)
-                # transformation matrix: spectra -> PC amplitudes
-                tfm_sp2PC = PCs.T
+        self.PCs, self.PVE = self.PCA(self.S, dims=q)
 
-                # project back onto the PCs to get the weight vectors
-                trn_PC_wts = (self.S).dot(tfm_sp2PC)
-                # and reconstruct the best approximation spectra from PCs
-                trn_recon = trn_PC_wts.dot(PCs)
-                # residuals
-                trn_resid = self.S - trn_recon
+        # project back onto the PCs to get the weight vectors
+        self.trn_PC_wts = (self.S).dot(self.PCs.T)
+        # and reconstruct the best approximation for the spectra from PCs
+        self.trn_recon = self.trn_PC_wts.dot(self.PCs)
+        # residuals
+        self.trn_resid = self.S - self.trn_recon
 
-                self.cov_th = np.cov(trn_resid.T)
-
-                # find weights of each PC in determining parameters in metadata
-                (n_, p_, q_) = (self.trn_spectra.shape[0],
-                                len(self.metadata.colnames), dim)
-                m_dims_ = (n_, p_, q_)
-
-        # if user asks to run parameter regression of specific # of PCs
-        # this also sets self attributes, so that everything is kept
-        if q is not None:
-            dim = q
-            self.PCs, self.PVE = self.PCA(self.S, dims=dim)
-            # transformation matrix: spectra -> PC amplitudes
-            self.tfm_sp2PC = self.PCs.T
-
-            # project back onto the PCs to get the weight vectors
-            self.trn_PC_wts = (self.S).dot(self.tfm_sp2PC)
-            # and reconstruct the best approximation for the spectra from PCs
-            self.trn_recon = self.trn_PC_wts.dot(self.PCs)
-            # residuals
-            self.trn_resid = self.S - self.trn_recon
-
-            self.cov_th = np.cov(self.trn_resid.T)
-
-            # find weights of each PC in determining parameters in metadata
-            (n_, p_, q_) = (self.trn_spectra.shape[0],
-                            len(self.metadata.colnames), dim)
-            m_dims_ = (n_, p_, q_)
+        self.cov_th = np.cov(self.trn_resid.T)
 
     def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
                      mask_cube=None):
@@ -682,6 +644,7 @@ class StellarPop_PCA(object):
         Xhalf, Yhalf = NX // 2, NY // 2
 
         if norm == 'L2':
+            # this is really mahalanobis distance
             chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
         elif norm == 'L1':
             P_ = np.moveaxis(np.diagonal(P), [0, 1, 2], [1, 2, 0])
@@ -1036,19 +999,20 @@ class StellarPop_PCA(object):
 
         F_PC_a = N_PC_a / N_PC_a.sum(axis=1)[:, None]
 
-        q = X.shape[1]
+        p, q = X.shape
         for i, k in enumerate(self.metadata.colnames):
             # plot each param's dependence on each PC
             TeX = self.metadata[k].meta['TeX']
-            pc_num = np.linspace(0, q, q + 1)
-            fpc = np.concatenate([np.array([0.]), F_PC_a[i, :]])
-            ax.plot(pc_num, fpc, label=TeX,
-                    drawstyle='steps-post', c=plt.cm.jet(i / q))
+            pc_num = np.linspace(1, q, q)
+            fpc = F_PC_a[i, :]
+            ax.plot(pc_num, fpc, label=TeX, marker='o',
+                    c=plt.cm.jet(i / p), markersize=10)
 
         ax.set_xlim([.25, q + .5])
         ax.set_xlabel('PC')
         ax.set_ylabel(r'$F_{PC}(\alpha)$')
-        ax.legend(loc='best', prop={'size': 6})
+        ax.set_xlim([0, q + 1.5])
+        ax.legend(loc='best', prop={'size': 5})
         plt.tight_layout()
         plt.savefig('PC_param_importance_{}.png'.format(self.src), dpi=300)
 
@@ -1278,7 +1242,8 @@ class MaNGA_deredshift(object):
         self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
         self.vel_mask = self.dap_hdulist['STELLAR_VEL_MASK'].data
 
-        self.drp_logl = np.log10(drp_hdulist['WAVE'].data)
+        self.drp_l = drp_hdulist['WAVE'].data
+        self.drp_logl = np.log10(self.drp_l)
         if drp_dlogl is None:
             drp_dlogl = spec_tools.determine_dlogl(self.drp_logl)
         self.drp_dlogl = drp_dlogl
@@ -1321,12 +1286,14 @@ class MaNGA_deredshift(object):
         dap_hdulist = fits.open(dap_fname)
         return cls(drp_hdulist, dap_hdulist, row, **kwargs)
 
-    def regrid_to_rest(self, template_logl, template_dlogl=None):
+    def correct_and_match(self, template_logl, template_dlogl=None):
         '''
-        regrid flux density measurements from MaNGA DRP logcube a logl grid,
-
-        essentially picking the pixels that fall in the logl grid's range,
-        after being de-redshifted
+        gets datacube ready for PCA analysis:
+            - take out galactic extinction
+            - compute per-spaxel redshifts
+            - deredshift observed spectra
+            - raise alarms where templates don't cover enough l range
+            - return subarrays of flam, ivar
 
         (this does not perform any fancy interpolation, just "shifting")
         (nor are emission line features masked--that must be done in post-)
@@ -1340,61 +1307,49 @@ class MaNGA_deredshift(object):
                 'template\'s is {}; input spectra\'s is {}'.format(
                     template_dlogl, self.drp_dlogl))
 
-        # where does template grid start?
-        template_logl0 = template_logl[0]
+        # correct for MW extinction
+        r_v = 3.1
+        EBV = self.drp_hdulist[0].header['EBVGAL']
+        f_mwcorr, ivar_mwcorr = ut.extinction_correct(
+            l=self.drp_l * u.AA, f=self.flux, ivar=self.ivar,
+            r_v=r_v, EBV=EBV)
 
+        # prepare to de-redshift
         # total redshift of each spaxel
         z_map = (1. + self.z) * (1. + (self.vel / c.c).to('').value) - 1.
         self.z_map = z_map
 
-        # spectral bin num. (in observed spectra) of template logl0
-        obs_ix_logl0 = np.argmin(np.abs(template_logl0 - self.drp_logl))
+        l_rest, f_rest, ivar_rest = ut.redshift(
+            l=self.drp_l, f=f_mwcorr, ivar=ivar_mwcorr, z_in=z_map, z_out=0.)
+        # this maintains constant dlogl
 
-        # change of base
-        eto10 = 1. / np.log10(np.e)
-
-        # starting index per-spaxel
-        ix_logl0_z = obs_ix_logl0
-        ix_logl0_z += (np.log10(
-            ((1. + self.z) * (1. + self.vel / c.c)).value) * \
-            (eto10 / template_dlogl)).astype(int)
+        # where does template grid start?
+        tem_l = 10.**template_logl
+        tem_nl = tem_l.shape[0]
+        # what pixel of deredshifted grid is that?
+        ix0 = np.argmin(np.abs(l_rest - tem_l[0]), axis=0)
 
         # test whether wavelength grid extends beyond MaNGA coverage
         # in any spaxels
-        bad_logl_extent = (
-            ix_logl0_z + len(template_logl)) >= len(self.drp_logl)
+        bad_logl_extent = np.logical_or.reduce(
+            ((l_rest < tem_l[0]), (l_rest > tem_l[-1])))
 
-        bad_ = np.logical_or(bad_logl_extent, self.vel_mask)
-        # select len(template_logl) values from self.flux, w/ diff starting
-        # (see http://stackoverflow.com/questions/37984214/
-        # pure-numpy-expression-for-selecting-same-length-
-        # subarrays-with-different-startin)
-        # (and also filter out spaxels that are bad)
+        # select same num. of elements of f_rest & ivar_rest,
+        # starting at ix0
+        ixs = (ix0[None, ...] + np.arange(tem_nl)[..., None, None])
+        _, I, J = np.ix_(*[range(i) for i in f_rest.shape])
 
-        _, I, J = np.ix_(*[range(i) for i in self.flux.shape])
+        self.flux_regr = f_rest[ixs, I, J]
+        self.ivar_regr = ivar_rest[ixs, I, J]
 
-        self.flux_regr = self.flux[
-            ix_logl0_z[None, ...] + np.arange(len(template_logl))[
-                :, np.newaxis, np.newaxis], I, J]
+        # also select from bad_logl_extent
+        bad_logl_extent = bad_logl_extent[ixs, I, J]
 
-        self.ivar_regr = self.ivar[
-            ix_logl0_z[None, ...] + np.arange(len(template_logl))[
-                :, np.newaxis, np.newaxis], I, J]
+        # replace out-of-range elements with f = 0 and ivar = 0
+        self.ivar_regr[bad_logl_extent] = 0.
+        self.flux_regr[bad_logl_extent] = 0.
 
-        self.spax_mask = bad_
-
-        # finally, compute the MW dust attenuation, and apply the inverse
-        r_v = 3.1
-        mpt = [i // 2 for i in self.z_map.shape]
-        obs_l = 10.**(
-            template_logl[:len(template_logl)]) + \
-                np.log10(np.e) * z_map[mpt[0], mpt[1]]
-        atten = reddening(
-            wave=obs_l * u.AA, a_v=r_v * self.drp_hdulist[0].header['EBVGAL'],
-            r_v=r_v, model='f99')
-        atten = atten[:, None, None]
-
-        self.flux_regr /= atten
+        self.spax_mask = self.vel_mask
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -1523,7 +1478,7 @@ class PCA_Result(object):
 
         self.E = pca.PCs
 
-        self.O, self.ivar, mask_spax = dered.regrid_to_rest(
+        self.O, self.ivar, mask_spax = dered.correct_and_match(
             template_logl=pca.logl, template_dlogl=None)
         self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=None)
@@ -1603,6 +1558,9 @@ class PCA_Result(object):
         M_sun = Msun[band]
         Lsun = 10.**(-0.4 * (ABMag - M_sun))
 
+        # and the K-correction
+        Lsun /= (1. + self.z)
+
         return Lsun
 
     def lum_plot(self, ax, ix, band='i'):
@@ -1647,6 +1605,12 @@ class PCA_Result(object):
         # original & reconstructed
         O_norm = self.O_norm[:, ix[0], ix[1]]
         O_recon = self.O_recon[:, ix[0], ix[1]]
+        ivar = self.ivar[:, ix[0], ix[1]]
+
+        Onm = np.ma.median(O_norm)
+        Orm = np.ma.median(O_recon)
+        ivm = np.ma.median(ivar)
+
         orig_ = ax1.plot(
             self.l, O_norm, drawstyle='steps-mid',
             c='b', label='Orig.', linewidth=0.5)
@@ -1655,14 +1619,16 @@ class PCA_Result(object):
             c='g', label='Recon.', linewidth=0.5)
 
         # inverse-variance (weight) plot
-        ivar = self.ivar[:, ix[0], ix[1]]
         ivar_ = ax1.plot(
-            self.l, (ivar / np.median(ivar)) * np.median(O_norm),
+            self.l, (ivar / ivm) * Onm,
             drawstyle='steps-mid', c='m', label='Wt.', linewidth=0.25)
 
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$ (rel)')
-        ax1.set_ylim([-0.1 * np.median(O_norm), 2.25 * np.median(O_norm)])
+        ax1.set_yticks(np.arange(0.5, 2.5, 0.5))
+        ax1.set_ylim([-0.1 * Onm, 2.25 * Onm])
+        ax1.axhline(y=0., xmin=self.l.min(), xmax=self.l.max(),
+                    c='k', linestyle=':')
         ax1.set_xticklabels([])
 
         # residual
@@ -2533,9 +2499,11 @@ def run_object(row, pca, force_redo=False):
             'drpall-{}.fits'.format(m.MPL_versions[mpl_v])),
         ['nsa_zdist'], plateifu)[0]['nsa_zdist']
 
+    figdir = os.path.join('results', plateifu)
+
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
-        norm_params={'norm': 'L2', 'soft': False}, figdir=plateifu)
+        norm_params={'norm': 'L2', 'soft': False}, figdir=figdir)
 
     pca_res.make_sample_diag_fig()
 
@@ -2560,19 +2528,19 @@ def run_object(row, pca, force_redo=False):
 
     pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i')
 
-    return
+    return pca_res
 
 if __name__ == '__main__':
-    howmany = 20
+    howmany = 40
     cosmo = WMAP9
 
     mpl_v = 'MPL-5'
 
-    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 9400. * u.AA}
+    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8700. * u.AA}
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=True, pkl=True, q=9, src='FSPS', nfiles=None,
+        redo=True, pkl=True, q=5, src='FSPS', nfiles=20,
         pca_kwargs=pca_kwargs)
 
     pca.make_PCs_fig()
@@ -2585,9 +2553,9 @@ if __name__ == '__main__':
     drpall = t.Table.read(drpall_path)
 
     row = drpall[drpall['plateifu'] == '8083-12704'][0]
-    run_object(row=row, pca=pca, force_redo=True)
+    pca_res = run_object(row=row, pca=pca, force_redo=True)
 
-    '''
+
     drpall = drpall[drpall['ifudesignsize'] > 0.]
     drpall = m.shuffle_table(drpall)
 
@@ -2595,7 +2563,7 @@ if __name__ == '__main__':
         plateifu = row['plateifu']
 
         try:
-            run_object(row=row, pca=pca, force_redo=False)
+            run_object(row=row, pca=pca, force_redo=True)
         except Exception as e:
             print('ERROR: {}'.format(plateifu))
             print(e)
@@ -2603,4 +2571,4 @@ if __name__ == '__main__':
         finally:
             if i + 1 >= howmany:
                 break
-    '''
+
