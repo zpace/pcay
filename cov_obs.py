@@ -170,7 +170,7 @@ class Cov_Obs(object):
         ax.set_xlabel(r'$\lambda$', size=8)
         ax.set_ylabel(r'$\lambda$', size=8)
         cb = plt.colorbar(im, ax=ax, shrink=0.8)
-        cb.set_label(r'$\textrm{sgn}(K) ~ K^{0.3}$')
+        cb.set_label(r'$\textrm{sign}(K) ~ |K|^{0.3}$')
         plt.savefig('cov_obs_{}.png'.format(kind), dpi=300)
 
     # =====
