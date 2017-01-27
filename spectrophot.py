@@ -7,10 +7,16 @@ from astropy import units as u, constants as c, table as t
 from speclite import filters
 import astropy.io
 
+from warnings import warn
+
 
 l_eff_d = {'r': 6166. * u.AA, 'i': 7480. * u.AA, 'z': 8932. * u.AA}
 l_wid_d = {'r': 550. * u.AA, 'i': 1300. * u.AA, 'z': 1000. * u.AA}
 absmag_sun_band = {'r': 4.68, 'i': 4.57, 'z': 4.60}  # from Sparke & Gallagher
+
+class Spec2PhotWarning(UserWarning):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 class Spec2Phot(object):
     '''
@@ -20,10 +26,14 @@ class Spec2Phot(object):
 
         self.filters = filters.load_filters(family)
         # spectral dimension has to be the final one
+        nl0 = flam.shape[axis]
         flam, self.lam = self.filters.pad_spectrum(
             spectrum=np.moveaxis(flam, axis, -1),
             wavelength=lam, method='zero')
         self.flam = np.moveaxis(flam, -1, axis)
+        if self.flam.shape[axis] > nl0:
+            warn('spectrum has been padded, bad mags possible',
+                 Spec2PhotWarning)
 
         self.ABmags = self.filters.get_ab_magnitudes(
             spectrum=self.flam, wavelength=self.lam,

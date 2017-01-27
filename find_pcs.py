@@ -5,17 +5,20 @@ import matplotlib.pyplot as plt
 from matplotlib import cm as mplcm
 from matplotlib import gridspec
 import matplotlib.ticker as mticker
+from cycler import cycler
 
 # astropy ecosystem
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
 from astropy import wcs
+from astropy.utils.console import ProgressBar
 from specutils.extinction import reddening
 from astropy.cosmology import WMAP9
 from astropy import coordinates as coord
 
 import os
 import sys
+from warnings import warn, filterwarnings, catch_warnings, simplefilter
 
 # scipy
 from scipy.interpolate import interp1d
@@ -35,7 +38,7 @@ import cov_obs
 import figures_tools
 import radial
 from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
-                         absmag_sun_band as Msun)
+                         Spec2Phot, absmag_sun_band as Msun)
 import utils as ut
 
 # add manga RC location to path, and import config
@@ -999,20 +1002,37 @@ class StellarPop_PCA(object):
 
         F_PC_a = N_PC_a / N_PC_a.sum(axis=1)[:, None]
 
+        cyc_color = cycler(color=['#1b9e77','#d95f02','#7570b3'])
+        # qualitative colorblind cycle from ColorBrewer
+        cyc_marker = cycler(marker=['o', '>', 's', 'd'])
+        cyc_prop = cyc_marker * cyc_color
+
         p, q = X.shape
-        for i, k in enumerate(self.metadata.colnames):
+        for i, (sty, k) in enumerate(zip(cyc_prop,
+                                         self.metadata.colnames)):
             # plot each param's dependence on each PC
             TeX = self.metadata[k].meta['TeX']
             pc_num = np.linspace(1, q, q)
             fpc = F_PC_a[i, :]
-            ax.plot(pc_num, fpc, label=TeX, marker='o',
-                    c=plt.cm.jet(i / p), markersize=10)
+            ax.plot(pc_num, fpc, label=TeX, markersize=5,
+                    **sty)
 
-        ax.set_xlim([.25, q + .5])
         ax.set_xlabel('PC')
+        ax.set_xticks(np.linspace(1, q, q).astype(int))
         ax.set_ylabel(r'$F_{PC}(\alpha)$')
-        ax.set_xlim([0, q + 1.5])
         ax.legend(loc='best', prop={'size': 5})
+
+        ax2 = ax.twinx()
+        ax2.plot(np.linspace(1, q, q), (1. - self.PVE.cumsum()),
+                 c='c', linestyle='--', marker='None')
+        ax2.set_yscale('log')
+        ax2.set_ylim([1.0e-3, 1.])
+        ax2.set_ylabel('fraction unexplained variance', size=5)
+        ax2.yaxis.label.set_color('c')
+        ax2.tick_params(axis='y', colors='c', labelsize=5)
+
+        ax.set_xlim([0, q + 1.5])
+
         plt.tight_layout()
         plt.savefig('PC_param_importance_{}.png'.format(self.src), dpi=300)
 
@@ -1080,9 +1100,35 @@ class StellarPop_PCA(object):
         #M = np.einsum('sk,ik,jk->sij', w, e, e)
         #F = np.einsum('sk,sk,jk->sj', w, f, e)
 
-        A = np.moveaxis(np.linalg.solve(M, F), -1, 0)
+        try:
+            A = np.linalg.solve(M, F)
+        except np.linalg.LinAlgError:
+            warn('down-projection is non-exact, due to singular matrix',
+                 PCProjectionWarning)
+            # try lstsq down-projection
+            A = StellarPop_PCA.SVD_downproject(M, F)
+
+        A = np.moveaxis(A, -1, 0)
+
+        #A, resid, rank, S = np.linalg.lstsq(M, F)
+        #A = np.moveaxis(A, -1, 0)
 
         return A
+
+    @staticmethod
+    def SVD_downproject(M, F, rcond=1e-10):
+        # do lstsq down-projection using SVD
+
+        u, s, v = np.linalg.svd(M, full_matrices=False)
+        s_max = s.max(axis=-1, keepdims=True)
+        s_min = rcond * s_max
+        inv_s = np.zeros_like(s)
+        inv_s[s >= s_min] = 1. / s[s >= s_min]
+
+        x = np.einsum('...ji,...j->...i', v,
+                      inv_s * np.einsum('...ji,...j->...i', u, F.conj()))
+
+        return np.conj(x, x)
 
     @staticmethod
     def PCA(data, dims=None):
@@ -1212,6 +1258,10 @@ class PCAError(Exception):
     '''
     pass
 
+class PCProjectionWarning(UserWarning):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
 
 class MaNGA_deredshift(object):
     '''
@@ -1248,8 +1298,16 @@ class MaNGA_deredshift(object):
             drp_dlogl = spec_tools.determine_dlogl(self.drp_logl)
         self.drp_dlogl = drp_dlogl
 
-        self.flux = self.drp_hdulist['FLUX'].data
-        self.ivar = self.drp_hdulist['IVAR'].data
+        flux_hdu, ivar_hdu, l_hdu = (drp_hdulist['FLUX'], drp_hdulist['IVAR'],
+                                     drp_hdulist['WAVE'])
+
+        self.flux = flux_hdu.data
+        self.ivar = ivar_hdu.data
+
+        self.units = {'l': u.AA, 'flux': u.Unit('1e-17 erg s-1 cm-2 AA-1')}
+
+        self.S2P = Spec2Phot(lam=(self.drp_l * self.units['l']),
+                             flam=(self.flux * self.units['flux']))
 
     @classmethod
     def from_filenames(cls, drp_fname, dap_fname):
@@ -1323,8 +1381,17 @@ class MaNGA_deredshift(object):
             l=self.drp_l, f=f_mwcorr, ivar=ivar_mwcorr, z_in=z_map, z_out=0.)
         # this maintains constant dlogl
 
+        # and make photometric object to reflect rest-frame spectroscopy
+        ctr = [i // 2 for i in z_map.shape]
+        # approximate rest wavelength of whole cube as rest wavelength
+        # of central spaxel
+        l_rest_ctr = l_rest[:, ctr[0], ctr[1]]
+        self.S2P_rest = Spec2Phot(lam=(l_rest_ctr * self.units['l']),
+                                  flam=(f_rest * self.units['flux']))
+
         # where does template grid start?
         tem_l = 10.**template_logl
+        self.tem_l = tem_l
         tem_nl = tem_l.shape[0]
         # what pixel of deredshifted grid is that?
         ix0 = np.argmin(np.abs(l_rest - tem_l[0]), axis=0)
@@ -1356,7 +1423,7 @@ class MaNGA_deredshift(object):
     def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
                            half_dv=500. * u.Unit('km/s')):
 
-        from elines import (balmer_low, balmer_high, paschen, helium,
+        from elines import (balmer_low, balmer_high, helium,
                             bright_metal, faint_metal)
 
         if template_dlogl is None:
@@ -1372,29 +1439,31 @@ class MaNGA_deredshift(object):
         add_helium = (EW >= .5 * u.AA)
         add_brightmetal = (EW >= 0. * u.AA)
         add_faintmetal = (EW >= .5 * u.AA)
-        add_paschen = (EW >= 2. * u.AA)
 
         temlogl = template_logl
+        teml = 10.**temlogl
 
         full_mask = np.zeros((len(temlogl),) + EW.shape, dtype=bool)
 
         for (add_, d) in zip([add_balmer_low, add_balmer_high, add_helium,
-                              add_brightmetal, add_faintmetal,
-                              add_paschen],
-                             [balmer_low, balmer_high, paschen,
+                              add_brightmetal, add_faintmetal],
+                             [balmer_low, balmer_high,
                               helium, bright_metal, faint_metal]):
 
-            logl_el = np.log10(
-                spec_tools.air2vac(np.array(list(d.values())), u.AA).value)
+            l_el = spec_tools.air2vac(np.array(list(d.values())), u.AA).value
+            logl_el = np.log10(l_el)
 
             # compute mask edges
-            hdz = (half_dv / c.c).to('')
-            mask_ledges = logl_el - np.log10(np.e) * hdz
-            mask_uedges = logl_el + np.log10(np.e) * hdz
+            hdz = (half_dv / c.c).to('').value
+
+            # use speclite's redshift function
+            rules = [dict(name='l', exponent=+1, array_in=l_el)]
+            mask_ledges = ut.slrs(rules=rules, z_in=0., z_out=-hdz)['l']
+            mask_uedges = ut.slrs(rules=rules, z_in=0., z_out=hdz)['l']
 
             # is a given wavelength bin within half_dv of a line center?
             mask = np.row_stack(
-                [(lo < temlogl) * (temlogl < up)
+                [(lo < teml) * (teml < up)
                  for lo, up in zip(mask_ledges, mask_uedges)])
             mask = np.any(mask, axis=0)  # OR along axis 0
 
@@ -1412,16 +1481,24 @@ class MaNGA_deredshift(object):
         '''
         return coadded spectrum and ivar
 
-        par
+        params:
+         - good: map of good spaxels
         '''
 
         if good is None:
             good = np.ones_like(self.flux_regr[0, ...])
 
-        flux = np.sum(self.flux_regr * good[None, ...], axis=(1, 2))
-        ivar = np.sum(self.ivar_regr * good[None, ...], axis=(1, 2))
+        ivar = self.ivar_regr * good[None, ...]
+        map_shape = ivar.shape[1:]
+        tem_l = np.tile(self.tem_l[:, None, None],
+                        (1, ) + map_shape)
 
-        return flux, ivar
+        lam, flux, ivar = ut.coadd(
+            l=tem_l, f=self.flux_regr, ivar=ivar)
+        lam, flux, ivar = (lam[:, None, None], flux[:, None, None],
+                           ivar[:, None, None])
+
+        return lam, flux, ivar
 
     # =====
     # properties
@@ -1455,6 +1532,10 @@ cmap = mplcm.get_cmap('cubehelix')
 cmap.set_bad('gray')
 cmap.set_under('k')
 cmap.set_over('w')
+
+class HistFailedWarning(UserWarning):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 
 class PCA_Result(object):
@@ -1544,11 +1625,9 @@ class PCA_Result(object):
             some cosmology and redshift
         '''
 
-        # get the flux-density of each spaxel in the band of choice
-        fluxdens = self.fluxdens(band=band)
-
-        # convert flux-density to AB relative magnitude
-        ABmag = -2.5 * np.log10((fluxdens / (3631. * u.Jy)).to('').value)
+        # retrieve k-corrected apparent AB mag from dered object
+        ABmag = self.dered.S2P.ABmags['-'.join(
+            ('sdss2010', band))]
 
         # convert to an absolute magnitude
         ABMag = ABmag - 5. * np.log10(
@@ -1557,9 +1636,6 @@ class PCA_Result(object):
         # convert to solar units
         M_sun = Msun[band]
         Lsun = 10.**(-0.4 * (ABMag - M_sun))
-
-        # and the K-correction
-        Lsun /= (1. + self.z)
 
         return Lsun
 
@@ -1770,10 +1846,12 @@ class PCA_Result(object):
         calculate integrated spectrum, and then compute stellar mass from that
         '''
 
-        O, ivar = self.dered.coadd(good=~self.mask_map)
-        O, ivar = O[..., None, None], ivar[..., None, None]
+        _, O, ivar = self.dered.coadd(good=~self.mask_map)
 
-        mask_cube = (np.sum(self.mask_cube, axis=(1, 2)) > 0)[..., None, None]
+        # in the spaxels that were used to coadd, OR-function
+        # of mask, over cube
+        mask_cube = np.any(self.mask_cube * (~self.mask_map[None, ...]),
+                           axis=(1, 2)).astype(bool)[..., None, None]
 
         A, M, a_map, O_sub, O_norm = pca.project_cube(
             f=O, ivar=ivar, mask_spax=None,
@@ -1792,8 +1870,9 @@ class PCA_Result(object):
 
         # redshift is flux-averaged
         z_map = np.average(self.dered.z_map, weights=self.O.sum(axis=0))
-        SNR = np.median(O * np.sqrt(ivar))
-        z_map, SNR = (np.atleast_2d(z_map), np.atleast_2d(SNR))
+        SNR = np.nanmedian(O.data * np.sqrt(ivar.data))
+        z_map, SNR, a_map = (np.atleast_2d(z_map), np.atleast_2d(SNR),
+                             np.atleast_2d(a_map))
 
         K_PC = pca.build_PC_cov_full_iter(
             a_map=a_map, z_map=z_map, obs_logl=self.dered.drp_logl,
@@ -1956,7 +2035,8 @@ class PCA_Result(object):
                     color='k', label='posterior', linewidth=0.5)
             except UnboundLocalError:
                 h = None
-                print('{} post. hist failed'.format(qty))
+                warn('{} post. hist failed'.format(qty),
+                     HistFailedWarning)
 
         # marginalized prior
         if kde_prior:
@@ -2004,7 +2084,9 @@ class PCA_Result(object):
         ax.set_xlabel(TeX)
 
         if legend:
-            ax.legend(h1 + h2 + he, l1 + l2 + le, loc='best', prop={'size': 8})
+            with catch_warnings():
+                simplefilter('ignore')
+                ax.legend(h1 + h2 + he, l1 + l2 + le, loc='best', prop={'size': 8})
 
         return h, hprior
 
@@ -2246,7 +2328,9 @@ class PCA_Result(object):
             ax = plt.gca()
 
         # b1 - b2 color
-        col = color(self.dered.drp_hdulist, b1, b2)
+        b1_ = '-'.join(('sdss2010', b1))
+        b2_ = '-'.join(('sdss2010', b2))
+        col = self.dered.S2P_rest.color(b1_, b2_)
         col = np.ma.array(col, mask=self.mask_map)
         # retrieve ML ratio
         ml, *_, scale = self.pca.param_cred_intvl(
@@ -2531,16 +2615,17 @@ def run_object(row, pca, force_redo=False):
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 40
+    howmany = 0
     cosmo = WMAP9
+    warn_behav = 'ignore'
 
     mpl_v = 'MPL-5'
 
-    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8700. * u.AA}
+    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8750. * u.AA}
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=True, pkl=True, q=5, src='FSPS', nfiles=20,
+        redo=False, pkl=True, q=8, src='FSPS', nfiles=30,
         pca_kwargs=pca_kwargs)
 
     pca.make_PCs_fig()
@@ -2553,22 +2638,28 @@ if __name__ == '__main__':
     drpall = t.Table.read(drpall_path)
 
     row = drpall[drpall['plateifu'] == '8083-12704'][0]
-    pca_res = run_object(row=row, pca=pca, force_redo=True)
 
+    with catch_warnings():
+        simplefilter(warn_behav)
+        pca_res = run_object(row=row, pca=pca, force_redo=True)
 
+    #'''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
     drpall = m.shuffle_table(drpall)
+    drpall = drpall[:howmany]
 
-    for i, row in enumerate(drpall):
-        plateifu = row['plateifu']
+    with ProgressBar(howmany) as bar:
+        for i, row in enumerate(drpall):
+            plateifu = row['plateifu']
 
-        try:
-            run_object(row=row, pca=pca, force_redo=True)
-        except Exception as e:
-            print('ERROR: {}'.format(plateifu))
-            print(e)
-            continue
-        finally:
-            if i + 1 >= howmany:
-                break
-
+            try:
+                with catch_warnings():
+                    simplefilter(warn_behav)
+                    run_object(row=row, pca=pca, force_redo=True)
+            except Exception as e:
+                print('ERROR: {}'.format(plateifu))
+                print(e)
+                continue
+            finally:
+                bar.update()
+    #'''

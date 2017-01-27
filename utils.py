@@ -4,6 +4,7 @@ import pickle as pkl
 from astropy import units as u, constants as c, table as t
 from specutils import extinction
 from speclite import redshift as slrs
+from speclite import accumulate as slacc
 
 from scipy.ndimage.filters import gaussian_filter1d as gf
 
@@ -216,6 +217,14 @@ def extinction_correct(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
     else:
         return f
 
+def add_redshifts(zs, axis=0):
+    '''
+    add redshifts in an array-like, along an axis
+    '''
+
+    z_tot = np.cumprod((1. + zs), axis=axis) - 1.
+    return z_tot
+
 def redshift(l, f, ivar, **kwargs):
     '''
     wraps around speclite.redshift, and does all the rule-making, etc
@@ -237,3 +246,30 @@ def redshift(l, f, ivar, **kwargs):
     res = slrs(data_in=data, rules=rules, **kwargs)
 
     return res['l'], res['f'], res['ivar']
+
+def coadd(l, f, ivar, l_ax=0, accum_axs=(1, 2), **kwargs):
+    nl = f.shape[l_ax]
+    map_shape = tuple(f.shape[i] for i in accum_axs)
+    cube_shape = f.shape
+
+    data = np.empty_like(f, dtype=[('lam', float), ('flam', float),
+                                   ('ivar', float)])
+    data['lam'] = l
+    data['flam'] = f
+    data['ivar'] = ivar
+
+    result = None
+
+    for ix in np.ndindex(map_shape):
+        slc = [slice(None)] * len(cube_shape)
+        for i, a in enumerate(accum_axs):
+            slc[a] = slice(ix[i], ix[i] + 1)
+        result = slacc(data1_in=result, data2_in=data[slc].flatten(),
+                       data_out=result, join='lam', add='flam',
+                       weight='ivar')
+
+    lnew, fnew, ivarnew = result['lam'], result['flam'], result['ivar']
+
+    return lnew, fnew, ivarnew
+
+hdu_unit = lambda hdu: u.Unit(hdu.header['BUNIT'])
