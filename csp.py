@@ -143,6 +143,7 @@ class FSPS_SFHBuilder(object):
         self.sigma_gen()
         self.tau_V_gen()
         self.mu_gen()
+        self.anchor_tau_mu()
         self.logzsol_gen()
 
         # bursts
@@ -430,6 +431,16 @@ class FSPS_SFHBuilder(object):
         mu = pdf_mu.rvs(size=self.Nsubsample)
 
         self.FSPS_args.update({'mu': mu})
+
+    def anchor_tau_mu(self):
+        '''
+        enforce that the first subsample must be:
+         - 0 <= tau_V <= 0.2
+         - 0.15 <= mu <= 0.45
+        '''
+
+        self.FSPS_args['tau_V'][0] = self.RS.uniform(0., .2)
+        self.FSPS_args['mu'][0] = self.RS.uniform(.15, .45)
 
     def sigma_gen(self):
         if 'sigma' in self.override:
