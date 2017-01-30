@@ -36,6 +36,7 @@ class Cov_Obs(object):
     '''
 
     def __init__(self, cov, lllim, dlogl, nobj):
+        cov /= np.median(np.diag(cov))
         cov[cov > 100.] = 100.
         self.cov = cov
         self.nspec = len(cov)
@@ -141,6 +142,17 @@ class Cov_Obs(object):
         lllim = 10.**h['LOGL0']
         dlogl = h['DLOGL']
         nobj = h['NOBJ']
+        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+
+    @classmethod
+    def from_YMC_BOSS(cls, fname, logl0=3.5524001):
+        hdulist = fits.open(fname)
+        cov = hdulist[1].data
+        cov /= np.median(np.diag(cov))
+        h = hdulist[1].header
+        lllim = 10.**logl0
+        dlogl = 1.0e-4
+        nobj = 48000
         return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
 
     # =====
