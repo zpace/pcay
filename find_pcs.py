@@ -440,7 +440,7 @@ class StellarPop_PCA(object):
 
         return R
 
-    def _compute_i0_map(self, logl, z_map):
+    def _compute_i0_map(self, cov_logl, z_map):
         '''
         compute the index of some array corresponding to the given
             wavelength at some redshift
@@ -452,21 +452,22 @@ class StellarPop_PCA(object):
          - z_map: the 2D array of redshifts used to figure out the offset
         '''
 
-        tem_logl0 = self.logl[0]
-        tem_logl0_z = np.log10(
-            10.**(tem_logl0) * (1. + z_map))
-        cov_logl_tiled = np.tile(
-            logl[:, np.newaxis, np.newaxis],
-            z_map.shape)
+        l0_map = 10.**self.logl[0] * np.ones(z_map.shape)[None, ...]
+
+        rules = [dict(name='l', exponent=+1, array_in=l0_map)]
+        ll0z_map = np.log10(
+            ut.slrs(rules=rules, z_in=0., z_out=z_map)['l'])
 
         # find the index for the wavelength that best corresponds to
         # an appropriately redshifted wavelength grid
-        logl_diff = tem_logl0_z[np.newaxis, :, :] - cov_logl_tiled
+        ll_d = ll0_z_map - np.tile(cov_logl[..., None, None],
+                                   (1, ) + z_map.shape)
+
         i0_map = np.argmin(np.abs(logl_diff), axis=0)
 
         return i0_map
 
-    def compute_spec_cov_full(self, a_map, z_map, obs_logl, K_obs_):
+    def compute_spec_cov_full(self, snr_map, z_map, K_obs_):
         '''
         DO NOT USE!! Array output too large, raises MemoryError
         Additionally, this is not up-to-date with the iterative method,
@@ -496,86 +497,21 @@ class StellarPop_PCA(object):
         This raises MemoryError as float64
         '''
 
-        K_th = self.cov_th
-
-        # figure out where to start sampling the covariance matrix
+        q, nl = self.E.shape
 
         cov_logl = K_obs_.logl
-        nlam = K_th.shape[0]
-        tem_logl0 = self.logl[0]
+        I0 = self._compute_i0_map(z_map=z_map, cov_logl=cov_logl)
 
-        ix0 = self._compute_i0_map(
-            tem_logl0=tem_logl0, logl=cov_logl, z_map=z_map)
+        nl_ = np.arange(nl)[..., None, None]
+        I, J = np.meshgrid(nl_, nl_)
 
-        # dummy matrix for figuring out starting indices
-        N = np.arange(nlam)
-        I, J = np.meshgrid(N, N)
+        K_s = KK_l_obs[I0[..., None, None] + J, I0[..., None, None] + I]
+        K_s = K_s / a_map[..., None, None] + k_l_th[None, None, ...]
 
-        K_obs = K_obs_.cov[
-            ix0[..., None, None] + J, ix0[..., None, None] + I]
+        K_PC = E @ K_s @ E.T
+        K_PC = np.moveaxis(K_PC, [0, 1], [-2, -1])
 
-        K_full = a_map**2. * K_th + K_obs / a_map**2.
-
-        return K_full
-
-    def _compute_PC_cov_spax(self, K_spec):
-        '''
-        compute the PC covariance matrix for one spaxel
-
-        See Chen+'12 (Eq 11) for full expression
-        '''
-
-        E = self.PCs
-
-        return E.dot(K_spec).dot(E.T)
-
-    def _compute_spec_cov_spax(self, K_obs_, ivar, i0, a, snr, flux):
-        '''
-        compute the spectral covariance matrix for one spaxel
-
-        params:
-         - K_obs_: observational covariance object
-         - i0: starting index of observational covariance matrix
-         - a: mean flux-density of original spectrum
-         - snr: signal-to-noise of original spectrum, used to scale
-             the covariance matrix
-        '''
-
-        # make the theoretical cov matrix
-        # (should be relatively unimportant, <1% level)
-        # accounts for uncertainties in taking data to PCs
-        K_th = self.cov_th
-        nspec = K_th.shape[0]
-
-        # retrieve the right part of the full obs cov matrix
-        K_obs = K_obs_.cov[i0:(i0 + nspec), i0:(i0 + nspec)]
-        K_obs /= np.median(np.diag(K_obs))
-
-        # cov_obs assumes resids~1 ==> med. SNR~1
-        # to get the right order K_obs, multiply normed K_obs by
-        # squared reciprocal of desired SNR
-        f = (1. / snr)  # **2.
-        K_obs = (f * K_obs)
-
-        # and prepare to replace the diag of K_obs with var from datacube
-        # but, var is formulated for the original (non-normalized) data
-        # so it should be rescaled by its median (to bring to SNR~1),
-        # and then multiplied by f
-        # explicitly bad data has variance set to K_obs, since the robust
-        # PC projection takes out the effects of bad data
-
-        #var = (np.median(ivar) * f) / ivar
-        # what about a variance weighted against 1/f by the ivar?
-        # var[ivar == 0.] = .0001
-
-        #np.einsum('ii->i', K_obs)[:] = np.minimum(var, np.diag(K_obs))
-
-        K_full = K_obs + K_th
-
-        return K_full
-
-    def build_PC_cov_full_iter(self, a_map, z_map, obs_logl, K_obs_, ivar,
-                               snr_map, flux):
+    def build_PC_cov_full_iter(self, z_map, K_obs_, snr_map):
         '''
         for each spaxel, build a PC covariance matrix, and return in array
             of shape (q, q, n, n)
@@ -593,31 +529,34 @@ class StellarPop_PCA(object):
 
         E = self.PCs
         q, l = E.shape
-        mapshape = a_map.shape
+        mapshape = z_map.shape
 
         # build an array to hold covariances
         K_PC = 10. * np.ones((q, q) + mapshape)
 
+        cov_logl = K_obs_.logl
+
         # compute starting indices for covariance matrix
-        i0_map = self._compute_i0_map(logl=obs_logl, z_map=z_map)
+        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
 
         inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
+        nl = self.cov_th.shape[0]
+
+        isnr = 1. / snr_map
 
         for ind in inds:
             # handle bad (SNR < 1) spaxels
             if snr_map[ind[0], ind[1]] < 1.:
                 pass
             else:
-                K_spec = self._compute_spec_cov_spax(
-                    K_obs_=K_obs_, ivar=ivar[:, ind[0], ind[1]],
-                    i0=i0_map[ind[0], ind[1]], a=a_map[ind[0], ind[1]],
-                    flux=flux[:, ind[0], ind[1]], snr=snr_map[ind[0], ind[1]])
+                i0_ = i0_map[ind[0], ind[1]]
+                sl = [slice(i0_, i0_ + nl) for _ in range(2)]
+                K_spec = K_obs_.cov[sl]
 
-                K_PC[..., ind[0], ind[1]] = E.dot(K_spec).dot(E.T)
+                K_PC[..., ind[0], ind[1]] = (E @ K_spec @ E.T)
 
-                #print(np.median(np.sqrt(np.diag(K_PC[..., ind[0], ind[1]]))))
-
-        #print('ctr:', np.median(np.sqrt(np.diag(K_PC[..., 37, 37]))))
+        K_PC *= isnr[None, None, ...]
+        K_PC += (E @ self.cov_th @ E.T)[..., None, None]
 
         return K_PC
 
@@ -1583,9 +1522,7 @@ class PCA_Result(object):
         self.resid = np.abs((self.O_norm - self.O_recon) / self.O_norm)
 
         self.K_PC = pca.build_PC_cov_full_iter(
-            a_map=self.a_map, z_map=dered.z_map,
-            obs_logl=dered.drp_logl, K_obs_=self.K_obs, ivar=self.ivar.data,
-            snr_map=self.SNR_med, flux=self.O.data)
+            z_map=dered.z_map, K_obs_=self.K_obs, snr_map=self.SNR_med)
 
         self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
 
@@ -2477,7 +2414,9 @@ def setup_pca(base_dir, base_fname, fname=None,
             fname = 'pca.pkl'
 
     if redo:
-        K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
+        #K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
+        K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
+            'cov_obs_YMC_BOSS.fits')
         if src == 'FSPS':
             pca = StellarPop_PCA.from_FSPS(
                 K_obs=K_obs, base_dir=base_dir, base_fname=base_fname,
@@ -2621,11 +2560,11 @@ if __name__ == '__main__':
 
     mpl_v = 'MPL-5'
 
-    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8750. * u.AA}
+    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8800. * u.AA}
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=False, pkl=True, q=8, src='FSPS', nfiles=30,
+        redo=True, pkl=False, q=8, src='FSPS', nfiles=30,
         pca_kwargs=pca_kwargs)
 
     pca.make_PCs_fig()
