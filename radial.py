@@ -39,7 +39,8 @@ def radial_gp(r, q, q_unc, scale, q_bdy=[-np.inf, np.inf]):
     # of 10 variation in 1 Re, but may not need to
     kernel = Const(.2, (.01, 10.)) * RBF(1, (.5, 3.))
 
-    gp = GPR(kernel=kernel, alpha=nugget, n_restarts_optimizer=10)
+    gp = GPR(kernel=kernel, alpha=nugget, n_restarts_optimizer=10,
+             normalize_y=True)
     try:
         gp.fit(r, q_gp)
     except GPFitError:
