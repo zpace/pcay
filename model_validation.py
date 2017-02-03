@@ -4,6 +4,7 @@ import matplotlib.cm as mplcm
 
 from astropy import table as t
 from astropy.cosmology import WMAP9 as cosmo
+from astropy.visualization import hist as ahist
 from statsmodels.nonparametric.kernel_density import KDEMultivariate
 
 import os
@@ -47,20 +48,6 @@ class ModelDataCompare(object):
 
         self.Reff = np.concatenate([d.Reff.flatten() for d in dereds])
 
-        for p in ['Hdelta_A', 'Dn4000']:
-            # retrieve appropriate function from spec_tools
-            f = getattr(spec_tools, '{}_index'.format(p))
-
-            # compute index
-            setattr(
-                self, p,
-                np.concatenate(
-                    [f(l=self.pca.l.value,
-                       s=d.correct_and_match(
-                       template_logl=self.pca.logl,
-                       template_dlogl=self.pca.dlogl)[0]).flatten()
-                     for d in self.dereds]))
-
         PCA_Results = [
             find_pcs.PCA_Result(
                 pca=pca, dered=dered, K_obs=K_obs,
@@ -68,48 +55,105 @@ class ModelDataCompare(object):
                 norm_params={'norm': 'L2', 'soft': False}, figdir='.')
             for dered in dereds]
 
-        self.Dn4000_infer = np.concatenate(
-            [(r.pca.param_cred_intvl(
-                  qty='Dn4000', W=r.w)[0]).flatten()
-             for r in PCA_Results])
+        self.dir_meas = {}
+        self.ind_meas = {}
 
-        self.Hdelta_A_infer = np.concatenate(
-            [(r.pca.param_cred_intvl(
-                  qty='Hdelta_A', W=r.w)[0]).flatten()
-             for r in PCA_Results])
+        for p in ['Hdelta_A', 'Dn4000', 'Mg_2']:
+            # retrieve appropriate function from spec_tools
+            f = indices.StellarIndex(p)
+
+            self.dir_meas[p] = np.concatenate(
+                [f(self.pca.l.value, *d.correct_and_match(
+                     template_logl=self.pca.logl,
+                     template_dlogl=self.pca.dlogl)[:-1]).flatten()
+                 for d in self.dereds])
+
+            self.ind_meas[p] = np.concatenate(
+                [(r.pca.param_cred_intvl(qty=p, W=r.w)[0]).flatten()
+                 for r in PCA_Results])
 
         self.infer_badPDF = np.concatenate(
             [r.badPDF.flatten() for r in PCA_Results])
 
-        self.mask = np.logical_or.reduce(((self.rimgs < rimg_thr),
-                                          ~np.isfinite(self.Dn4000),
-                                          ~np.isfinite(self.Hdelta_A)))
+        self.mask = np.logical_or.reduce(
+            ((self.rimgs <= rimg_thr), ) + \
+            tuple(~np.isfinite(self.dir_meas[k]) for k in self.dir_meas))
+
+    def param_compare(self):
+
+        names = self.ind_meas.keys()
+        nparams = len(names)
+        ncols = int(np.sqrt(nparams))
+        n_in_last_row = nparams % ncols
+        nrows = (nparams // ncols)
+
+        # set up figure
+        # borders in inches
+        lborder, rborder = 0.3, 0.25
+        uborder, dborder = 0.5, 0.25
+        # subplot dimensions
+        spwid, sphgt = 1.75, 1.25
+        figwid, fighgt = (lborder + rborder + (ncols * spwid),
+                          uborder + dborder + (nrows * sphgt))
+
+        fig = plt.figure(figsize=(figwid, fighgt), dpi=300)
+        gs = gridspec.GridSpec(ncols, nrows,
+                               left=(lborder / figwid),
+                               right=1. - (rborder / figwid),
+                               bottom=(dborder / fighgt),
+                               top = 1. - (uborder / fighgt),
+                               wspace=.2, hspace=.15)
+
+        for i, n in enumerate(names):
+            # set up subplots
+            ax = fig.add_subplot(gs[i])
+
+            ahist(self.dir_meas[n], bins='knuth', ax=ax,
+                  c='k', label='MaNGA: direct')
+            ahist(self.ind_meas[n], bins='knuth', ax=ax,
+                  c='g', label='MaNGA: inferred')
+            ahist(self.pca.metadata[n], bins='knuth', ax=ax,
+                  c='b', label='CSP models')
+
+            locx = mticker.MaxNLocator(nbins=5, steps=[1, 2, 5, 10])
+            locy = mticker.MaxNLocator(nbins=5, steps=[1, 2, 5, 10])
+            locy_ = mticker.NullLocator()
+            ax.xaxis.set_major_locator(locx)
+            ax.yaxis.set_major_locator(locy)
+            ax_.yaxis.set_major_locator(locy_)
+
+            ax.tick_params(axis='both', color='k', labelsize=6)
+
+            if i == 0:
+                ax.legend(loc='best', prop={'size': 5})
+
+        return fig
 
     def D4000_Hd_fig(self):
         fig = plt.figure(figsize=(4, 4), dpi=300)
         ax = fig.add_subplot(111)
 
         # directly observed indices
-        data = np.column_stack(
-            [self.Dn4000, self.Hdelta_A + self.Hd_em_EWs])
-        data = data[~self.mask]
+        direct = np.column_stack(
+            [self.dir_meas['Dn4000'],
+             self.dir_meas['Hdelta_A'] + self.Hd_em_EWs])
+        direct = direct[~self.mask]
 
         # inferred indices
         infer = np.column_stack(
-            [self.Dn4000_infer, self.Hdelta_A_infer, self.infer_badPDF])
+            [self.ind_meas['Dn4000'], self.ind_meas['Hdelta_A'],
+             self.infer_badPDF])
         infer_good = infer[(~self.mask) * (~self.infer_badPDF)]
         infer_bad = infer[(~self.mask) * (self.infer_badPDF)]
 
-        KDE_data = KDEMultivariate(data=data, var_type='cc')
+        KDE_direct = KDEMultivariate(data=direct, var_type='cc')
         KDE_models = KDEMultivariate(data=[self.pca.metadata['Dn4000'],
                                            self.pca.metadata['Hdelta_A']],
                                      var_type='cc')
         KDE_infer_good = KDEMultivariate(
-            data=infer_good[:, :-1],
-            var_type='cc')
+            data=infer_good[:, :-1], var_type='cc')
         KDE_infer_bad = KDEMultivariate(
-            data=infer_bad[:, :-1],
-            var_type='cc')
+            data=infer_bad[:, :-1], var_type='cc')
 
         nx, ny = 200, 200
 
@@ -118,12 +162,12 @@ class ModelDataCompare(object):
 
         XXYY = np.column_stack((XX.flatten(), YY.flatten()))
 
-        ZZ_data = KDE_data.pdf(XXYY).reshape((nx, ny))
+        ZZ_direct = KDE_direct.pdf(XXYY).reshape((nx, ny))
         ZZ_models = KDE_models.pdf(XXYY).reshape((nx, ny))
         ZZ_infer_bad = KDE_infer_bad.pdf(XXYY).reshape((nx, ny))
         ZZ_infer_good = KDE_infer_good.pdf(XXYY).reshape((nx, ny))
 
-        ax.contour(XX, YY, ZZ_data, colors='k')
+        ax.contour(XX, YY, ZZ_direct, colors='k')
         ax.contour(XX, YY, ZZ_models, colors='b')
         ax.contour(XX, YY, ZZ_infer_bad, colors='r')
         ax.contour(XX, YY, ZZ_infer_good, colors='g')
@@ -149,17 +193,23 @@ class ModelDataCompare(object):
         fig = plt.figure(figsize=(4, 4), dpi=300)
         ax = fig.add_subplot(111)
 
-        data = np.column_stack(
-            [self.Dn4000, self.Hdelta_A + self.Hd_em_EWs])
-        data = data[~self.mask]
+        # directly observed indices
+        direct = np.column_stack(
+            [self.dir_meas['Dn4000'],
+             self.dir_meas['Hdelta_A'] + self.Hd_em_EWs])
+        direct = direct[~self.mask]
 
+        # inferred indices
         infer = np.column_stack(
-            [self.Dn4000_infer, self.Hdelta_A_infer, self.infer_badPDF])
-        infer = infer[~self.mask]
+            [self.ind_meas['Dn4000'], self.ind_meas['Hdelta_A'],
+             self.infer_badPDF])
+        infer_good = infer[(~self.mask) * (~self.infer_badPDF)]
+        infer_bad = infer[(~self.mask) * (self.infer_badPDF)]
 
-        KDE_models = KDEMultivariate(data=[self.pca.metadata['Dn4000'],
-                                           self.pca.metadata['Hdelta_A']],
-                                     var_type='cc')
+        KDE_models = KDEMultivariate(
+            data=[self.pca.metadata['Dn4000'],
+                  self.pca.metadata['Hdelta_A']],
+            var_type='cc')
 
         nx, ny = 200, 200
 
@@ -173,7 +223,7 @@ class ModelDataCompare(object):
         ax.contour(XX, YY, ZZ_models, colors='b', zorder=1)
 
         # raw index measurements
-        ax.scatter(data[:, 0], data[:, 1], facecolor='k',
+        ax.scatter(direct[:, 0], direct[:, 1], facecolor='k',
                    edgecolor='None', s=.5, alpha=.5, label='MaNGA: direct')
 
         # inferred index measurements
@@ -204,17 +254,17 @@ if __name__ == '__main__':
     mpl_v = 'MPL-5'
 
     pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_new', base_fname='CSPs',
-        redo=True, pkl=True, q=8, src='FSPS', nfiles=None)
+        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
+        redo=True, pkl=True, q=8, src='FSPS', nfiles=10)
 
-    gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704']
-    '''        '8134-12702', '8134-9102', '8135-12701', '8137-12703',
+    '''gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704'],
+            '8134-12702', '8134-9102', '8135-12701', '8137-12703',
             '8140-12703', '8140-12701', '8140-3701', '8243-12704']
             '8244-9101', '8247-9101', '8249-12703', '8249-12704',
             '8252-12705', '8252-6102', '8253-6104', '8254-3704', '8254-9101',
             '8257-12701', '8257-6101', '8257-6103', '8258-12704']'''
 
-    #gals = ['8253-6104']
+    gals = ['8253-6104']
 
     p_i = [g.split('-') for g in gals]
 
@@ -227,8 +277,11 @@ if __name__ == '__main__':
 
     MDComp = ModelDataCompare(pca=pca, dereds=dereds, rimgs=rimgs,
                               Hd_em_EWs=Hdelt_em_EWs, deps=deps, K_obs=K_obs)
-    mdcomp_fig = MDComp.D4000_Hd_scatter_fig()
-    mdcomp_fig.savefig('D4000-HdA_scatter.png', dpi=300)
+    #mdcomp_fig = MDComp.D4000_Hd_scatter_fig()
+    #mdcomp_fig.savefig('D4000-HdA_scatter.png', dpi=300)
 
-    mdcont_fig = MDComp.D4000_Hd_fig()
-    mdcont_fig.savefig('D4000-HdA_contours.png', dpi=300)
+    #mdcont_fig = MDComp.D4000_Hd_fig()
+    #mdcont_fig.savefig('D4000-HdA_contours.png', dpi=300)
+
+    param_compare_fig = MDComp.param_compare()
+    param_compare_fig.savefig('param_compare.png', dpi=300)
