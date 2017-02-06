@@ -23,6 +23,7 @@ import fsps
 import multiprocessing as mpc
 
 from spectrophot import lumspec2lsun
+import utils as ut
 
 zsol_padova = .019
 zs_padova = t.Table(
@@ -383,16 +384,27 @@ class FSPS_SFHBuilder(object):
         self.sfh_changeflag = True
 
     def logzsol_gen(self):
+
+        zsol = self.sp.zlegend / zsol_padova
+
+        d_ = stats.truncexpon(loc=0., scale=1., b=1.)
+        d_.random_state = self.RS
+
+        #
+
         if 'logzsol' in self.override:
             self.FSPS_args.update({'logzsol': self.override['logzsol']})
-        # 95% chance of linearly-uniform in (.15, 2.5)
-        elif self.RS.rand() < .95:
+        # 90% chance of linearly-uniform metallicity range
+        elif self.RS.rand() < .9:
             self.FSPS_args.update(
-                {'logzsol': np.log10(self.RS.uniform(.15, 2.5))})
-        # 5% chance of log-uniform in (.02)
+                {'logzsol': ut.lin_transform(
+                    r1=[0., 1.], r2=[zsol.max(), zsol.min()], x=d_.rvs())})
+        # 10% chance of logarithmically-uniform
         else:
             self.FSPS_args.update(
-                {'logzsol': self.RS.uniform(np.log10(.02), np.log10(.2))})
+                {'logzsol': self.RS.uniform(
+                    np.log10(zsol.min()), np.log10(zsol.max()))})
+
 
     def tau_V_gen(self):
         if 'tau_V' in self.override:
@@ -439,16 +451,23 @@ class FSPS_SFHBuilder(object):
          - 0.15 <= mu <= 0.45
         '''
 
-        self.FSPS_args['tau_V'][0] = self.RS.uniform(0., .2)
+        self.FSPS_args['tau_V'][0] = self.RS.uniform(0., .1)
         self.FSPS_args['mu'][0] = self.RS.uniform(.15, .45)
 
     def sigma_gen(self):
+
+        loc, scale = 10., 350.
+        trunc_abs = 350.
+        pdf_sigma = stats.truncexpon(b=((scale - loc) / trunc_abs),
+                                     loc=loc, scale=scale)
+        pdf_sigma.random_state = self.RS
+
         if 'sigma' in self.override:
             self.FSPS_args.update({'sigma': self.override['sigma']})
         elif 'sigma' in self.subsample_keys:
-            self.FSPS_args.update({'sigma': self.RS.uniform(10., 500., self.Nsubsample)})
+            self.FSPS_args.update({'sigma': pdf_sigma.rvs(size=self.Nsubsample)})
         else:
-            self.FSPS_args.update({'sigma': self.RS.uniform(10., 500.)})
+            self.FSPS_args.update({'sigma': pdf_sigma.rvs()})
 
     # =====
     # properties
@@ -746,6 +765,6 @@ if __name__ == '__main__':
 
     for i in range(name_ix0, name_ixf):
         sfh = make_spectral_library(
-            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA',
+            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA_new',
             n=nper, lllim=3800., lulim=9400., dlogl=1.0e-4)
         print('Done with {} of {}'.format(i + 1, name_ixf))
