@@ -19,6 +19,8 @@ from astropy import coordinates as coord
 import os
 import sys
 from warnings import warn, filterwarnings, catch_warnings, simplefilter
+import multiprocessing as mpc
+import ctypes
 
 # scipy
 from scipy.interpolate import interp1d
@@ -40,6 +42,7 @@ import radial
 from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
                          Spec2Phot, absmag_sun_band as Msun)
 import utils as ut
+import indices
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -246,7 +249,7 @@ class StellarPop_PCA(object):
     @classmethod
     def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=None,
                   log_params=['MWA', 'MLr', 'MLi', 'MLz', 'Fstar'],
-                  vel_params={}, **kwargs):
+                  vel_params={}, dlogl=1.0e-4, **kwargs):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
         '''
@@ -265,7 +268,6 @@ class StellarPop_PCA(object):
         hdulists = [fits.open(f) for f in f_names]
 
         l = hdulists[0][2].data * u.AA
-        dlogl = hdulists[0]['lam'].header['DLOGL']
 
         *_, specs = zip(*hdulists)
 
@@ -273,19 +275,31 @@ class StellarPop_PCA(object):
                          for f in f_names])
         spec = np.row_stack([s.data for s in specs])
 
-        meta['Dn4000'] = spec_tools.Dn4000_index(
-            l=l.value, s=spec.T[..., None]).flatten()
-        meta['Hdelta_A'] = spec_tools.Hdelta_A_index(
-            l=l.value, s=spec.T[..., None]).flatten()
-        meta = meta['MWA', 'Dn4000', 'Hdelta_A', 'logzsol', 'tau_V', 'mu',
-                    'MLr', 'MLi', 'MLz', 'sigma']
+        meta['Dn4000'] = indices.StellarIndex('Dn4000')(
+            l=l.value, flam=spec.T, axis=0).flatten()
+        meta['Hdelta_A'] = indices.StellarIndex('Hdelta_A')(
+            l=l.value, flam=spec.T, axis=0).flatten()
+        meta['Mg_2'] = indices.StellarIndex('Mg_2')(
+            l=l.value, flam=spec.T, axis=0).flatten()
+        meta['Ca_HK'] = indices.StellarIndex('Ca_HK')(
+            l=l.value, flam=spec.T, axis=0).flatten()
+        meta['Na_D'] = indices.StellarIndex('Na_D')(
+            l=l.value, flam=spec.T, axis=0).flatten()
+        meta['tau_V mu'] = meta['tau_V'] * meta['mu']
+        meta = meta['MWA', 'MLr', 'MLi', 'MLz', 'sigma',
+                    'logzsol', 'tau_V', 'mu', 'tau_V mu',
+                    'Dn4000', 'Hdelta_A', 'Mg_2', 'Ca_HK', 'Na_D']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
         meta['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
+        meta['Mg_2'].meta['TeX'] = r'Mg$_2$'
+        meta['Ca_HK'].meta['TeX'] = r'CaHK'
+        meta['Na_D'].meta['TeX'] = r'Na$_D$'
         meta['logzsol'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
         meta['tau_V'].meta['TeX'] = r'$\tau_V$'
         meta['mu'].meta['TeX'] = r'$\mu$'
+        meta['tau_V mu'].meta['TeX'] = r'$\tau_V ~ \mu$'
         meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
         meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
         meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
@@ -320,6 +334,13 @@ class StellarPop_PCA(object):
              if models_good[i]])
 
         spec, meta = spec[models_good, :], meta[models_good]
+
+        # interpolate models to desired l range
+        l_final = 10.**np.arange(np.log10(l.min()),
+                                 np.log10(l.max()), dlogl)
+        specs_interp = interp1d(x=l_full, y=specs, kind='linear', axis=-1)
+        specs = specs_interp(l_final)
+
         spec /= spec.max(axis=1)[..., None]
         spec = spec.astype(np.float32)
 
@@ -460,10 +481,10 @@ class StellarPop_PCA(object):
 
         # find the index for the wavelength that best corresponds to
         # an appropriately redshifted wavelength grid
-        ll_d = ll0_z_map - np.tile(cov_logl[..., None, None],
-                                   (1, ) + z_map.shape)
+        ll_d = ll0z_map - np.tile(cov_logl[..., None, None],
+                                  (1, ) + z_map.shape)
 
-        i0_map = np.argmin(np.abs(logl_diff), axis=0)
+        i0_map = np.argmin(np.abs(ll_d), axis=0)
 
         return i0_map
 
@@ -521,7 +542,6 @@ class StellarPop_PCA(object):
             too much memory!
 
         params:
-         - a_map: mean flux-density of original spectra (n by n)
          - z_map: spaxel redshift map (get this from an dered instance)
          - obs_logl: log-lambda vector (1D) of datacube
          - K_obs_: observational spectral covariance object
@@ -554,6 +574,41 @@ class StellarPop_PCA(object):
                 K_spec = K_obs_.cov[sl]
 
                 K_PC[..., ind[0], ind[1]] = (E @ K_spec @ E.T)
+
+        K_PC *= isnr[None, None, ...]
+        K_PC += (E @ self.cov_th @ E.T)[..., None, None]
+
+        return K_PC
+
+    def build_PC_cov_full_mpc(self, z_map, K_obs_, snr_map, nproc=8):
+        '''
+        use multiprocessing to build PC cov matrix
+        '''
+
+        q, l = self.PCs.shape
+        mapshape = z_map.shape
+
+        # build an array to hold covariances
+        K_PC = 10. * np.ones((q, q) + mapshape)
+
+        cov_logl = K_obs_.logl
+
+        # compute starting indices for covariance matrix
+        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
+
+        inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
+        nl = self.cov_th.shape[0]
+
+        isnr = 1. / snr_map
+
+        def args():
+            for ix in inds:
+                yield (K_obs.cov, snr_map[ix[0], ix[1]],
+                       i0_map[ix[0], ix[1]], self.PCs, nl, q)
+
+        pool = mpc.Pool(processes=nproc)
+        K_PC = pool.starmap(ut.PC_cov, args)
+        K_PC = np.moveaxis(np.reshape(K_PC, mapshape + (q, q)), [0, 1], [2, 3])
 
         K_PC *= isnr[None, None, ...]
         K_PC += (E @ self.cov_th @ E.T)[..., None, None]
@@ -943,7 +998,7 @@ class StellarPop_PCA(object):
 
         cyc_color = cycler(color=['#1b9e77','#d95f02','#7570b3'])
         # qualitative colorblind cycle from ColorBrewer
-        cyc_marker = cycler(marker=['o', '>', 's', 'd'])
+        cyc_marker = cycler(marker=['o', '>', 's', 'd', 'x'])
         cyc_prop = cyc_marker * cyc_color
 
         p, q = X.shape
@@ -953,7 +1008,7 @@ class StellarPop_PCA(object):
             TeX = self.metadata[k].meta['TeX']
             pc_num = np.linspace(1, q, q)
             fpc = F_PC_a[i, :]
-            ax.plot(pc_num, fpc, label=TeX, markersize=5,
+            ax.plot(pc_num, fpc, label=TeX, markersize=2,
                     **sty)
 
         ax.set_xlabel('PC')
@@ -1140,62 +1195,12 @@ class StellarPop_PCA(object):
         return 'PCA object: q = {0[0]}, l = {0[1]}'.format(self.PCs.shape)
 
 
-class Bandpass(object):
-
-    '''
-    class to manage bandpasses for multiple filters
-    '''
-
-    def __init__(self):
-        self.bands = []
-        self.interps = {}
-
-    def add_bandpass(self, name, lam, ff):
-        self.bands.append(name)
-        self.interps[name] = interp1d(
-            x=lam, y=ff, kind='linear', bounds_error=False, fill_value=0.)
-
-    def add_bandpass_from_ascii(self, fname, band_name):
-        table = t.Table.read(fname, format='ascii', names=['lam', 'ff'])
-        lam = np.array(table['lam'])
-        ff = np.array(table['ff'])
-        self.add_bandpass(name=band_name, lam=lam, ff=ff)
-
-    def __call__(self, flam, lam, units=None):
-        if not units:
-            units = {}
-            units['flam'] = u.Unit('Lsun AA-1')
-            units['lam'] = u.AA
-            units['dl'] = units['lam']
-
-        lgood = (lam >= 2000.) * (lam <= 15000.)
-        lam, flam = lam[lgood], flam[lgood]
-
-        flam_interp = interp1d(
-            x=lam, y=flam, kind='linear', bounds_error=False, fill_value=0.)
-        return {n: quad(
-            lambda l: interp(l) * flam_interp(l),
-            a=lam.min(), b=lam.max(), epsrel=1.0e-5,
-            limit=len(lam))[0] * (units['flam'] * units['lam']).to('Lsun')
-            for n, interp in self.interps.iteritems()}
-
-
-def setup_bandpasses():
-    BP = Bandpass()
-    BP.add_bandpass_from_ascii(
-        fname='filters/r_SDSS.res', band_name='r')
-    BP.add_bandpass_from_ascii(
-        fname='filters/i_SDSS.res', band_name='i')
-    BP.add_bandpass_from_ascii(
-        fname='filters/z_SDSS.res', band_name='z')
-    return BP
-
-
 class PCAError(Exception):
     '''
     general error for PCA
     '''
     pass
+
 
 class PCProjectionWarning(UserWarning):
     def __init__(self, *args, **kwargs):
@@ -1247,6 +1252,8 @@ class MaNGA_deredshift(object):
 
         self.S2P = Spec2Phot(lam=(self.drp_l * self.units['l']),
                              flam=(self.flux * self.units['flux']))
+
+        self.DONOTUSE = m.mask_from_maskbits(drp_hdulist['MASK'].data, [10])
 
     @classmethod
     def from_filenames(cls, drp_fname, dap_fname):
@@ -1308,8 +1315,8 @@ class MaNGA_deredshift(object):
         r_v = 3.1
         EBV = self.drp_hdulist[0].header['EBVGAL']
         f_mwcorr, ivar_mwcorr = ut.extinction_correct(
-            l=self.drp_l * u.AA, f=self.flux, ivar=self.ivar,
-            r_v=r_v, EBV=EBV)
+            l=self.drp_l * u.AA, f=self.flux,
+            ivar=self.ivar * (~self.DONOTUSE), r_v=r_v, EBV=EBV)
 
         # prepare to de-redshift
         # total redshift of each spaxel
@@ -1347,6 +1354,7 @@ class MaNGA_deredshift(object):
 
         self.flux_regr = f_rest[ixs, I, J]
         self.ivar_regr = ivar_rest[ixs, I, J]
+        self.DONOTUSE_regr = self.DONOTUSE[ixs, I, J]
 
         # also select from bad_logl_extent
         bad_logl_extent = bad_logl_extent[ixs, I, J]
@@ -1501,7 +1509,8 @@ class PCA_Result(object):
         self.O, self.ivar, mask_spax = dered.correct_and_match(
             template_logl=pca.logl, template_dlogl=None)
         self.mask_cube = dered.compute_eline_mask(
-            template_logl=pca.logl, template_dlogl=None)
+            template_logl=pca.logl, template_dlogl=None) * \
+            (~self.dered.DONOTUSE_regr)
 
         self.SNR_med = np.median(self.O * np.sqrt(self.ivar) + eps,
                                  axis=0)
@@ -1812,8 +1821,7 @@ class PCA_Result(object):
                              np.atleast_2d(a_map))
 
         K_PC = pca.build_PC_cov_full_iter(
-            a_map=a_map, z_map=z_map, obs_logl=self.dered.drp_logl,
-            K_obs_=self.K_obs, ivar=ivar.data, snr_map=SNR, flux=O.data)
+            z_map=z_map, K_obs_=self.K_obs, snr_map=SNR)
 
         P_PC = StellarPop_PCA.P_from_K_pinv(
             .1 * K_PC / np.median(np.diag(K_PC[..., 0, 0])))
@@ -2256,7 +2264,7 @@ class PCA_Result(object):
         fname = '{}-{}_radGP.png'.format(self.objname, qty)
         self.savefig(fig, fname, self.figdir, dpi=300)
 
-    def color_ML_plot(self, mlb='i', b1='g', b2='r', ax=None):
+    def color_ML_plot(self, mlb='i', b1='g', b2='r', ax=None, ptcol='r', lab=None):
         '''
         plot color vs mass-to-light ratio, colored by radius/Re
         '''
@@ -2280,13 +2288,14 @@ class PCA_Result(object):
         b2_img = self.dered.drp_hdulist['{}img'.format(b2)].data
         s = 10. * np.arctan(0.05 * b2_img / np.median(b2_img[b2_img > 0.]))
 
-        Reff = self.dered.Reff
-
         sc = ax.scatter(col.flatten(), ml.flatten(),
-                        facecolor=Reff, edgecolor='None', s=s.flatten(),
+                        facecolor=ptcol, edgecolor='None', s=s.flatten(),
                         label=self.objname)
-        cb = plt.colorbar(sc, ax=ax, pad=.025)
-        cb.set_label(r'$\frac{R}{R_e}$')
+
+        if type(ptcol) != str:
+            cb = plt.colorbar(sc, ax=ax, pad=.025)
+            if lab is not None:
+                cb.set_label(lab)
 
         # spectrophot.py includes conversion from many colors to many M/L ratios
         # from Bell et al -- of form $\log{(M/L)} = a_{\lambda} + b_{\lambda} * C$
@@ -2317,18 +2326,31 @@ class PCA_Result(object):
 
         return sc
 
-    def make_color_ML_fig(self, mlb='i', b1='g', b2='r'):
+    def make_color_ML_fig(self, mlb='i', b1='g', b2='i', colorby='R'):
 
         fig = plt.figure(figsize=(5, 5), dpi=300)
 
         ax = fig.add_subplot(111)
         ax.set_title(self.objname)
 
-        self.color_ML_plot(mlb, b1, b2)
+        if colorby == 'R':
+            ptcol = self.dered.Reff
+            ptcol_lab = r'$\frac{R}{R_e}$'
+            cbstr = 'R'
+        else:
+            if type(colorby) is str:
+                colorby = [colorby]
+            ptcol = np.prod(np.stack([self.pca.param_cred_intvl(
+                q, W=self.w, factor=None)[0] for q in colorby], axis=0), axis=0)
+            ptcol_lab = ''.join(
+                (self.pca.metadata[k].meta.get('TeX', k) for k in colorby))
+            cbstr = '-'.join(colorby)
+
+        self.color_ML_plot(mlb, b1, b2, ptcol=ptcol, lab=ptcol_lab)
 
         plt.tight_layout()
 
-        fname = '{}_colorML.png'.format(self.objname)
+        fname = '{}_C{}{}ML{}-{}.png'.format(self.objname, b1, b2, mlb, cbstr)
         self.savefig(fig, fname, self.figdir, dpi=300)
 
     def sample_diag(self, f=.1, w=None):
@@ -2386,6 +2408,41 @@ class PCA_Result(object):
         fig.suptitle(' '.join((self.dered.plateifu, 'good model fraction')))
 
         fname = '_'.join((self.dered.plateifu, 'goodmodels.png'))
+        self.savefig(fig, fname, self.figdir, dpi=300)
+
+    def compare_sigma(self):
+        fig = plt.figure(figsize=(4, 4), dpi=300)
+        ax = fig.add_subplot(111)
+
+        sig_dap = self.dered.dap_hdulist['STELLAR_SIGMA'].data
+        sig_dap_corr = self.dered.dap_hdulist['STELLAR_SIGMACORR'].data
+        sig_dap = np.sqrt(sig_dap**2. - sig_dap_corr**2.)
+        sig_dap_mask = self.dered.dap_hdulist['STELLAR_SIGMA_MASK'].data
+        sig_dap = np.ma.array(sig_dap, mask=sig_dap_mask).flatten()
+        sig_dap_unc = 1. / np.sqrt(
+            self.dered.dap_hdulist['STELLAR_SIGMA_IVAR'].data).flatten()
+
+        sig_pca, sig_pca_lunc, sig_pca_uunc, _ = self.pca.param_cred_intvl(
+            qty='sigma', W=self.w)
+        sig_pca = np.sqrt(sig_pca**2. - sig_dap_corr**2.)
+        sig_pca = np.ma.array(sig_pca, mask=self.mask_map).flatten()
+        sig_pca_unc = np.row_stack([sig_pca_lunc.flatten(),
+                                    sig_pca_uunc.flatten()])
+
+        s_ = np.linspace(10., 350., 10.)
+
+        ax.errorbar(x=sig_dap, y=sig_pca,
+                    xerr=sig_dap_unc, yerr=sig_pca_unc,
+                    capsize=0.5, capthick=0.25, linestyle='None', elinewidth=0.25,
+                    ecolor='k', color='k', ms=0.5, alpha=0.25, marker='.')
+
+        ax.plot(s_, s_, linestyle='--', marker='None', c='g')
+        ax.set_xlabel('DAP value')
+        ax.set_ylabel('PCA value')
+
+        fig.tight_layout()
+
+        fname = '_'.join((self.dered.plateifu, 'sigma_comp.png'))
         self.savefig(fig, fname, self.figdir, dpi=300)
 
     @property
@@ -2549,12 +2606,15 @@ def run_object(row, pca, force_redo=False):
 
     pca_res.make_qty_fig('Dn4000')
 
-    pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i')
+    pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='R')
+    pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='tau_V mu')
+
+    pca_res.compare_sigma()
 
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 0
+    howmany = 30
     cosmo = WMAP9
     warn_behav = 'ignore'
 
@@ -2562,9 +2622,10 @@ if __name__ == '__main__':
 
     pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8800. * u.AA}
 
+
     pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=True, pkl=False, q=8, src='FSPS', nfiles=30,
+        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA_new', base_fname='CSPs',
+        redo=True, pkl=False, q=10, src='FSPS', nfiles=30,
         pca_kwargs=pca_kwargs)
 
     pca.make_PCs_fig()
@@ -2580,9 +2641,9 @@ if __name__ == '__main__':
 
     with catch_warnings():
         simplefilter(warn_behav)
-        pca_res = run_object(row=row, pca=pca, force_redo=True)
+        pca_res = run_object(row=row, pca=pca, force_redo=False)
 
-    #'''
+
     drpall = drpall[drpall['ifudesignsize'] > 0.]
     drpall = m.shuffle_table(drpall)
     drpall = drpall[:howmany]
@@ -2594,11 +2655,11 @@ if __name__ == '__main__':
             try:
                 with catch_warnings():
                     simplefilter(warn_behav)
-                    run_object(row=row, pca=pca, force_redo=True)
+                    run_object(row=row, pca=pca, force_redo=False)
             except Exception as e:
                 print('ERROR: {}'.format(plateifu))
                 print(e)
                 continue
             finally:
                 bar.update()
-    #'''
+

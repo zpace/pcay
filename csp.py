@@ -144,7 +144,7 @@ class FSPS_SFHBuilder(object):
         self.sigma_gen()
         self.tau_V_gen()
         self.mu_gen()
-        self.anchor_tau_mu()
+        #self.anchor_tau_mu()
         self.logzsol_gen()
 
         # bursts
@@ -395,10 +395,10 @@ class FSPS_SFHBuilder(object):
         if 'logzsol' in self.override:
             self.FSPS_args.update({'logzsol': self.override['logzsol']})
         # 90% chance of linearly-uniform metallicity range
-        elif self.RS.rand() < .9:
+        elif self.RS.rand() < .8:
             self.FSPS_args.update(
-                {'logzsol': ut.lin_transform(
-                    r1=[0., 1.], r2=[zsol.max(), zsol.min()], x=d_.rvs())})
+                {'logzsol': np.log10(ut.lin_transform(
+                    r1=[0., 1.], r2=[zsol.max(), zsol.min()], x=d_.rvs()))})
         # 10% chance of logarithmically-uniform
         else:
             self.FSPS_args.update(
@@ -410,8 +410,8 @@ class FSPS_SFHBuilder(object):
         if 'tau_V' in self.override:
             self.FSPS_args.update({'tau_V': self.override['tau_V']})
 
-        mu_tau_V = 1.2
-        std_tau_V = 3.
+        mu_tau_V = 1.
+        std_tau_V = 1.75
         lclip_tau_V, uclip_tau_V = 0., 7.
         a_tau_V = (lclip_tau_V - mu_tau_V) / std_tau_V
         b_tau_V = (uclip_tau_V - mu_tau_V) / std_tau_V
@@ -647,11 +647,7 @@ def make_csp(sfh):
     return spec, tab, sfh.FSPS_args
 
 
-def make_spectral_library(fname, sfh, loc='CSPs', n=1, lllim=3700., lulim=8900.,
-                          dlogl=1.0e-4):
-
-    l_full = sfh.sp.wavelengths
-    l_final = 10.**np.arange(np.log10(lllim), np.log10(lulim), dlogl)
+def make_spectral_library(fname, sfh, loc='CSPs', n=1, lllim=3500., lulim=10000.):
 
     specs, metadata, dicts = zip(*[make_csp(sfh) for _ in range(n)])
 
@@ -662,17 +658,15 @@ def make_spectral_library(fname, sfh, loc='CSPs', n=1, lllim=3700., lulim=8900.,
     # assemble the full table & spectra
     metadata = t.vstack(metadata)
     specs = np.row_stack(specs)
+    lam = sfh.sp.wavelengths
 
     # find luminosity
-    Lr = lumspec2lsun(lam=l_full * u.AA,
+    Lr = lumspec2lsun(lam=lam * u.AA,
                       Llam=specs * u.Unit('Lsun/AA'), band='r')
-    Li = lumspec2lsun(lam=l_full * u.AA,
+    Li = lumspec2lsun(lam=lam * u.AA,
                       Llam=specs * u.Unit('Lsun/AA'), band='i')
-    Lz = lumspec2lsun(lam=l_full * u.AA,
+    Lz = lumspec2lsun(lam=lam * u.AA,
                       Llam=specs * u.Unit('Lsun/AA'), band='z')
-
-    specs_interp = interp1d(x=l_full, y=specs, kind='linear', axis=-1)
-    specs_reduced = specs_interp(l_final)
 
     MLr, MLi, MLz = (metadata['mstar'] / Lr,
                      metadata['mstar'] / Li,
@@ -683,10 +677,9 @@ def make_spectral_library(fname, sfh, loc='CSPs', n=1, lllim=3700., lulim=8900.,
     # initialize FITS HDUList
     hdulist = fits.HDUList(
         [fits.PrimaryHDU(), fits.BinTableHDU(np.array(metadata)),
-         fits.ImageHDU(l_final), fits.ImageHDU(specs_reduced)])
+         fits.ImageHDU(lam), fits.ImageHDU(specs)])
     hdulist[1].header['EXTNAME'] = 'meta'
     hdulist[2].header['EXTNAME'] = 'lam'
-    hdulist[2].header['DLOGL'] = dlogl
     hdulist[3].header['EXTNAME'] = 'flam'
     '''
     extension list:
@@ -765,6 +758,6 @@ if __name__ == '__main__':
 
     for i in range(name_ix0, name_ixf):
         sfh = make_spectral_library(
-            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA_new',
-            n=nper, lllim=3800., lulim=9400., dlogl=1.0e-4)
+            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA',
+            n=nper, lllim=3500., lulim=10000.)
         print('Done with {} of {}'.format(i + 1, name_ixf))
