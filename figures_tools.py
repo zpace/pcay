@@ -2,6 +2,7 @@ import os
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import gridspec
 from copy import copy
 
 from astropy.wcs import WCS
@@ -59,3 +60,56 @@ def annotate_badPDF(ax, mask):
 
     ax.scatter(XX, YY, facecolor='r', edgecolor='None', s=5, marker='.',
                zorder=10)
+
+def gen_gridspec_fig(N, add_row=False, spsize=(1.75, 1.25),
+                     border=(0.3, 0.25, 0.3, 0.25), space=(0.5, 0.5)):
+    '''
+    generate a subplot grid with gridspec
+
+    params:
+        - N: # of subplots in the basic grid
+        - add_row: add an extra row
+        - spsize: dimensions (width, height) of each
+                  subplot element in grid (in)
+        - border: (l, r, u, d) border widths (in)
+        - space: (w, h) spacing between subplots (in)
+    '''
+
+    ncols = int(np.sqrt(N))
+
+    if ncols < 2:
+        ncols = 2
+
+    n_in_last_row = N % ncols
+    nrows = (N // ncols) + ((n_in_last_row > 0) * 1) + (add_row * 1)
+
+    # subplot size (w, h)
+    spw, sph = spsize
+
+    # borders
+    bl, br, bu, bd = border
+
+    # total figure dimensions
+    # includes 2 borders, spacing, subplots
+    wsp, hsp = space
+    figw = bl + br + ((ncols - 1) * wsp) + (ncols * spw)
+    figh = bu + bd + ((nrows - 1) * hsp) + (nrows * sph)
+
+    # compute spacing (gridspec takes in fraction of subplot size)
+    wspace = wsp / spw
+    hspace = hsp / sph
+
+    # compute borders (gridspec takes in fraction of fig size)
+    right = 1. - (br / figw)
+    left = bl / figw
+    bottom = bd / figh
+    top = 1. - (bu / figh)
+
+    # instantiate figure
+    fig = plt.figure(figsize=(figw, figh), dpi=300)
+
+    gs = gridspec.GridSpec(ncols, nrows, left=left, right=right,
+                           bottom=bottom, top=top,
+                           wspace=wspace, hspace=hspace)
+
+    return gs, fig
