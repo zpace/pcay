@@ -91,7 +91,7 @@ class StellarPop_PCA(object):
             l_good *= (l <= lulim)
 
         self.l = l[l_good]
-        self.logl = np.log10(l.to('AA').value)[l_good]
+        self.logl = np.log10(self.l.to('AA').value)
         if not dlogl:
             dlogl = np.round(np.mean(self.logl[1:] - self.logl[:-1]), 8)
 
@@ -261,6 +261,11 @@ class StellarPop_PCA(object):
         d_names = glob(os.path.join(base_dir,'{}_*.pkl'.format(base_fname)))
         f_names = glob(os.path.join(base_dir,'{}_*.fits'.format(base_fname)))
 
+        # filter out test data
+        istest = ['test' in n for n in d_names]
+        d_names = [n for n, t in zip(d_names, istest) if not t]
+        f_names = [n for n, t in zip(f_names, istest) if not t]
+
         if nfiles is not None:
             d_names = d_names[:nfiles]
             f_names = f_names[:nfiles]
@@ -268,6 +273,7 @@ class StellarPop_PCA(object):
         hdulists = [fits.open(f) for f in f_names]
 
         l = hdulists[0][2].data * u.AA
+        logl = np.log10(l.value)
 
         *_, specs = zip(*hdulists)
 
@@ -279,21 +285,23 @@ class StellarPop_PCA(object):
             l=l.value, flam=spec.T, axis=0).flatten()
         meta['Hdelta_A'] = indices.StellarIndex('Hdelta_A')(
             l=l.value, flam=spec.T, axis=0).flatten()
-        meta['Mg_2'] = indices.StellarIndex('Mg_2')(
+        meta['Mg_b'] = indices.StellarIndex('Mg_b')(
             l=l.value, flam=spec.T, axis=0).flatten()
         meta['Ca_HK'] = indices.StellarIndex('Ca_HK')(
             l=l.value, flam=spec.T, axis=0).flatten()
         meta['Na_D'] = indices.StellarIndex('Na_D')(
             l=l.value, flam=spec.T, axis=0).flatten()
         meta['tau_V mu'] = meta['tau_V'] * meta['mu']
-        meta = meta['MWA', 'MLr', 'MLi', 'MLz', 'sigma',
-                    'logzsol', 'tau_V', 'mu', 'tau_V mu',
-                    'Dn4000', 'Hdelta_A', 'Mg_2', 'Ca_HK', 'Na_D']
+        meta = meta['MWA', 'sigma','logzsol',
+                    'MLr', 'MLi', 'MLz',
+                    'tau_V', 'mu', 'tau_V mu',
+                    'Dn4000', 'Hdelta_A', 'Mg_b',
+                    'Ca_HK', 'Na_D']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
         meta['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
-        meta['Mg_2'].meta['TeX'] = r'Mg$_2$'
+        meta['Mg_b'].meta['TeX'] = r'Mg$_b$'
         meta['Ca_HK'].meta['TeX'] = r'CaHK'
         meta['Na_D'].meta['TeX'] = r'Na$_D$'
         meta['logzsol'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
@@ -336,10 +344,11 @@ class StellarPop_PCA(object):
         spec, meta = spec[models_good, :], meta[models_good]
 
         # interpolate models to desired l range
-        l_final = 10.**np.arange(np.log10(l.min()),
-                                 np.log10(l.max()), dlogl)
-        specs_interp = interp1d(x=l_full, y=specs, kind='linear', axis=-1)
-        specs = specs_interp(l_final)
+        logl_final = np.arange(np.log10(l.value.min()),
+                               np.log10(l.value.max()), dlogl)
+        l_final = 10.**logl_final
+        specs_interp = interp1d(x=logl, y=spec, kind='linear', axis=-1)
+        spec = specs_interp(logl_final)
 
         spec /= spec.max(axis=1)[..., None]
         spec = spec.astype(np.float32)
@@ -347,12 +356,77 @@ class StellarPop_PCA(object):
         for k in meta.colnames:
             meta[k] = meta[k].astype(np.float32)
 
-        return cls(l=l, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
+        return cls(l=l_final * l.unit, trn_spectra=spec, gen_dicts=dicts, metadata=meta,
                    K_obs=K_obs, dlogl=None, src='FSPS', **kwargs)
 
     # =====
     # methods
     # =====
+
+    def xval(self, specs, qmax=30):
+        # reconstruction error
+        qs = np.arange(1, qmax + 1, 1)
+        err = np.empty_like(qs, dtype=float)
+
+        trn = self.trn_spectra
+
+        # normalize mean of each training spectrum to 1
+        a = np.mean(trn, axis=1, keepdims=True)
+        normed_trn = trn / a
+
+        # find the average spectrum and subtract it from each training spectrum
+        M = np.mean(normed_trn, axis=0, keepdims=True)
+        S = normed_trn - M
+
+        for i, q in enumerate(qs):
+            PCs, PVE = self.PCA(S, q)
+
+            # normalize mean again
+            a_ = np.mean(specs, axis=1, keepdims=True)
+            specs_ = (specs / a_)
+
+            # PC amplitudes
+            A = (specs_ - M).dot(PCs.T)
+            # reconstructed spectra
+            R = a_ * (PCs.T.dot(A.T) + M.T).T
+
+            # fractional reconstruction error
+            e = np.mean(np.abs((specs - R) / specs))
+
+            err[i] = e
+
+        return qs, err
+
+    def xval_fromfile(self, fname, qmax=50, target=.01):
+        hdulist = fits.open(fname)
+
+        specs_full = hdulist['flam'].data
+        l_full = hdulist['lam'].data
+        logl_full = np.log10(l_full)
+
+        specs_interp = interp1d(x=logl_full, y=specs_full, kind='linear', axis=-1)
+        specs = specs_interp(self.logl)
+
+        qs, err = self.xval(specs, qmax)
+
+        fig = plt.figure(figsize=(4, 4), dpi=300)
+        ax = fig.add_subplot(111)
+        ax.plot(qs, err)
+        ax.set_yscale('log')
+
+        loc = mticker.MaxNLocator(nbins=5, integer=True, steps=[1, 2, 5, 10])
+        ax.xaxis.set_major_locator(loc)
+
+        ax.set_xlabel('Number of PCs')
+        ax.set_ylabel('Frac. Recon. Err.')
+        plt.tight_layout()
+
+        # return smallest q value for which target FRE is reached
+        q = np.min(qs[err < target])
+
+        fig.savefig('xval_test.png')
+
+        return q
 
     def run_pca_models(self, q):
         '''
@@ -923,28 +997,7 @@ class StellarPop_PCA(object):
         # how many params are there?
         # try to make a square grid, but if impossible, add another row
         nparams = self.metadata_a.shape[1]
-        ncols = int(np.sqrt(nparams))
-        n_in_last_row = nparams % ncols
-        nrows = (nparams // ncols)
-        if n_in_last_row != 0:
-            nrows += 1
-
-        # set up figure
-        # borders in inches
-        lborder, rborder = 0.3, 0.25
-        uborder, dborder = 0.5, 0.25
-        # subplot dimensions
-        spwid, sphgt = 1.75, 1.25
-        figwid, fighgt = (lborder + rborder + (ncols * spwid),
-                          uborder + dborder + (nrows * sphgt))
-
-        fig = plt.figure(figsize=(figwid, fighgt), dpi=300)
-        gs = gridspec.GridSpec(ncols, nrows,
-                               left=(lborder / figwid),
-                               right=1. - (rborder / figwid),
-                               bottom=(dborder / fighgt),
-                               top = 1. - (uborder / fighgt),
-                               wspace=.2, hspace=.15)
+        gs, fig = figures_tools.gen_gridspec_fig(N=nparams)
 
         # regression result
         A = self.find_PC_param_coeffs()
@@ -1230,7 +1283,7 @@ class MaNGA_deredshift(object):
         self.vel_ivar = dap_hdulist['STELLAR_VEL_IVAR'].data * u.Unit(
             'km-2s2')
 
-        self.z = drpall_row['nsa_z'][0]
+        self.z = drpall_row['nsa_z']
 
         # mask all the spaxels that have high stellar velocity uncertainty
         self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
@@ -1256,38 +1309,18 @@ class MaNGA_deredshift(object):
         self.DONOTUSE = m.mask_from_maskbits(drp_hdulist['MASK'].data, [10])
 
     @classmethod
-    def from_filenames(cls, drp_fname, dap_fname):
-        drp_hdulist = fits.open(drp_fname)
-        dap_hdulist = fits.open(dap_fname)
-        return cls(drp_hdulist, dap_hdulist)
-
-    @classmethod
     def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC', **kwargs):
         '''
         load a MaNGA galaxy from a plateifu specification
         '''
-        drp_fname = os.path.join(
-            mangarc.manga_data_loc[MPL_v], 'drp/', str(plate), 'stack/',
-            '-'.join(('manga', str(plate), str(ifu), 'LOGCUBE.fits.gz')))
-        dap_fname = os.path.join(
-            mangarc.manga_data_loc[MPL_v], 'dap/', kind, str(plate), str(ifu),
-            '-'.join(('manga', str(plate), str(ifu), 'MAPS',
-                      '{}.fits.gz'.format(kind))))
-        drpall_fname = os.path.join(
-            mangarc.manga_data_loc[MPL_v],
-            'drpall-{}.fits'.format(m.MPL_versions[MPL_v]))
 
-        if not os.path.isfile(drp_fname):
-            raise m.DRP_IFU_DNE_Error(plate, ifu)
-        if not os.path.isfile(dap_fname):
-            raise m.DAP_IFU_DNE_Error(plate, ifu, kind)
+        plate, ifu = str(plate), str(ifu)
 
-        plateifu = '{}-{}'.format(plate, ifu)
-        drpall = t.Table.read(drpall_fname)
-        row = drpall[drpall['plateifu'] == plateifu]
+        drpall = m.load_drpall(MPL_v, index='plateifu')
+        row = drpall.loc['{}-{}'.format(plate, ifu)]
 
-        drp_hdulist = fits.open(drp_fname)
-        dap_hdulist = fits.open(dap_fname)
+        drp_hdulist = m.load_drp_logcube(plate, ifu, MPL_v)
+        dap_hdulist = m.load_dap_maps(plate, ifu, MPL_v, kind)
         return cls(drp_hdulist, dap_hdulist, row, **kwargs)
 
     def correct_and_match(self, template_logl, template_dlogl=None):
@@ -2461,7 +2494,7 @@ class PCA_Result(object):
 
 
 def setup_pca(base_dir, base_fname, fname=None,
-              redo=True, pkl=True, q=7, src='FSPS', nfiles=15,
+              redo=True, pkl=True, q=7, nfiles=5, fre_target=.005,
               pca_kwargs={}):
     import pickle
     if (fname is None):
@@ -2474,26 +2507,29 @@ def setup_pca(base_dir, base_fname, fname=None,
         #K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
             'cov_obs_YMC_BOSS.fits')
-        if src == 'FSPS':
-            pca = StellarPop_PCA.from_FSPS(
-                K_obs=K_obs, base_dir=base_dir, base_fname=base_fname,
-                nfiles=nfiles, **pca_kwargs)
-        elif src == 'YMC':
-            pca = StellarPop_PCA.from_YMC(
-                base_dir=mangarc.BC03_CSP_loc,
-                lib_para_file='lib_para',
-                form_file='input_model_para_for_paper',
-                spec_file_base='modelspec', K_obs=K_obs)
-        else:
-            raise ValueError('invalid source')
-        pca.run_pca_models(q=q)
-
+        pca = StellarPop_PCA.from_FSPS(
+            K_obs=K_obs, base_dir=base_dir, base_fname=base_fname,
+            nfiles=nfiles, **pca_kwargs)
         if pkl:
             pickle.dump(pca, open(fname, 'wb'))
 
     else:
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         pca = pickle.load(open(fname, 'rb'))
+
+    if q == 'Auto':
+        q_opt = pca.xval_fromfile(
+            fname=os.path.join(base_dir, '{}_test.fits'.format(base_fname)),
+            qmax=50, target=fre_target)
+        print('Optimal number of PCs:', q_opt)
+        pca.run_pca_models(q_opt)
+    else:
+        pca.run_pca_models(q)
+
+    pca.make_PCs_fig()
+    pca.make_PC_param_regr_fig()
+    pca.make_params_vs_PCs_fig()
+    pca.make_PC_param_importance_fig()
 
     return pca, K_obs
 
@@ -2571,13 +2607,8 @@ def run_object(row, pca, force_redo=False):
 
     dered = MaNGA_deredshift.from_plateifu(
         plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
-    obj = drpall[drpall['plateifu'] == plateifu]
 
-    z_dist = m.get_drpall_val(
-        os.path.join(
-            mangarc.manga_data_loc[mpl_v],
-            'drpall-{}.fits'.format(m.MPL_versions[mpl_v])),
-        ['nsa_zdist'], plateifu)[0]['nsa_zdist']
+    z_dist = row['nsa_zdist']
 
     figdir = os.path.join('results', plateifu)
 
@@ -2622,28 +2653,21 @@ if __name__ == '__main__':
 
     pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8800. * u.AA}
 
-
     pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA_new', base_fname='CSPs',
-        redo=True, pkl=False, q=10, src='FSPS', nfiles=30,
+        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
+        redo=True, pkl=False, q='Auto', fre_target=.005, nfiles=30,
         pca_kwargs=pca_kwargs)
 
-    pca.make_PCs_fig()
-    pca.make_PC_param_regr_fig()
-    pca.make_params_vs_PCs_fig()
-    pca.make_PC_param_importance_fig()
+    drpall = m.load_drpall(mpl_v, index='plateifu')
 
-    drpall_path = os.path.join(mangarc.manga_data_loc[mpl_v],
-                               'drpall-{}.fits'.format(m.MPL_versions[mpl_v]))
-    drpall = t.Table.read(drpall_path)
+    row = drpall.loc['8083-12704']
 
-    row = drpall[drpall['plateifu'] == '8083-12704'][0]
-
+    '''
     with catch_warnings():
         simplefilter(warn_behav)
         pca_res = run_object(row=row, pca=pca, force_redo=False)
-
-
+    '''
+    '''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
     drpall = m.shuffle_table(drpall)
     drpall = drpall[:howmany]
@@ -2662,4 +2686,4 @@ if __name__ == '__main__':
                 continue
             finally:
                 bar.update()
-
+    '''
