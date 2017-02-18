@@ -1309,18 +1309,40 @@ class MaNGA_deredshift(object):
         self.DONOTUSE = m.mask_from_maskbits(drp_hdulist['MASK'].data, [10])
 
     @classmethod
-    def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC', **kwargs):
+    def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC', row=None,
+                      **kwargs):
         '''
         load a MaNGA galaxy from a plateifu specification
         '''
 
         plate, ifu = str(plate), str(ifu)
 
-        drpall = m.load_drpall(MPL_v, index='plateifu')
-        row = drpall.loc['{}-{}'.format(plate, ifu)]
+        if row is None:
+            drpall = m.load_drpall(MPL_v, index='plateifu')
+            row = drpall.loc['{}-{}'.format(plate, ifu)]
 
         drp_hdulist = m.load_drp_logcube(plate, ifu, MPL_v)
         dap_hdulist = m.load_dap_maps(plate, ifu, MPL_v, kind)
+        return cls(drp_hdulist, dap_hdulist, row, **kwargs)
+
+    @classmethod
+    def from_fakedata(cls, plate, ifu, MPL_v, basedir='fakedata', row=None,
+                      kind='SPX-GAU-MILESHC', **kwargs):
+        '''
+        load fake data based on a particular already-observed galaxy
+        '''
+
+        plate, ifu = str(plate), str(ifu)
+
+        if row is None:
+            drpall = m.load_drpall(MPL_v, index='plateifu')
+            row = drpall.loc['{}-{}'.format(plate, ifu)]
+
+        drp_hdulist = fits.open(
+            os.path.join(basedir, '{}-{}_drp.fits'.format(plate, ifu)))
+        dap_hdulist = fits.open(
+            os.path.join(basedir, '{}-{}_dap.fits'.format(plate, ifu)))
+
         return cls(drp_hdulist, dap_hdulist, row, **kwargs)
 
     def correct_and_match(self, template_logl, template_dlogl=None):
@@ -1524,7 +1546,8 @@ class PCA_Result(object):
     store results of PCA for one galaxy using this
     '''
 
-    def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}, figdir='.'):
+    def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}, figdir='.',
+                 truth=None):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
@@ -1532,6 +1555,7 @@ class PCA_Result(object):
         self.z = z
         self.norm_params = norm_params
         self.K_obs = K_obs
+        self.truth = truth  #  known-truth parameters for fake data
 
         # where to save all figures
         self.figdir = figdir
@@ -2057,7 +2081,11 @@ class PCA_Result(object):
         ax_.yaxis.set_major_locator(plt.NullLocator())
 
         # value of best-fit spectrum
-        ax.axvline(q[np.argmax(w)], color='c', linewidth=0.5)
+        ax.axvline(q[np.argmax(w)], color='c', linewidth=0.5, label='best')
+
+        # if we're using fake data, we have some ground truth!
+        if self.truth is not None:
+            ax.axvline(self.truth[qty], color='r', linewidth=0.5, label='truth')
 
         ax.set_xlabel(TeX)
 
@@ -2596,7 +2624,8 @@ def get_col_metadata(col, k, notfound=''):
 
     return res
 
-def run_object(row, pca, force_redo=False):
+def run_object(row, pca, force_redo=False, fake=False,
+               truth_fname=None):
 
     plateifu = row['plateifu']
 
@@ -2605,16 +2634,26 @@ def run_object(row, pca, force_redo=False):
 
     plate, ifu = plateifu.split('-')
 
-    dered = MaNGA_deredshift.from_plateifu(
-        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v)
+    if fake:
+        dered = MaNGA_deredshift.from_fakedata(
+            plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
+            basedir='fakedata', row=row)
+        figdir = os.path.join('fakedata', 'results', plateifu)
+        truth_fname = os.path.join(
+            'fakedata', '{}_truth.fits'.format(plateifu))
+        truth = t.Table.read(truth_fname)[0]
+    else:
+        dered = MaNGA_deredshift.from_plateifu(
+            plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row)
+        figdir = os.path.join('results', plateifu)
+        truth = None
 
     z_dist = row['nsa_zdist']
 
-    figdir = os.path.join('results', plateifu)
-
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
-        norm_params={'norm': 'L2', 'soft': False}, figdir=figdir)
+        norm_params={'norm': 'L2', 'soft': False}, figdir=figdir,
+        truth=truth)
 
     pca_res.make_sample_diag_fig()
 
@@ -2655,18 +2694,18 @@ if __name__ == '__main__':
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=True, pkl=False, q='Auto', fre_target=.005, nfiles=30,
+        redo=True, pkl=False, q=10, fre_target=.005, nfiles=30,
         pca_kwargs=pca_kwargs)
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
 
     row = drpall.loc['8083-12704']
 
-    '''
     with catch_warnings():
         simplefilter(warn_behav)
-        pca_res = run_object(row=row, pca=pca, force_redo=False)
-    '''
+        pca_res = run_object(row=row, pca=pca, force_redo=False,
+                             fake=True)
+
     '''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
     drpall = m.shuffle_table(drpall)

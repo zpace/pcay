@@ -8,6 +8,9 @@ from speclite import accumulate as slacc
 
 from scipy.ndimage.filters import gaussian_filter1d as gf
 
+import multiprocessing as mpc
+import ctypes
+
 ln10 = np.log(10.)
 
 class ArrayPartitioner(object):
@@ -104,7 +107,17 @@ def lin_transform(r1, r2, x):
     transform x from range 1 to range 2
     '''
 
-    return (((x - r1[0]) * (r2[1] - r2[0])) / (r1[1] - r1[0])) + r2[0]
+    # point-slope method
+    d1 = r1[1] - r1[0]
+    d2 = r2[1] - r2[0]
+    px, py = r1[0], r2[0]
+    m = d2 / d1
+
+    return (x - px) * m + py
+
+def determine_dlogl(logl):
+    dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
+    return dlogl
 
 def gaussian_filter(spec, sig):
     '''
@@ -222,7 +235,7 @@ def add_redshifts(zs, axis=0):
     add redshifts in an array-like, along an axis
     '''
 
-    z_tot = np.cumprod((1. + zs), axis=axis) - 1.
+    z_tot = np.prod((1. + zs), axis=axis) - 1.
     return z_tot
 
 def redshift(l, f, ivar, **kwargs):
@@ -271,5 +284,13 @@ def coadd(l, f, ivar, l_ax=0, accum_axs=(1, 2), **kwargs):
     lnew, fnew, ivarnew = result['lam'], result['flam'], result['ivar']
 
     return lnew, fnew, ivarnew
+
+def PC_cov(cov, snr, i0, E, nl, q):
+    if snr < 1.:
+        return 10. * np.ones((q, q))
+    else:
+        sl = [slice(i0, i0 + nl) for _ in range(2)]
+        return E @ (cov[i0 : i0 + nl, i0 : i0 + nl]) @ E.T
+
 
 hdu_unit = lambda hdu: u.Unit(hdu.header['BUNIT'])
