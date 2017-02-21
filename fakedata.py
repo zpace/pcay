@@ -106,7 +106,7 @@ class FakeData(object):
         self.metadata = meta_model
 
     @classmethod
-    def from_FSPS(cls, fname, i, plateifu_base, meta_colnames,
+    def from_FSPS(cls, fname, i, plateifu_base, pca,
                   mpl_v='MPL-5', kind='SPX-GAU-MILESHC'):
 
         # load models
@@ -122,11 +122,18 @@ class FakeData(object):
         models_meta = t.hstack(
             [models_meta, get_stellar_indices(l=models_lam,
                                               spec=models_specs.T)])
-        models_meta.keep_columns(meta_colnames)
-        model_meta = models_meta[i]
+        models_meta.keep_columns(pca.metadata.colnames)
+        for n in models_meta.colnames:
+            if pca.metadata[n].meta.get('scale', 'linear') == 'log':
+                models_meta[n] = np.log10(models_meta[n])
 
         # choose specific model
+        if i is None:
+            # pick at random
+            i = np.random.choice(len(models_meta))
+
         model_spec = models_specs[i, :]
+        model_meta = models_meta[i]
 
         # load data
         plate, ifu = tuple(plateifu_base.split('-'))
@@ -158,14 +165,18 @@ class FakeData(object):
         drp_fname = os.path.join(basedir, '{}_drp.fits'.format(fname_base))
         dap_fname = os.path.join(basedir, '{}_dap.fits'.format(fname_base))
         truthtable_fname = os.path.join(
-            basedir, '{}_truth.fits'.format(fname_base))
+            basedir, '{}_truth.tab'.format(fname_base))
 
         new_drp_cube = fits.HDUList([hdu for hdu in self.drp_base])
         new_drp_cube['FLUX'].data = self.fluxcube
 
         new_dap_cube = fits.HDUList([hdu for hdu in self.dap_base])
+        sig_a = self.metadata['sigma'] * np.ones_like(
+            new_dap_cube['STELLAR_SIGMA'].data)
+        new_dap_cube['STELLAR_SIGMA'].data = sig_a
 
-        t.Table(rows=[self.metadata]).write(truthtable_fname, overwrite=True)
+        truth_tab = t.Table(rows=[self.metadata], names=self.metadata.colnames)
+        truth_tab.write(truthtable_fname, overwrite=True, format='ascii')
         new_drp_cube.writeto(drp_fname, overwrite=True)
         new_dap_cube.writeto(dap_fname, overwrite=True)
 
@@ -177,12 +188,3 @@ def get_stellar_indices(l, spec):
         names=indices.data['ixname'])
 
     return inds
-
-if __name__ == '__main__':
-    names = ['MWA', 'sigma','logzsol', 'MLr', 'MLi', 'MLz',
-             'tau_V', 'mu', 'tau_V mu', 'Dn4000', 'Hdelta_A', 'Mg_b',
-             'Ca_HK', 'Na_D']
-    data = FakeData.from_FSPS(fname='CSPs_CKC14_MaNGA/CSPs_test.fits',
-                              i=0, plateifu_base='8083-12704',
-                              meta_colnames=names)
-    data.write()

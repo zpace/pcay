@@ -43,6 +43,7 @@ from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
                          Spec2Phot, absmag_sun_band as Msun)
 import utils as ut
 import indices
+from fakedata import FakeData
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -1718,7 +1719,10 @@ class PCA_Result(object):
             self.resid[:, ix[0], ix[1]].mean(), linestyle='--', c='salmon',
             linewidth=0.5)
 
-        ax2.set_yscale('log')
+        try:
+            ax2.set_yscale('log')
+        except ValueError:
+            pass
         ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
         ax2.set_ylabel('Resid.')
         ax2.set_ylim([1.0e-3, 1.0])
@@ -2085,7 +2089,8 @@ class PCA_Result(object):
 
         # if we're using fake data, we have some ground truth!
         if self.truth is not None:
-            ax.axvline(self.truth[qty], color='r', linewidth=0.5, label='truth')
+            t = self.truth[qty]
+            ax.axvline(t, color='r', linewidth=0.5, label='truth')
 
         ax.set_xlabel(TeX)
 
@@ -2506,6 +2511,45 @@ class PCA_Result(object):
         fname = '_'.join((self.dered.plateifu, 'sigma_comp.png'))
         self.savefig(fig, fname, self.figdir, dpi=300)
 
+    def sigma_vel(self):
+        '''
+        compare inferred velocity dispersion and DAP velocity field value
+
+        this is intended to diagnose artificially high inferred veldisp
+            due to integer-pixel deredshifting
+        '''
+        fig = plt.figure(figsize=(4, 4), dpi=300)
+        ax = fig.add_subplot(111)
+
+        vel = np.ma.array(self.dered.dap_hdulist['STELLAR_VEL'].data,
+                          mask=self.mask_map)
+
+        sig_pca, sig_pca_lunc, sig_pca_uunc, _ = self.pca.param_cred_intvl(
+            qty='sigma', W=self.w)
+        sig_pca = np.ma.array(sig_pca, mask=self.mask_map)
+        sig_dap_corr = self.dered.dap_hdulist['STELLAR_SIGMACORR'].data
+        sig_pca = np.ma.array(np.sqrt(sig_pca**2. - sig_dap_corr**2.),
+                              mask=self.mask_map)
+
+        # velocity width of pixel
+        dv_pix = (self.pca.dlogl * np.log(10.) * c.c).to(u.km / u.s).value
+        v_offset = vel % dv_pix
+
+        ax.scatter(x=v_offset.flatten(), y=sig_pca.flatten(),
+                   s=1., marker='.', c='k')
+
+        if self.truth is not None:
+            ax.axhline(self.truth['sigma'], c='r')
+
+        ax.set_xlabel('Vel. offset')
+        ax.set_ylabel(r'$\sigma$ (PCA)')
+        fig.suptitle('Effects of integer-pixel deredshifting')
+        fig.tight_layout()
+
+        fname = '_'.join((self.dered.plateifu, 'sigma_vel.png'))
+
+        self.savefig(fig, fname, self.figdir, dpi=300)
+
     @property
     def wcs_header(self):
         return wcs.WCS(self.dered.drp_hdulist['RIMG'].header)
@@ -2545,7 +2589,7 @@ def setup_pca(base_dir, base_fname, fname=None,
         K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
         pca = pickle.load(open(fname, 'rb'))
 
-    if q == 'Auto':
+    if q == 'auto':
         q_opt = pca.xval_fromfile(
             fname=os.path.join(base_dir, '{}_test.fits'.format(base_fname)),
             qmax=50, target=fre_target)
@@ -2560,52 +2604,6 @@ def setup_pca(base_dir, base_fname, fname=None,
     pca.make_PC_param_importance_fig()
 
     return pca, K_obs
-
-
-class Test_PCA_Result(PCA_Result):
-    def __init__(self, pca, K_obs, cosmo, fake_ifu, objname='', z=0.):
-        self.objname = objname
-        self.pca = pca
-        self.cosmo = cosmo
-        self.z = z
-
-        self.E = pca.PCs
-
-        self.O = fake_ifu.make_datacube()
-        self.ivar = fake_ifu.ivar
-
-        self.mask_map = np.zeros_like(self.ivar, dtype=bool)
-        mask_spax = np.zeros_like(self.ivar[0, ...])
-
-        self.A, self.M, self.a_map, O_norm = pca.project_cube(
-            f=self.O, ivar=self.ivar, mask_spax=mask_spax,
-            mask_cube=self.mask_cube)
-
-        # original spectrum
-        self.O = np.ma.array(self.O, mask=self.mask_cube)
-        self.ivar = np.ma.array(self.ivar, mask=self.mask_cube)
-
-        # how to reconstruct datacube from PC weights cube and PC
-        # ij are IFU index, n is eigenspectrum index, l is wavelength index
-        self.O_recon = np.ma.array(
-            (self.M[:, np.newaxis, np.newaxis] + np.einsum(
-                'nij,nl->lij', self.A, self.E)) * self.a_map[np.newaxis, ...],
-            mask=self.mask_cube)
-
-        self.resid = np.abs((self.O - self.O_recon) / self.O)
-
-        self.K_PC = pca.build_PC_cov_full_iter(
-            a_map=self.a_map, z_map=dered.z_map,
-            obs_logl=dered.drp_logl, K_obs_=K_obs)
-
-        self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
-
-        self.map_shape = self.O.shape[-2:]
-        self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
-
-        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
-
-        self.l = 10.**self.pca.logl
 
 
 def gal_dist(cosmo, z):
@@ -2624,8 +2622,7 @@ def get_col_metadata(col, k, notfound=''):
 
     return res
 
-def run_object(row, pca, force_redo=False, fake=False,
-               truth_fname=None):
+def run_object(row, pca, force_redo=False, fake=False):
 
     plateifu = row['plateifu']
 
@@ -2635,13 +2632,17 @@ def run_object(row, pca, force_redo=False, fake=False,
     plate, ifu = plateifu.split('-')
 
     if fake:
+        data = FakeData.from_FSPS(
+            fname='CSPs_CKC14_MaNGA/CSPs_test.fits', i=None,
+            plateifu_base=plateifu, pca=pca)
+        data.write()
         dered = MaNGA_deredshift.from_fakedata(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
             basedir='fakedata', row=row)
         figdir = os.path.join('fakedata', 'results', plateifu)
         truth_fname = os.path.join(
-            'fakedata', '{}_truth.fits'.format(plateifu))
-        truth = t.Table.read(truth_fname)[0]
+            'fakedata', '{}_truth.tab'.format(plateifu))
+        truth = t.Table.read(truth_fname, format='ascii')[0]
     else:
         dered = MaNGA_deredshift.from_plateifu(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row)
@@ -2657,7 +2658,13 @@ def run_object(row, pca, force_redo=False, fake=False,
 
     pca_res.make_sample_diag_fig()
 
-    pca_res.make_full_QA_fig(kde=(False, False))
+    if fake:
+        for ix in np.ndindex(pca_res.mask_map.shape):
+            if (~pca_res.nodata[ix[0], ix[1]]) and (np.random.rand() < 0.1):
+                pca_res.make_full_QA_fig(ix=ix, kde=(False, False))
+    else:
+        pca_res.make_full_QA_fig(kde=(False, False))
+
     pca_res.make_comp_fig()
 
     pca_res.make_qty_fig(qty_str='MLr')
@@ -2681,6 +2688,8 @@ def run_object(row, pca, force_redo=False, fake=False,
 
     pca_res.compare_sigma()
 
+    pca_res.sigma_vel()
+
     return pca_res
 
 if __name__ == '__main__':
@@ -2694,17 +2703,19 @@ if __name__ == '__main__':
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=True, pkl=False, q=10, fre_target=.005, nfiles=30,
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=30,
         pca_kwargs=pca_kwargs)
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
 
-    row = drpall.loc['8083-12704']
+    row = drpall.loc['8249-12704']
 
     with catch_warnings():
         simplefilter(warn_behav)
         pca_res = run_object(row=row, pca=pca, force_redo=False,
                              fake=True)
+        pca_res = run_object(row=row, pca=pca, force_redo=False,
+                             fake=False)
 
     '''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
