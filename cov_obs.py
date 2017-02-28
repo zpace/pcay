@@ -82,23 +82,27 @@ class Cov_Obs(object):
         groups = [g for g, u in zip(groups, use) if u]
 
         # multiply-observed objects
-        diffs, w, good = zip(
+        logls, diffs, ws = zip(
             *[Cov_Obs.process_BOSS_mult(grp, MPL_v, nl)
               for grp in groups])
 
         ndiffs = sum(list(map(len, diffs)))
-        logl0 = min(list(map(min, logl)))
-        loglf = max(list(map(max, logl)))
+        logl0 = min(list(map(min, logls)))
+        loglf = max(list(map(max, logls)))
 
         # full wavelength grid for all objects
         logl_full = np.arange(logl0, loglf + dlogl, step=dlogl)
 
         # place differences and weights on common grid
-        diffs_regr, w = zip(put_on_grid(logl_full, logl_sub, A))
+        diffs_regr, ws_regr = zip(
+            *[put_on_grid(logl_full, logl, A=(d, w))
+              for logl, d, w in zip(logls, diffs, ws)])
+
+        diffs_regr = np.row_stack(diffs_regr)
+        ws_regr = np.row_stack(ws_regr)
 
         # compute covariance
-        wdiffs = (w * diffs)
-        cov = wdiffs.T.dot(wdiffs) / (w.T.dot(w) - 1.)
+        cov = wcov(diffs_regr, ws_regr)
         cov /= np.median(np.diag(cov))
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
@@ -154,8 +158,7 @@ class Cov_Obs(object):
 
         N = w.shape[0]
 
-        wdiffs = (w * diffs)
-        cov = wdiffs.T.dot(wdiffs) / (w.T.dot(w) - 1.)
+        cov = wcov(diffs, w)
         cov /= np.median(np.diag(cov))
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=N)
@@ -319,27 +322,28 @@ class Cov_Obs(object):
 
         ivars_regr = np.zeros((nobs, nl))
         fluxs_regr = np.zeros((nobs, nl))
-        masks_regr = np.zeros((nobs, nl))
+        masks_regr = np.zeros((nobs, nl), dtype=bool)
 
         # put all objects onto same grid
         for i, i0_ in enumerate(i0):
             nl_ = len(fluxs[i])
-            fluxs[i, i0_:i0_ + nl_] = fluxs[i]
-            ivars[i, i0_:i0_ + nl_] = ivars[i]
-            masks[i, i0_:i0_ + nl_] = masks[i]
+            fluxs_regr[i, i0_:i0_ + nl_] = fluxs[i]
+            ivars_regr[i, i0_:i0_ + nl_] = ivars[i]
+            masks_regr[i, i0_:i0_ + nl_] = masks[i]
 
         # propagate masks into ivars
-        ivars *= ~masks
+        ivars_regr *= ~masks_regr
 
         # combine fluxs into diffs
         pairs = comb(range(nobs), 2)
-        diffs = np.row_stack([fluxs[i1, ...] - fluxs[i2, ...]
+        diffs = np.row_stack([fluxs_regr[i1, ...] - fluxs_regr[i2, ...]
                               for (i1, i2) in pairs])
 
         # combine ivars into weights
         pairs = comb(range(nobs), 2)
-        ws = 1. / np.row_stack([1. / (1. / ivars[i1, ...] + 1. / ivars[i2, ...])
-                                for i1, i2 in pairs])
+        ws = 1. / np.row_stack(
+            [(1. / (1. / ivars_regr[i1, ...]) + (1. / ivars_regr[i2, ...]))
+             for i1, i2 in pairs])
 
         return logl_full, diffs, ws
 
@@ -372,13 +376,18 @@ def put_on_grid(logl_full, logl_sub, A):
                       constant_values=[[0., 0.], [0., 0.]]) for A_ in A)
     return A_new
 
+def wcov(diffs, ws):
+    wdiffs = (ws * diffs)
+    cov = wdiffs.T.dot(wdiffs) / (w.T.dot(w) - 1.)
+    return cov
+
 
 if __name__ == '__main__':
     #'''
     spAll_loc = os.path.join(mangarc.zpace_sdss_data_loc,
                              'boss', 'spAll-v5_9_0.fits')
     spAll = fits.open(spAll_loc, memmap=True)
-    Cov_boss = Cov_Obs.from_spAll(spAll=spAll)
+    Cov_boss = Cov_Obs.from_BOSS_reobs(spAll=spAll, n=20)
     Cov_boss.write_fits('boss_Kspec.fits')
     #'''
     # =====
