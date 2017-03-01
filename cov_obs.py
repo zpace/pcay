@@ -7,6 +7,7 @@ from astropy.io import fits
 
 import os
 import sys
+from itertools import takewhile, combinations as comb
 
 from glob import glob
 
@@ -50,7 +51,7 @@ class Cov_Obs(object):
     # =====
 
     @classmethod
-    def from_BOSS_reobs(cls, spAll, dlogl=1.0e-4, n=None):
+    def from_BOSS_reobs(cls, spAll, dlogl=1.0e-4, n=None, platelim=None):
         '''
         returns a covariance object made from an spAll file
         '''
@@ -60,6 +61,10 @@ class Cov_Obs(object):
         cols = [spAll[1].data[k] for k in colnames]
         obs = t.Table(cols, names=colnames)
         obs = obs[obs['OBJID'] != ' ' * 19]
+
+        if platelim is not None:
+            obs = obs[obs['PLATE'] < platelim]
+
         objs = obs.group_by('OBJID')
 
         def morethan1_(tab):
@@ -83,8 +88,14 @@ class Cov_Obs(object):
 
         # multiply-observed objects
         logls, diffs, ws = zip(
-            *[Cov_Obs.process_BOSS_mult(grp, MPL_v, nl)
-              for grp in groups])
+            *[Cov_Obs.process_BOSS_mult(grp) for grp in groups])
+
+        good = lambda x: type(x) is np.ndarray
+        # test whether elements returned are of allowed type
+        # filter out otherwise
+        logls = list(takewhile(good, logls))
+        diffs = list(takewhile(good, diffs))
+        ws = list(takewhile(good, ws))
 
         ndiffs = sum(list(map(len, diffs)))
         logl0 = min(list(map(min, logls)))
@@ -105,7 +116,9 @@ class Cov_Obs(object):
         cov = wcov(diffs_regr, ws_regr)
         cov /= np.median(np.diag(cov))
 
-        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+        lllim = 10.**(logl_full.min())
+
+        return cls(cov, lllim=lllim, dlogl=dlogl, nobj=n)
 
     @classmethod
     def from_MaNGA_reobs(cls, dlogl=1.0e-4, MPL_v=mpl_v, n=None):
@@ -203,15 +216,20 @@ class Cov_Obs(object):
         ax = fig.add_subplot(111)
 
         vmax = np.abs(self.cov).max()**0.3
+        extend = 'neither'
+        if vmax > 5.:
+            vmax = 5
+            extend = 'both'
 
         im = ax.imshow(
             np.sign(self.cov) * (np.abs(self.cov))**0.3,
-            extent=[l.min(), l.max(), l.min(), l.max()],
+            extent=[l.min(), l.max(), l.min(), l.max()], cmap='coolwarm',
             vmax=vmax, vmin=-vmax, interpolation='None', aspect='equal')
-        ax.set_xlabel(r'$\lambda [\AA]$', size=10)
-        ax.set_ylabel(r'$\lambda [\AA]$', size=10)
-        cb = plt.colorbar(im, ax=ax, shrink=0.8)
+        ax.set_xlabel(r'$\lambda  ~[\AA]$', size=10)
+        ax.set_ylabel(r'$\lambda ~ [\AA]$', size=10)
+        cb = plt.colorbar(im, ax=ax, shrink=0.8, extend=extend)
         cb.set_label(r'$\textrm{sign}(K) ~ |K|^{0.3}$')
+        plt.tight_layout()
         plt.savefig('cov_obs_{}.png'.format(kind), dpi=300)
 
     # =====
@@ -249,8 +267,6 @@ class Cov_Obs(object):
          - wt: weights on diffs
          - good: indicates whether resids_normed is good
         '''
-
-        from itertools import combinations as comb
 
         # load all LOGCUBES for a given MaNGA-ID
         # files have form 'manga-<PLATE>-<IFU>-LOGCUBE.fits.gz'
@@ -301,12 +317,16 @@ class Cov_Obs(object):
         return differences between reobservations of same BOSS object
         '''
 
-        from itertools import combinations as comb
-
         # load all the files
         baseloc = mangarc.BOSS_data_loc
         hdulists = load_BOSS_obj(tab, baseloc)
         nobs = len(hdulists)
+
+        if nobs < 2:
+            # file DNE errors in load_BOSS_obs may result in
+            # length-zero, -one, or -two lists.
+            # in that case, return a tuple of three Falses
+            return False, False, False
 
         loglams = [h[1].data['loglam'] for h in hdulists]
         fluxs = [h[1].data['flux'] for h in hdulists]
@@ -352,10 +372,19 @@ def load_BOSS_obs(row, baseloc):
     plate, mjd, fiberid = row['PLATE'], row['MJD'], row['FIBERID']
     fname = '{0}/spec-{0}-{1}-{2:04}.fits'.format(plate, mjd, fiberid)
     fname_full = os.path.join(baseloc, fname)
-    return fits.open(fname_full)
+    try:
+        hdulist = fits.open(fname_full)
+    except IOError:
+        # if file DNE, return False
+        hdulist = False
+
+    return hdulist
 
 def load_BOSS_obj(tab, baseloc):
-    return [load_BOSS_obs(row, baseloc) for row in tab]
+    obss = [load_BOSS_obs(row, baseloc) for row in tab]
+    # look for file DNE result, and filter out
+    obss = [obs for obs in obss if obs != False]
+    return obss
 
 def gen_BOSS_fname(row):
     plate, mjd, fiberid = row['PLATE'], row['MJD'], row['FIBERID']
@@ -378,7 +407,7 @@ def put_on_grid(logl_full, logl_sub, A):
 
 def wcov(diffs, ws):
     wdiffs = (ws * diffs)
-    cov = wdiffs.T.dot(wdiffs) / (w.T.dot(w) - 1.)
+    cov = wdiffs.T.dot(wdiffs) / (ws.T.dot(ws) - 1.)
     return cov
 
 
@@ -387,8 +416,9 @@ if __name__ == '__main__':
     spAll_loc = os.path.join(mangarc.zpace_sdss_data_loc,
                              'boss', 'spAll-v5_9_0.fits')
     spAll = fits.open(spAll_loc, memmap=True)
-    Cov_boss = Cov_Obs.from_BOSS_reobs(spAll=spAll, n=20)
+    Cov_boss = Cov_Obs.from_BOSS_reobs(spAll=spAll, n=None, platelim=5987)
     Cov_boss.write_fits('boss_Kspec.fits')
+    Cov_boss.make_im(kind='boss')
     #'''
     # =====
     '''
