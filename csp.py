@@ -246,7 +246,8 @@ class FSPS_SFHBuilder(object):
         for k in ks:
             del tab[k]
 
-        tab.add_column(t.Column(data=[self.Fstar], name='Fstar'))
+        tab.add_column(t.Column(data=[self.frac_mform_dt(age=.1)],
+                                name='mf_100Myr'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
         tab.add_column(t.Column(data=[self.mstar], name='mstar'))
 
@@ -469,6 +470,20 @@ class FSPS_SFHBuilder(object):
         else:
             self.FSPS_args.update({'sigma': pdf_sigma.rvs()})
 
+    def frac_mform_dt(self, age=1.):
+        '''
+        compute mass fraction formed sooner than `age`
+        '''
+
+        ages = self.ts - self.time0
+        i_ = np.argsort(ages)
+        ages, sfrs = ages[i_], self.sfrs[i_]
+
+        mf_all = trapz(x=ages, y=sfrs)
+        mf_rec = trapz(z=ages[ages < age], y=sfrs[ages < age])
+
+        return mf_rec / mf_all
+
     # =====
     # properties
     # =====
@@ -536,19 +551,6 @@ class FSPS_SFHBuilder(object):
         num = np.trapz(x=ages, y=ages * sfrs)
         denom = np.trapz(x=ages, y=sfrs)
         return num / denom
-
-    @property
-    def Fstar(self):
-        '''
-        mass fraction formed in last Gyr
-        '''
-        disconts = self.disconts
-        disconts = disconts[disconts > self.time0 - 1.]
-        mf, mfe = integrate.quad(
-            self.all_sf, self.time0 - 1., self.time0,
-            points=disconts, epsrel=5.0e-3, limit=100)
-        F = mf * 1.0e9 / self.mformed_integration
-        return F
 
     # =====
     # utility methods
@@ -761,3 +763,8 @@ if __name__ == '__main__':
             sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA',
             n=nper, lllim=3500., lulim=10000.)
         print('Done with {} of {}'.format(i + 1, name_ixf))
+
+    print('Making validation/test data...')
+    sfh = make_spectral_library(
+        sfh=sfh, fname='CSPs_test', loc='CSPs_CKC14_MaNGA',
+        n=nper, lllim=3500., lulim=10000.)
