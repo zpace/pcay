@@ -74,6 +74,8 @@ class FakeData(object):
                 logl_m_z[:, ind[0], ind[1]], s_m_z[:, ind[0], ind[1]], logl_f)
             s_m_z_c[:, ind[0], ind[1]] = newspec
 
+        drp_base['IVAR'].data[s_m_z_c < 1.0e-5] = 0.
+
         # normalize everything to have the same observed-frame r-band flux
         u_flam = 1.0e-17 * (u.erg / (u.s * u.cm**2 * u.AA))
         m_r_drp = Spec2Phot(lam=drp_base['WAVE'].data,
