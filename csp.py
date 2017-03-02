@@ -475,12 +475,12 @@ class FSPS_SFHBuilder(object):
         compute mass fraction formed sooner than `age`
         '''
 
-        ages = self.ts - self.time0
+        ages = self.time0 - self.ts
         i_ = np.argsort(ages)
         ages, sfrs = ages[i_], self.sfrs[i_]
 
-        mf_all = trapz(x=ages, y=sfrs)
-        mf_rec = trapz(z=ages[ages < age], y=sfrs[ages < age])
+        mf_all = np.trapz(x=ages, y=sfrs)
+        mf_rec = np.trapz(x=ages[ages < age], y=sfrs[ages < age])
 
         return mf_rec / mf_all
 
@@ -757,6 +757,8 @@ if __name__ == '__main__':
 
     RS = np.random.RandomState()
     sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=10)
+
+    print('Making spectral library...')
 
     for i in range(name_ix0, name_ixf):
         sfh = make_spectral_library(

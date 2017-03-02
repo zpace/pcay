@@ -297,7 +297,7 @@ class StellarPop_PCA(object):
                     'MLr', 'MLi', 'MLz',
                     'tau_V', 'mu', 'tau_V mu',
                     'Dn4000', 'Hdelta_A', 'Mg_b',
-                    'Ca_HK', 'Na_D']
+                    'Ca_HK', 'Na_D', 'mf_100Myr']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
@@ -313,6 +313,7 @@ class StellarPop_PCA(object):
         meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
         meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
+        meta['mf_100Myr'].meta['TeX'] = r'$f_m^{\textrm{100~Myr}}$'
 
         for n in meta.colnames:
             if n in log_params:
@@ -1654,8 +1655,8 @@ class PCA_Result(object):
         cb.ax.tick_params(labelsize=8)
 
         Lstar_tot = np.ma.array(self.lum(band=band), mask=self.mask_map).sum()
-        ax.axhline(ix[0])
-        ax.axvline(ix[1])
+        ax.axhline(ix[0], c='k')
+        ax.axvline(ix[1], c='k')
 
         ax.text(x=0.2, y=0.2,
                 s=''.join((r'$\log{\frac{\mathcal{L}_{*}}{L_{\odot}}}$ = ',
@@ -1996,6 +1997,32 @@ class PCA_Result(object):
 
         return qgrid, pgrid
 
+    def qty_errorbar(self, q, w, ax):
+        '''
+        add errobar notation onto histogram
+        '''
+
+        # reorder by param value
+        i_ = np.argsort(q)
+        q_, w_ = q[i_], w[i_]
+        p16, p50, p84 = np.interp(
+            xp=100. * w_.cumsum() / w_.sum(), fp=q_,
+            x=[16., 50., 84.], left=q_.min(), right=q_.max())
+        uerr = np.abs(p84 - p50)
+        lerr = np.abs(p50 - p16)
+
+        yllim, yulim = ax.get_ylim()
+        ypos = 0.25 * yulim
+
+        ax.errorbar(
+            x=[p50], y=ypos, yerr=None, xerr=[[lerr], [uerr]],
+            marker='d', markerfacecolor='g', markeredgecolor='None',
+            ecolor='g')
+
+    def param_bestmodel(self, q, w, ax):
+        # value of best-fit spectrum
+        ax.axvline(q[np.argmax(w)], color='c', linewidth=0.5, label='best')
+
     def qty_hist(self, qty, ix=None, ax=None, f=None, bins=50,
                  legend=False, kde=(False, False), logx=False):
         if ix is None:
@@ -2015,7 +2042,8 @@ class PCA_Result(object):
 
         q = self.pca.metadata[qty]
         w = self.w[:, ix[0], ix[1]]
-        q, w = q[np.isfinite(q)], w[np.isfinite(q)]
+        isfin = np.isfinite(q)
+        q, w = q[isfin], w[isfin]
 
         if len(q) == 0:
             return None
@@ -2084,8 +2112,8 @@ class PCA_Result(object):
         ax.yaxis.set_major_locator(plt.NullLocator())
         ax_.yaxis.set_major_locator(plt.NullLocator())
 
-        # value of best-fit spectrum
-        ax.axvline(q[np.argmax(w)], color='c', linewidth=0.5, label='best')
+        self.qty_errorbar(q=q, w=w, ax=ax)
+        self.param_bestmodel(q=q, w=w, ax=ax)
 
         # if we're using fake data, we have some ground truth!
         if self.truth is not None:
@@ -2358,7 +2386,7 @@ class PCA_Result(object):
                         facecolor=ptcol, edgecolor='None', s=s.flatten(),
                         label=self.objname)
 
-        if type(ptcol) != str:
+        if type(ptcol) is not str:
             cb = plt.colorbar(sc, ax=ax, pad=.025)
             if lab is not None:
                 cb.set_label(lab)
@@ -2576,9 +2604,9 @@ def setup_pca(base_dir, base_fname, fname=None,
             fname = 'pca.pkl'
 
     if redo:
-        #K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
-        K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
-            'cov_obs_YMC_BOSS.fits')
+        K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
+        #K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
+        #    'cov_obs_YMC_BOSS.fits')
         pca = StellarPop_PCA.from_FSPS(
             K_obs=K_obs, base_dir=base_dir, base_fname=base_fname,
             nfiles=nfiles, **pca_kwargs)
@@ -2708,12 +2736,14 @@ if __name__ == '__main__':
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
 
-    row = drpall.loc['8249-12704']
+    row = drpall.loc['8083-12704']
 
     with catch_warnings():
         simplefilter(warn_behav)
+        '''
         pca_res = run_object(row=row, pca=pca, force_redo=False,
                              fake=True)
+        '''
         pca_res = run_object(row=row, pca=pca, force_redo=False,
                              fake=False)
 
