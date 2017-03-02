@@ -146,7 +146,7 @@ class StellarIndex(object):
 
 class StellarIndices(object):
     def __init__(self):
-        self.indices = {k: StellarIndex(k) for k in data['name']}
+        self.indices = {k: StellarIndex(k) for k in data['ixname']}
 
     def __call__(self, *args, **kwargs):
-        return {k: self.indices[k](*args, **kwargs) for k in data['name']}
+        return {k: self.indices[k](*args, **kwargs) for k in data['ixname']}
