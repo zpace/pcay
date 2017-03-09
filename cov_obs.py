@@ -51,7 +51,8 @@ class Cov_Obs(object):
     # =====
 
     @classmethod
-    def from_BOSS_reobs(cls, spAll, dlogl=1.0e-4, n=None, platelim=None):
+    def from_BOSS_reobs(cls, spAll, dlogl=1.0e-4, n=None, platelim=None,
+                        **kwargs):
         '''
         returns a covariance object made from an spAll file
         '''
@@ -88,7 +89,7 @@ class Cov_Obs(object):
 
         # multiply-observed objects
         logls, diffs, ws = zip(
-            *[Cov_Obs.process_BOSS_mult(grp) for grp in groups])
+            *[Cov_Obs.process_BOSS_mult(grp,**kwargs) for grp in groups])
 
         good = lambda x: type(x) is np.ndarray
         # test whether elements returned are of allowed type
@@ -121,7 +122,7 @@ class Cov_Obs(object):
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=n)
 
     @classmethod
-    def from_MaNGA_reobs(cls, dlogl=1.0e-4, MPL_v=mpl_v, n=None):
+    def from_MaNGA_reobs(cls, dlogl=1.0e-4, MPL_v=mpl_v, n=None, **kwargs):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
@@ -162,7 +163,7 @@ class Cov_Obs(object):
 
         # process multiply-observed datacubes, up to limit set
         diffs, w, good = zip(
-            *[Cov_Obs.process_MaNGA_mult(grp, MPL_v, nl)
+            *[Cov_Obs.process_MaNGA_mult(grp, MPL_v, nl, **kwargs)
               for grp in groups])
 
         # stack all the differences
@@ -225,8 +226,8 @@ class Cov_Obs(object):
             np.sign(self.cov) * (np.abs(self.cov))**0.3,
             extent=[l.min(), l.max(), l.min(), l.max()], cmap='coolwarm',
             vmax=vmax, vmin=-vmax, interpolation='None', aspect='equal')
-        ax.set_xlabel(r'$\lambda  ~[\AA]$', size=10)
-        ax.set_ylabel(r'$\lambda ~ [\AA]$', size=10)
+        ax.set_xlabel(r'$\lambda  ~ [{\rm \AA}]$', size=10)
+        ax.set_ylabel(r'$\lambda ~ [{\rm \AA}]$', size=10)
         cb = plt.colorbar(im, ax=ax, shrink=0.8, extend=extend)
         cb.set_label(r'$\textrm{sign}(K) ~ |K|^{0.3}$')
         plt.tight_layout()
@@ -250,7 +251,7 @@ class Cov_Obs(object):
     # =====
 
     @staticmethod
-    def process_MaNGA_mult(tab, MPL_v, nspec=4563):
+    def process_MaNGA_mult(tab, MPL_v, nspec=4563, corr_zpt=True):
         '''
         check for presence of datacubes for a single multiply-observed
             MaNGA object, and (if the data exists) process the observations
@@ -297,8 +298,22 @@ class Cov_Obs(object):
                                 a=cube['MASK'].data.reshape((naxis1, -1)).T,
                                 b=[0, 1, 2, 3, 10])
                             for cube in logcubes])
+
         ivars *= (~ mb_mask)
-        ivars[ivars == 0.] = eps
+
+        if corr_zpt:
+            # normalize to median flux-density
+            fluxms = np.median(fluxs, axis=2, keepdims=True)
+            fluxs /= fluxms
+            ivars *= fluxms**2.
+
+            # mask spaxels with very little signal
+            goodspax = ~np.any(fluxms <= 1.0e-1, axis=0).squeeze()
+
+            fluxs = fluxs[:, goodspax, :]
+            ivars = ivars[:, goodspax, :]
+
+        ivars[(ivars == 0)] = eps
 
         # differences between pairs
         n_reobs = len(logcubes)
@@ -312,7 +327,7 @@ class Cov_Obs(object):
         return diffs, w, True
 
     @staticmethod
-    def process_BOSS_mult(tab, dlogl=1.0e-4):
+    def process_BOSS_mult(tab, dlogl=1.0e-4, corr_zpt=True):
         '''
         return differences between reobservations of same BOSS object
         '''
@@ -353,6 +368,14 @@ class Cov_Obs(object):
 
         # propagate masks into ivars
         ivars_regr *= ~masks_regr
+
+        if corr_zpt:
+            fluxms = np.median(fluxs_regr, axis=1, keepdims=True)
+            fluxs_regr /= fluxms
+            ivars_regr *= fluxms**2.
+
+            if np.any(fluxms <= 1.0e-1):
+                return False, False, False
 
         # combine fluxs into diffs
         pairs = comb(range(nobs), 2)
@@ -416,13 +439,14 @@ if __name__ == '__main__':
     spAll_loc = os.path.join(mangarc.zpace_sdss_data_loc,
                              'boss', 'spAll-v5_9_0.fits')
     spAll = fits.open(spAll_loc, memmap=True)
-    Cov_boss = Cov_Obs.from_BOSS_reobs(spAll=spAll, n=None, platelim=5987)
+    Cov_boss = Cov_Obs.from_BOSS_reobs(spAll=spAll, n=None, platelim=6700,
+                                       corr_zpt=True)
     Cov_boss.write_fits('boss_Kspec.fits')
     Cov_boss.make_im(kind='boss')
     #'''
     # =====
     '''
-    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=None)
+    Cov_manga = Cov_Obs.from_MaNGA_reobs(n=None, corr_zpt=False)
     Cov_manga.write_fits('manga_Kspec.fits')
     Cov_manga.make_im(kind='manga')
     '''
