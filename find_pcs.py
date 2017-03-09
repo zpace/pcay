@@ -349,8 +349,8 @@ class StellarPop_PCA(object):
         logl_final = np.arange(np.log10(l.value.min()),
                                np.log10(l.value.max()), dlogl)
         l_final = 10.**logl_final
-        specs_interp = interp1d(x=logl, y=spec, kind='linear', axis=-1)
-        spec = specs_interp(logl_final)
+        spec = ut.interp_large(x0=logl, y0=spec, xnew=logl_final,
+                                       axis=-1, kind='linear')
 
         spec /= spec.max(axis=1)[..., None]
         spec = spec.astype(np.float32)
@@ -479,7 +479,8 @@ class StellarPop_PCA(object):
             is applied first, then mask_spec, then mask_cube
         '''
 
-        assert ivar.shape == f.shape, 'cube shapes must be equal'
+        assert ivar.shape == f.shape, \
+            'cube shapes must be equal, are {}, {}'.format(ivar.shape, f.shape)
         cube_shape = f.shape
 
         # manage masks
@@ -839,7 +840,7 @@ class StellarPop_PCA(object):
                 pcnum = 'Mean'
             else:
                 pcnum = 'PC{}'.format(i)
-            ax.text(x=3550., y=np.mean(PCs[i, :]), s=pcnum, size=6)
+            ax.set_ylabel(pcnum, size=6)
 
             loc = mticker.MaxNLocator(nbins=5, prune='upper')
             ax.yaxis.set_major_locator(loc)
@@ -1289,7 +1290,9 @@ class MaNGA_deredshift(object):
 
         # mask all the spaxels that have high stellar velocity uncertainty
         self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
-        self.vel_mask = self.dap_hdulist['STELLAR_VEL_MASK'].data
+        self.vel_mask = m.mask_from_maskbits(
+            self.dap_hdulist['STELLAR_VEL_MASK'].data,
+            [0, 1, 2, 3, 28, 29, 30])
 
         self.drp_l = drp_hdulist['WAVE'].data
         self.drp_logl = np.log10(self.drp_l)
@@ -1309,6 +1312,8 @@ class MaNGA_deredshift(object):
                              flam=(self.flux * self.units['flux']))
 
         self.DONOTUSE = m.mask_from_maskbits(drp_hdulist['MASK'].data, [10])
+
+        self.ivar *= ~self.DONOTUSE
 
     @classmethod
     def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC', row=None,
@@ -1347,7 +1352,8 @@ class MaNGA_deredshift(object):
 
         return cls(drp_hdulist, dap_hdulist, row, **kwargs)
 
-    def correct_and_match(self, template_logl, template_dlogl=None):
+    def correct_and_match(self, template_logl, template_dlogl=None,
+                          method='invdistwt'):
         '''
         gets datacube ready for PCA analysis:
             - take out galactic extinction
@@ -1373,13 +1379,15 @@ class MaNGA_deredshift(object):
         EBV = self.drp_hdulist[0].header['EBVGAL']
         f_mwcorr, ivar_mwcorr = ut.extinction_correct(
             l=self.drp_l * u.AA, f=self.flux,
-            ivar=self.ivar * (~self.DONOTUSE), r_v=r_v, EBV=EBV)
+            ivar=self.ivar, r_v=r_v, EBV=EBV)
 
         # prepare to de-redshift
         # total redshift of each spaxel
         z_map = (1. + self.z) * (1. + (self.vel / c.c).to('').value) - 1.
+        z_map[self.vel_mask] = self.z
         self.z_map = z_map
 
+        # shift into restframe
         l_rest, f_rest, ivar_rest = ut.redshift(
             l=self.drp_l, f=f_mwcorr, ivar=ivar_mwcorr, z_in=z_map, z_out=0.)
         # this maintains constant dlogl
@@ -1392,35 +1400,15 @@ class MaNGA_deredshift(object):
         self.S2P_rest = Spec2Phot(lam=(l_rest_ctr * self.units['l']),
                                   flam=(f_rest * self.units['flux']))
 
-        # where does template grid start?
-        tem_l = 10.**template_logl
-        self.tem_l = tem_l
-        tem_nl = tem_l.shape[0]
-        # what pixel of deredshifted grid is that?
-        ix0 = np.argmin(np.abs(l_rest - tem_l[0]), axis=0)
+        self.regrid = ut.Regridder(
+            loglgrid=template_logl, loglrest=np.log10(l_rest),
+            frest=f_rest, ivarfrest=ivar_rest, dlogl=template_dlogl)
 
-        # test whether wavelength grid extends beyond MaNGA coverage
-        # in any spaxels
-        bad_logl_extent = np.logical_or.reduce(
-            ((l_rest < tem_l[0]), (l_rest > tem_l[-1])))
+        # cal appropriate regridder method
+        self.flux_regr, self.ivar_regr = getattr(self.regrid, method)()
 
-        # select same num. of elements of f_rest & ivar_rest,
-        # starting at ix0
-        ixs = (ix0[None, ...] + np.arange(tem_nl)[..., None, None])
-        _, I, J = np.ix_(*[range(i) for i in f_rest.shape])
-
-        self.flux_regr = f_rest[ixs, I, J]
-        self.ivar_regr = ivar_rest[ixs, I, J]
-        self.DONOTUSE_regr = self.DONOTUSE[ixs, I, J]
-
-        # also select from bad_logl_extent
-        bad_logl_extent = bad_logl_extent[ixs, I, J]
-
-        # replace out-of-range elements with f = 0 and ivar = 0
-        self.ivar_regr[bad_logl_extent] = 0.
-        self.flux_regr[bad_logl_extent] = 0.
-
-        self.spax_mask = self.vel_mask
+        self.spax_mask = np.logical_or.reduce((
+            self.vel_mask, self.vel_ivar_mask))
 
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
@@ -1481,7 +1469,7 @@ class MaNGA_deredshift(object):
     def eline_EW(self, ix):
         return self.dap_hdulist['EMLINE_SEW'].data[ix] * u.Unit('AA')
 
-    def coadd(self, good=None):
+    def coadd(self, tem_l, good=None):
         '''
         return coadded spectrum and ivar
 
@@ -1493,13 +1481,9 @@ class MaNGA_deredshift(object):
             good = np.ones_like(self.flux_regr[0, ...])
 
         ivar = self.ivar_regr * good[None, ...]
-        map_shape = ivar.shape[1:]
-        tem_l = np.tile(self.tem_l[:, None, None],
-                        (1, ) + map_shape)
 
-        lam, flux, ivar = ut.coadd(
-            l=tem_l, f=self.flux_regr, ivar=ivar)
-        lam, flux, ivar = (lam[:, None, None], flux[:, None, None],
+        flux, ivar = ut.coadd(f=self.flux_regr, ivar=ivar)
+        lam, flux, ivar = (tem_l[:, None, None], flux[:, None, None],
                            ivar[:, None, None])
 
         return lam, flux, ivar
@@ -1549,7 +1533,7 @@ class PCA_Result(object):
     '''
 
     def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}, figdir='.',
-                 truth=None):
+                 truth=None, dered_method='nearest'):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
@@ -1566,10 +1550,10 @@ class PCA_Result(object):
         self.E = pca.PCs
 
         self.O, self.ivar, mask_spax = dered.correct_and_match(
-            template_logl=pca.logl, template_dlogl=None)
+            template_logl=pca.logl, template_dlogl=None,
+            method=dered_method)
         self.mask_cube = dered.compute_eline_mask(
-            template_logl=pca.logl, template_dlogl=None) * \
-            (~self.dered.DONOTUSE_regr)
+            template_logl=pca.logl, template_dlogl=None)
 
         self.SNR_med = np.median(self.O * np.sqrt(self.ivar) + eps,
                                  axis=0)
@@ -1631,7 +1615,7 @@ class PCA_Result(object):
         '''
 
         # retrieve k-corrected apparent AB mag from dered object
-        ABmag = self.dered.S2P.ABmags['-'.join(
+        ABmag = self.dered.S2P_rest.ABmags['-'.join(
             ('sdss2010', band))]
 
         # convert to an absolute magnitude
@@ -1694,10 +1678,10 @@ class PCA_Result(object):
 
         orig_ = ax1.plot(
             self.l, O_norm, drawstyle='steps-mid',
-            c='b', label='Orig.', linewidth=0.5)
+            c='b', label='Orig.', linewidth=0.25)
         recon_ = ax1.plot(
             self.l, O_recon, drawstyle='steps-mid',
-            c='g', label='Recon.', linewidth=0.5)
+            c='g', label='Recon.', linewidth=0.25)
 
         # inverse-variance (weight) plot
         ivar_ = ax1.plot(
@@ -1715,10 +1699,10 @@ class PCA_Result(object):
         # residual
         resid_ = ax2.plot(
             self.l, self.resid[:, ix[0], ix[1]], drawstyle='steps-mid',
-            c='blue', linewidth=0.5)
+            c='blue', linewidth=0.25)
         resid_avg_ = ax2.axhline(
             self.resid[:, ix[0], ix[1]].mean(), linestyle='--', c='salmon',
-            linewidth=0.5)
+            linewidth=0.25)
 
         try:
             ax2.set_yscale('log')
@@ -1726,7 +1710,7 @@ class PCA_Result(object):
             pass
         ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
         ax2.set_ylabel('Resid.')
-        ax2.set_ylim([1.0e-3, 1.0])
+        ax2.set_ylim([5.0e-3, 0.5])
 
         return orig_, recon_, bestfit_, ivar_, resid_, resid_avg_, ix
 
@@ -1854,7 +1838,7 @@ class PCA_Result(object):
         calculate integrated spectrum, and then compute stellar mass from that
         '''
 
-        _, O, ivar = self.dered.coadd(good=~self.mask_map)
+        _, O, ivar = self.dered.coadd(tem_l=self.pca.l, good=~self.mask_map)
 
         # in the spaxels that were used to coadd, OR-function
         # of mask, over cube
@@ -1885,12 +1869,9 @@ class PCA_Result(object):
         K_PC = pca.build_PC_cov_full_iter(
             z_map=z_map, K_obs_=self.K_obs, snr_map=SNR)
 
-        P_PC = StellarPop_PCA.P_from_K_pinv(
-            .1 * K_PC / np.median(np.diag(K_PC[..., 0, 0])))
+        P_PC = StellarPop_PCA.P_from_K_pinv(K_PC)
 
         w = pca.compute_model_weights(P=P_PC, A=A, **self.norm_params)
-
-        #print('good models:', self.sample_diag(f=.01, w=w))
 
         lum = np.ma.masked_invalid(self.lum(band=band))
 
@@ -1939,8 +1920,6 @@ class PCA_Result(object):
             self.Mstar_tot(band=band), mask=self.mask_map)).sum())
 
         logmstar_coadd_tot = np.log10(self.Mstar_integrated(band))
-
-        #print(logmstar_tot, logmstar_coadd_tot)
 
         try:
             TeX1 = ''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
@@ -2383,7 +2362,7 @@ class PCA_Result(object):
         s = 10. * np.arctan(0.05 * b2_img / np.median(b2_img[b2_img > 0.]))
 
         sc = ax.scatter(col.flatten(), ml.flatten(),
-                        facecolor=ptcol, edgecolor='None', s=s.flatten(),
+                        c=ptcol.flatten(), edgecolor='None', s=s.flatten(),
                         label=self.objname)
 
         if type(ptcol) is not str:
@@ -2593,7 +2572,7 @@ class PCA_Result(object):
         return gal_dist(self.cosmo, self.z)
 
 
-def setup_pca(base_dir, base_fname, fname=None,
+def setup_pca(base_dir, base_fname, fname=None, zpt_corr=False,
               redo=True, pkl=True, q=7, nfiles=5, fre_target=.005,
               pca_kwargs={}):
     import pickle
@@ -2603,8 +2582,13 @@ def setup_pca(base_dir, base_fname, fname=None,
         if pkl:
             fname = 'pca.pkl'
 
+    if zpt_corr:
+        kspec_fname = 'manga_Kspec_zptcorr.fits'
+    else:
+        kspec_fname = 'manga_Kspec_nozptcorr.fits'
+
     if redo:
-        K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
+        K_obs = cov_obs.Cov_Obs.from_fits(kspec_fname)
         #K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
         #    'cov_obs_YMC_BOSS.fits')
         pca = StellarPop_PCA.from_FSPS(
@@ -2614,7 +2598,7 @@ def setup_pca(base_dir, base_fname, fname=None,
             pickle.dump(pca, open(fname, 'wb'))
 
     else:
-        K_obs = cov_obs.Cov_Obs.from_fits('manga_Kspec.fits')
+        K_obs = cov_obs.Cov_Obs.from_fits(kspec_fname)
         pca = pickle.load(open(fname, 'rb'))
 
     if q == 'auto':
@@ -2650,7 +2634,7 @@ def get_col_metadata(col, k, notfound=''):
 
     return res
 
-def run_object(row, pca, force_redo=False, fake=False):
+def run_object(row, pca, force_redo=False, fake=False, dered_method='nearest'):
 
     plateifu = row['plateifu']
 
@@ -2682,18 +2666,9 @@ def run_object(row, pca, force_redo=False, fake=False):
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
         norm_params={'norm': 'L2', 'soft': False}, figdir=figdir,
-        truth=truth)
+        truth=truth, dered_method=dered_method)
 
     pca_res.make_sample_diag_fig()
-
-    if fake:
-        for ix in np.ndindex(pca_res.mask_map.shape):
-            if (~pca_res.nodata[ix[0], ix[1]]) and (np.random.rand() < 0.1):
-                pca_res.make_full_QA_fig(ix=ix, kde=(False, False))
-    else:
-        pca_res.make_full_QA_fig(kde=(False, False))
-
-    pca_res.make_comp_fig()
 
     pca_res.make_qty_fig(qty_str='MLr')
     pca_res.make_qty_fig(qty_str='MLi')
@@ -2718,16 +2693,25 @@ def run_object(row, pca, force_redo=False, fake=False):
 
     pca_res.sigma_vel()
 
+    if fake:
+        for ix in np.ndindex(pca_res.mask_map.shape):
+            if (~pca_res.nodata[ix[0], ix[1]]) and (np.random.rand() < 0.05):
+                pca_res.make_full_QA_fig(ix=ix, kde=(False, False))
+    else:
+        pca_res.make_full_QA_fig(kde=(False, False))
+        pca_res.make_comp_fig()
+
     return pca_res
 
 if __name__ == '__main__':
     howmany = 30
     cosmo = WMAP9
     warn_behav = 'ignore'
+    dered_method = 'nearest'
 
     mpl_v = 'MPL-5'
 
-    pca_kwargs = {'lllim': 3800. * u.AA, 'lulim': 8800. * u.AA}
+    pca_kwargs = {'lllim': 3500. * u.AA, 'lulim': 8900. * u.AA}
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
@@ -2736,16 +2720,16 @@ if __name__ == '__main__':
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
 
-    row = drpall.loc['8083-12704']
+    row = drpall.loc['8567-12701']
 
     with catch_warnings():
         simplefilter(warn_behav)
-        '''
+        #'''
         pca_res = run_object(row=row, pca=pca, force_redo=False,
-                             fake=True)
-        '''
+                             fake=True, dered_method=dered_method)
+        #'''
         pca_res = run_object(row=row, pca=pca, force_redo=False,
-                             fake=False)
+                             fake=False, dered_method=dered_method)
 
     '''
     drpall = drpall[drpall['ifudesignsize'] > 0.]

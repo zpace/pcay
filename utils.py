@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 import pickle as pkl
 
 from astropy import units as u, constants as c, table as t
@@ -7,6 +8,7 @@ from speclite import redshift as slrs
 from speclite import accumulate as slacc
 
 from scipy.ndimage.filters import gaussian_filter1d as gf
+from scipy.interpolate import interp1d
 
 import multiprocessing as mpc
 import ctypes
@@ -89,6 +91,209 @@ class ArrayPartitioner(object):
         self.ct += 1
 
         return r
+
+def interp_large(x0, y0, xnew, axis, nchunks=1, **kwargs):
+    '''
+    large-array-tolerant interpolation
+    '''
+
+    success = False
+
+    specs_interp = interp1d(x=x0, y=y0, axis=axis, **kwargs)
+
+    while not success:
+        # chunkify x array
+        xchunks = np.array_split(xnew, nchunks)
+        try:
+            ynew = np.concatenate(
+                [specs_interp(xc) for xc in xchunks], axis=axis)
+        except MemoryError:
+            nchunks += 1
+        else:
+            success = True
+
+    return ynew
+
+def _nearest(loglgrid, loglrest, frest, ivarfrest):
+    '''
+    workhorse integer-pixel function
+    '''
+
+    # how to index full cube
+    L, I, J = np.ix_(*[range(i) for i in frest.shape])
+
+    # reference index and corresponding loglam **IN GRID**
+    # this avoids latching onto endpoints erroneously
+    grid_nl = len(loglgrid)
+    ix_ref_grid = (grid_nl - 1) // 2
+    logl_ref_grid = loglgrid[ix_ref_grid]
+
+    ix_ref_rest = np.argmin(np.abs(loglrest - logl_ref_grid), axis=0)
+    logl_ref_rest = loglrest[ix_ref_rest, I, J].squeeze()
+
+    NX, NY = ix_ref_rest.shape
+    xctr, yctr = NX // 2, NY // 2
+
+    plt.close('all')
+    plt.imshow(ix_ref_rest - ix_ref_rest[yctr, xctr],
+               aspect='equal', vmin=-5, vmax=5)
+    plt.colorbar(extend='both')
+    plt.show()
+    plt.close('all')
+
+    dlogl_resid = (logl_ref_rest - logl_ref_grid)
+
+    '''
+    set up what amounts to a linear mapping from rest to rectified,
+        from: pixel u of spaxel I, J of rest-frame cube
+        to:   pixel u' of spaxel I', J' of rectified cube
+
+    in reality pixel ix_ref_grid - 1 <==> ix_ref_rest - 1
+                     ix_ref_grid     <==> ix_ref_rest
+                     ix-ref_grid + 1 <==> ix_ref_rest + 1
+                     etc...
+    '''
+
+    def rect2rest(i0_rect, i0_rest, i_rect):
+        '''
+        maps pixel number (rectified frame) to pixel number (rest frame),
+            assuming that each pixel is the same width
+        '''
+        # delta # pix from reference in rect frame
+        d_rect = i_rect - i0_rect
+        return i0_rest + d_rect
+
+    # create array of individual wavelength indices in rectified array
+    l_ixs_rect = np.linspace(0, grid_nl - 1, grid_nl, dtype=int)[:, None, None]
+    l_ixs_rest = rect2rest(ix_ref_grid, ix_ref_rest, l_ixs_rect)
+    # where are we out of range?
+    badrange = np.logical_or.reduce(((l_ixs_rest >= grid_nl),
+                                     (l_ixs_rest < 0)))
+    l_ixs_rest[badrange] = 0
+
+    flux_regr = frest[l_ixs_rest, I, J]
+    ivar_regr = ivarfrest[l_ixs_rest, I, J]
+
+    ivar_regr[badrange] = 0.
+
+    return flux_regr, ivar_regr, dlogl_resid
+
+class Regridder(object):
+    '''
+    place regularly-sampled array onto another grid
+    '''
+
+    methods = ['nearest', 'invdistwt', 'interp', 'supersample']
+
+    def __init__(self, loglgrid, loglrest, frest, ivarfrest, dlogl=1.0e-4):
+        self.loglgrid = loglgrid
+        self.loglrest = loglrest
+        self.frest = frest
+        self.ivarfrest = ivarfrest
+
+        self.dlogl = dlogl
+
+    def nearest(self):
+        '''
+        integer-pixel deredshifting
+        '''
+
+        loglgrid = self.loglgrid
+        loglrest = self.loglrest
+        frest = self.frest
+        ivarfrest = self.ivarfrest
+
+        flux_regr, ivar_regr, *_ = _nearest(
+            loglgrid=loglgrid, loglrest=loglrest,
+            frest=frest, ivarfrest=ivarfrest)
+
+        return flux_regr, ivar_regr
+
+    def invdistwt(self):
+        '''
+        inverse-distance-weighted deredshifting
+        '''
+
+        # do nearest-pixel deredshifting
+        loglgrid = self.loglgrid
+        grid_nl = len(loglgrid)
+        # expand logl grid
+        loglgrid_ = np.concatenate(([loglgrid[0] - self.dlogl],
+                                    loglgrid,
+                                    [loglgrid[-1] + self.dlogl]))
+        loglrest = self.loglrest
+        frest = self.frest
+        ivarfrest = self.ivarfrest
+
+        # get the "best-possible" deredshift scenario
+        flux_n, ivar_n, dlogl_resid = _nearest(
+            loglgrid_, loglrest, frest, ivarfrest)
+
+        # intermediate logl: destination grid, minus residual
+        logl_inter = loglgrid_[..., None, None] - dlogl_resid[None, ...]
+        # residual as fraction of a pixel
+        sfpix = dlogl_resid / self.dlogl
+
+        '''
+        have we deredshifted too much or too little?
+
+        if dlogl_resid is positive, then actual solution is redward
+            i.e., we have not deredshifted enough
+                  so we take pixel 1 ==> nl + 1
+                  and the stated fpix is measured relative to LHS
+        if dlogl_resid is negative, then actual solution is blueward
+            i.e., we have deredshifted too much
+                  so we take pixel 0 ==> nl
+                  and the stated fpix is measured relative to RHS
+        '''
+
+        lr = np.sign(sfpix).astype(int)
+        reorder = (lr < 0.)
+        fpix = np.abs(sfpix)
+
+        # logl starting points: left and right
+        # left point has to do with whether spectrum was deredshifted too much
+        startl = np.select(condlist=[reorder, ~reorder],
+                           choicelist=[np.zeros_like(fpix, dtype=int),
+                                       np.ones_like(fpix, dtype=int)])
+        startr = startl + 1
+
+        # make spatial selector
+        _, I, J = np.ix_(*[range(i) for i in flux_n.shape])
+
+        # make spectral selectors
+        ixs_l = (startl[None, ...] + np.arange(grid_nl)[..., None, None])
+        ixs_r = (startr[None, ...] + np.arange(grid_nl)[..., None, None])
+
+        # weights of close and far pixels
+        fpix_close = fpix
+        fpix_far = 1. - fpix_close
+
+        # assemble close and far weights
+        w_ = 1. / np.stack([fpix_close, fpix_far], axis=0)
+        # reverse weights
+        w_rev_ = w_[::-1, ...]
+
+        # re-order according to
+        # if fpix is measured relative to LHS, order is ok
+        w = np.select(condlist=[reorder, ~reorder], choicelist=[w_, w_rev_])
+
+        # construct fluxs
+        fluxs_l = flux_n[ixs_l, I, J]
+        fluxs_r = flux_n[ixs_r, I, J]
+
+        fluxs = ((fluxs_l * w[0, ...]) + (fluxs_r * w[1, ...])) / w.sum(axis=0)
+        ivars = 1. / ((1. / ivar_n[ixs_l, I, J]) + (1. / ivar_n[ixs_r, I, J]))
+        ivars[~np.isfinite(ivars)] = 0.
+
+        return fluxs, ivars
+
+    def interp(self):
+        pass
+
+    def supersample(self, nper=10):
+        pass
+
 
 def pickle_loader(fname):
     with open(fname, 'rb') as f:
@@ -260,30 +465,16 @@ def redshift(l, f, ivar, **kwargs):
 
     return res['l'], res['f'], res['ivar']
 
-def coadd(l, f, ivar, l_ax=0, accum_axs=(1, 2), **kwargs):
-    nl = f.shape[l_ax]
-    map_shape = tuple(f.shape[i] for i in accum_axs)
-    cube_shape = f.shape
+def coadd(f, ivar):
 
-    data = np.empty_like(f, dtype=[('lam', float), ('flam', float),
-                                   ('ivar', float)])
-    data['lam'] = l
-    data['flam'] = f
-    data['ivar'] = ivar
+    var = 1. / ivar
+    fnew = f.sum(axis=(1, 2))
+    varnew = var.sum(axis=(1, 2))
+    ivarnew = 1. / varnew
 
-    result = None
+    ivarnew[~np.isfinite(ivarnew)] = 0.
 
-    for ix in np.ndindex(map_shape):
-        slc = [slice(None)] * len(cube_shape)
-        for i, a in enumerate(accum_axs):
-            slc[a] = slice(ix[i], ix[i] + 1)
-        result = slacc(data1_in=result, data2_in=data[slc].flatten(),
-                       data_out=result, join='lam', add='flam',
-                       weight='ivar')
-
-    lnew, fnew, ivarnew = result['lam'], result['flam'], result['ivar']
-
-    return lnew, fnew, ivarnew
+    return fnew, ivarnew
 
 def PC_cov(cov, snr, i0, E, nl, q):
     if snr < 1.:
