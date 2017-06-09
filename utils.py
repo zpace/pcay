@@ -9,88 +9,163 @@ from speclite import accumulate as slacc
 
 from scipy.ndimage.filters import gaussian_filter1d as gf
 from scipy.interpolate import interp1d
+from scipy.spatial.distance import pdist, squareform
 
 import multiprocessing as mpc
 import ctypes
 
+import os
+import sys
+
+# add manga RC location to path, and import config
+if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
+    sys.path.append(os.environ['MANGA_CONFIG_LOC'])
+
+import mangarc
+
+if mangarc.tools_loc not in sys.path:
+    sys.path.append(mangarc.tools_loc)
+
+# personal
+import manga_tools as m
+
 ln10 = np.log(10.)
+mpl_v = 'MPL-5'
 
-class ArrayPartitioner(object):
-    '''
-    partition arrays along an axis, and return an iterator
 
-    Iterator produces all the subarrays of `arrays` along LAST TWO dimensions
+class GaussPeak(object):
+    def __init__(self, pos, wid, ampl=None, flux=None):
+        self.pos = pos
+        self.wid = wid
 
-    Parameters:
-    -----------
-
-    arrays : list
-        list of arrays to partition identically
-
-        Each of these arrays must have identical shape in final two dimensions
-
-    lgst_ix : int (default: 0)
-        index of `arrays` that corresponds to the array that limits the size
-        of individual operations
-
-    lgst_el_shape : tuple
-        shape of each intermediate array element that needs to be handled
-
-    memlim : int
-        limit of memory for each block of several lgst_el_size to take up
-
-    Example:
-    --------
-
-    `lim_array` has shape (47, 47, 24, 24), and `arrays` has elements with
-    shape (..., 24, 24) (the ... could be nothing). In this case,
-    `lgst_el_shape` = (24, 24). The iterator will return portions of
-    the len-(47*47=2209) "flattened" array
-    '''
-
-    def __init__(self, arrays, lgst_el_shape, lgst_ix=0, memlim=2147483648):
-        self.elshape = lgst_el_shape
-        self.imshape = arrays[lgst_ix].shape[-2:]
-
-        def f(a):
-            if len(a.shape) == 2:
-                return a.flatten()
-            else:
-                return np.moveaxis(a.reshape((self.elshape +
-                                              (np.prod(self.imshape), ))),
-                                   [0, 1, 2], [1, 2, 0])
-
-        self.arrays = [f(a) for a in arrays]
-
-        # calculate the max number of elements of size lgst_el_size
-        # size in memory of largest intermediate element
-        lgst_el_size = np.empty(lgst_el_shape).nbytes
-        # how many intermediate subarrays are possible to
-        # store at once given memlim
-        self.M = memlim // lgst_el_size
-
-        # the basic idea is that we get N partitions such that each partition
-        # has at most size M
-        self.N = np.prod(self.imshape) // self.M
-
-        self.ct = 0  # sentinel value
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self.ct > self.N:
-            raise StopIteration
-        elif self.ct == self.N:
-            r = (a[..., (np.prod(self.imshape) - self.M * self.N):]
-                 for a in self.arrays)
+        if (not ampl) and (not flux):
+            self.ampl = 1.
+        elif not flux:
+            pass
+        elif not ampl:
+            self.ampl = 1. / (self.wid * np.sqrt(2. * np.pi))
         else:
-            r = (a[..., (self.ct * self.M):((self.ct + 1) * self.M)]
-                 for a in self.arrays)
+            raise ValueError('specify either or none of (ampl, flux)')
 
-        self.ct += 1
+    @property
+    def flux(self):
+        return self.ampl * self.wid * np.sqrt(2. * np.pi)
 
-        return r
+    def __call__(self, x):
+        return self.ampl * np.exp(-(x - self.pos)**2. / (2. * self.wid))
+
+
+def multigaussflux(POSs, WIDs, FLUXs, x):
+    peaks = [GaussPeak(pos=pos, wid=wid, flux=flux)
+             for (pos, wid, flux) in zip(POSs, WIDs, FLUXs)]
+    res = np.add.reduce([peak(x) for peak in peaks])
+
+    return res
+
+def lsf2cov(f, l, dl):
+    '''
+    turn a line-spread function into a covariance matrix
+
+    params:
+     - l: wavelength array
+     - dl: wavelength width subtended by each wavelength pixel
+    '''
+    w = f(l)
+
+    # divide each dl by width of kernel: this yields some measure of
+    # distance from l->l', normalized to width of LSF at that wavelength
+    w_dl = w / dl
+
+    # rescale l, so l(i+1) = l(i) + dl_w(i)
+    l_resc = np.cumsum(w_dl)
+
+    # make a distance matrix in the rescaled-l space
+    DD = squareform(pdist(l_resc[:, None]))
+    K = np.exp(-0.5 * DD**2.)
+
+    return K, DD, w
+
+
+class MaNGA_LSF(object):
+    '''
+    '''
+    def __init__(self, LSF_R_obs_gpr, **kwargs):
+        self.LSF_R_obs_gpr = LSF_R_obs_gpr
+
+    def LSF_pix_z(self, lam, dlogl, z):
+        '''
+        calculate width (pix) of LSF
+        '''
+        specres = self.LSF_R_obs_gpr.predict(
+            np.atleast_2d(lam).T)
+        dlnl = dlogl * ln10
+
+        wpix = (1. / dlnl) * (1. / specres)
+        wpix_z = wpix / (1. + z)
+
+        return wpix_z
+
+    @classmethod
+    def from_drpall(cls, drpall, n=None, **kwargs):
+        '''
+        read in lots of IFUs' LSFs, assume a redshift
+        '''
+        import sklearn.gaussian_process as gp
+
+        if n is None:
+            n = len(drpall)
+
+        lam, specres, dspecres = zip(
+            *[m.hdu_data_extract(
+                  hdulist=m.load_drp_logcube(
+                      plate=row['plate'], ifu=row['ifudsgn'], mpl_v=mpl_v),
+                  names=['WAVE', 'SPECRES', 'SPECRESD'])
+              for row in drpall[:n]])
+
+        lam = np.concatenate(lam)
+        specres = np.concatenate(specres)
+        dspecres = np.concatenate(dspecres)
+        good = np.logical_and.reduce(
+            list(map(np.isfinite, [lam, specres, dspecres])))
+        lam, specres, dspecres = lam[good], specres[good], dspecres[good]
+
+        regressor = gp.GaussianProcessRegressor(alpha=dspecres)
+        regressor.fit(X=np.atleast_2d(lam).T, y=specres)
+
+        return cls(LSF_pix_obs=wpix, **kwargs)
+
+    def __call__(self, lam, dlogl, y, z):
+        '''
+        performs convolution with LSF appropriate to a given redshift
+        '''
+        wpix_z = self.LSF_pix_z(lam, dlogl, z)
+        yfilt = np.row_stack(
+            [gaussian_filter(spec=s, sig=wpix_z)] for s in y)
+        return yfilt
+
+
+class KPCGen(object):
+    '''
+    compute some spaxel's PC cov matrix
+    '''
+
+    def __init__(self, kspec_obs, i0_map, E, ivar_scaled):
+        self.kspec_obs = kspec_obs
+        self.i0_map = i0_map
+        self.E = E
+        self.q, self.nl = E.shape
+        self.ivar_scaled = ivar_scaled
+
+    def __call__(self, i, j):
+        i0_ = self.i0_map[i, j]
+        sl = [slice(i0_, i0_ + self.nl) for _ in range(2)]
+        kspec = self.kspec_obs[sl]
+        # add to diagonal term from actual variance, floored at .1%
+        var = 1. / self.ivar_scaled[..., i, j]
+        np.einsum('ii->i', kspec)[:] = 1. / self.ivar_scaled[..., i, j].clip(
+            min=1.0e-6, max=1.0e6)
+        return (self.E @ (kspec) @ self.E.T)
+
 
 def interp_large(x0, y0, xnew, axis, nchunks=1, **kwargs):
     '''
@@ -134,13 +209,6 @@ def _nearest(loglgrid, loglrest, frest, ivarfrest):
     NX, NY = ix_ref_rest.shape
     xctr, yctr = NX // 2, NY // 2
 
-    plt.close('all')
-    plt.imshow(ix_ref_rest - ix_ref_rest[yctr, xctr],
-               aspect='equal', vmin=-5, vmax=5)
-    plt.colorbar(extend='both')
-    plt.show()
-    plt.close('all')
-
     dlogl_resid = (logl_ref_rest - logl_ref_grid)
 
     '''
@@ -159,9 +227,9 @@ def _nearest(loglgrid, loglrest, frest, ivarfrest):
         maps pixel number (rectified frame) to pixel number (rest frame),
             assuming that each pixel is the same width
         '''
-        # delta # pix from reference in rect frame
+        # delta no. pix from reference in rect frame
         d_rect = i_rect - i0_rect
-        return i0_rest + d_rect
+        return i0_rest + d_rect + 1 # should this be -1, 0, or 1?
 
     # create array of individual wavelength indices in rectified array
     l_ixs_rect = np.linspace(0, grid_nl - 1, grid_nl, dtype=int)[:, None, None]
@@ -169,12 +237,12 @@ def _nearest(loglgrid, loglrest, frest, ivarfrest):
     # where are we out of range?
     badrange = np.logical_or.reduce(((l_ixs_rest >= grid_nl),
                                      (l_ixs_rest < 0)))
-    l_ixs_rest[badrange] = 0
+    #l_ixs_rest[badrange] = 0
 
     flux_regr = frest[l_ixs_rest, I, J]
     ivar_regr = ivarfrest[l_ixs_rest, I, J]
 
-    ivar_regr[badrange] = 0.
+    #ivar_regr[badrange] = 0.
 
     return flux_regr, ivar_regr, dlogl_resid
 
@@ -239,11 +307,11 @@ class Regridder(object):
 
         if dlogl_resid is positive, then actual solution is redward
             i.e., we have not deredshifted enough
-                  so we take pixel 1 ==> nl + 1
+                  so we take pixel 1 ==> nl
                   and the stated fpix is measured relative to LHS
         if dlogl_resid is negative, then actual solution is blueward
             i.e., we have deredshifted too much
-                  so we take pixel 0 ==> nl
+                  so we take pixel 0 ==> nl - 1
                   and the stated fpix is measured relative to RHS
         '''
 
@@ -255,7 +323,7 @@ class Regridder(object):
         # left point has to do with whether spectrum was deredshifted too much
         startl = np.select(condlist=[reorder, ~reorder],
                            choicelist=[np.zeros_like(fpix, dtype=int),
-                                       np.ones_like(fpix, dtype=int)])
+                                       np.ones_like(fpix, dtype=int)]) - 1
         startr = startl + 1
 
         # make spatial selector
@@ -283,7 +351,8 @@ class Regridder(object):
         fluxs_r = flux_n[ixs_r, I, J]
 
         fluxs = ((fluxs_l * w[0, ...]) + (fluxs_r * w[1, ...])) / w.sum(axis=0)
-        ivars = 1. / ((1. / ivar_n[ixs_l, I, J]) + (1. / ivar_n[ixs_r, I, J]))
+        ivars = 1. / ((1. / ivar_n[ixs_l, I, J].clip(min=1.0e-4)) + \
+                      (1. / ivar_n[ixs_r, I, J].clip(min=1.0e-4)))
         ivars[~np.isfinite(ivars)] = 0.
 
         return fluxs, ivars
@@ -294,6 +363,25 @@ class Regridder(object):
     def supersample(self, nper=10):
         pass
 
+class FilterFuncs(object):
+    '''
+    turn a list of TableGroup-filtering functions into a single function
+    '''
+    def __init__(self, funcs):
+        self.funcs = funcs
+
+    def __call__(self, tab, *args):
+        if (self.funcs is None):
+            return True
+
+        if len(self.funcs) == 0:
+            return True
+
+        for f in self.funcs:
+            if f(tab, *args) is False:
+                return False
+        else:
+            return True
 
 def pickle_loader(fname):
     with open(fname, 'rb') as f:
@@ -435,6 +523,46 @@ def extinction_correct(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
     else:
         return f
 
+def extinction_correct(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
+    '''
+    wraps around specutils.extinction.reddening
+    '''
+
+    a_v = r_v * EBV
+    r = extinction.reddening
+
+    # output from reddening is inverse-flux-transmission
+    f_itr = r(wave=l, a_v=a_v, r_v=r_v, **kwargs)[..., None, None]
+    # to deredden, divide f by f_itr
+
+    f /= f_itr
+
+    if ivar is not None:
+        ivar *= f_itr**2.
+        return f, ivar
+    else:
+        return f
+
+def extinction_atten(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
+    '''
+    wraps around specutils.extinction.reddening
+    '''
+
+    a_v = r_v * EBV
+    r = extinction.reddening
+
+    # output from reddening is inverse-flux-transmission
+    f_itr = r(wave=l, a_v=a_v, r_v=r_v, **kwargs)
+    # to redden, mult f by f_itr
+
+    f *= f_itr
+
+    if ivar is not None:
+        ivar /= f_itr**2.
+        return f, ivar
+    else:
+        return f
+
 def add_redshifts(zs, axis=0):
     '''
     add redshifts in an array-like, along an axis
@@ -467,21 +595,58 @@ def redshift(l, f, ivar, **kwargs):
 
 def coadd(f, ivar):
 
-    var = 1. / ivar
     fnew = f.sum(axis=(1, 2))
-    varnew = var.sum(axis=(1, 2))
-    ivarnew = 1. / varnew
-
-    ivarnew[~np.isfinite(ivarnew)] = 0.
+    ivarnew = ivar.sum(axis=(1, 2))
 
     return fnew, ivarnew
 
 def PC_cov(cov, snr, i0, E, nl, q):
     if snr < 1.:
-        return 10. * np.ones((q, q))
+        return 100. * np.ones((q, q))
     else:
         sl = [slice(i0, i0 + nl) for _ in range(2)]
         return E @ (cov[i0 : i0 + nl, i0 : i0 + nl]) @ E.T
 
+
+def reshape_cube2rss(cubes):
+    '''
+    reshape datacube into pseudo-RSS (spaxel-wise)
+    '''
+
+    naxis1, naxis2, naxis3 = cubes[0].shape
+
+    # reshape data
+    # axis 0: observation; axis 1: spaxel; axis 2: wavelength
+
+    rss = np.stack([cube.reshape((naxis1, -1)).T for cube in cubes])
+    return rss
+
+def apply_mask(A, mask, axis=0):
+    '''
+    apply spaxel mask along axis 1
+    '''
+
+    if type(axis) is np.ndarray:
+        A = (A, )
+
+    if type(axis) is int:
+        axis = (axis, ) * len(A)
+
+    A_new = (np.compress(a=A_, condition=mask, axis=ax) for A_, ax in zip(A, axis))
+
+    return A_new
+
+def bin_sum_agg(A, bins):
+    '''
+    sum-aggregate array A along bin numbers given in `bins`
+    '''
+    mask = np.zeros((bins.max()+1, len(bins)), dtype=bool)
+    mask[bins, np.arange(len(bins))] = 1
+
+    return mask.dot(A)
+
+class LogcubeDimError(Exception):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
 
 hdu_unit = lambda hdu: u.Unit(hdu.header['BUNIT'])

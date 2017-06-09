@@ -62,7 +62,8 @@ def annotate_badPDF(ax, mask):
                zorder=10)
 
 def gen_gridspec_fig(N, add_row=False, spsize=(1.75, 1.25),
-                     border=(0.3, 0.25, 0.3, 0.25), space=(0.5, 0.5)):
+                     border=(0.3, 0.25, 0.3, 0.25), space=(0.5, 0.5),
+                     **kwargs):
     '''
     generate a subplot grid with gridspec
 
@@ -110,6 +111,6 @@ def gen_gridspec_fig(N, add_row=False, spsize=(1.75, 1.25),
 
     gs = gridspec.GridSpec(ncols, nrows, left=left, right=right,
                            bottom=bottom, top=top,
-                           wspace=wspace, hspace=hspace)
+                           wspace=wspace, hspace=hspace, **kwargs)
 
     return gs, fig

@@ -59,22 +59,39 @@ class FakeData(object):
 
         s_norm = s_model_blur.max()
         f = np.tile(s_model_blur[..., None, None] / s_norm, (1, ) + mapshape)
-        ivar_dummy = np.ones_like(f)
 
         # redshift model cube
-        l_m_z, s_m_z, _ = ut.redshift(l_model, f, ivar_dummy, z_in=0., z_out=z_out)
+        l_m_z, s_m_z, _ = ut.redshift(l=l_model, f=f, ivar=np.ones_like(f),
+                                      z_in=0., z_out=z_out)
         logl_m_z = np.log10(l_m_z)
 
         # interpolate redshifted model cube
         logl_f = np.log10(drp_base['WAVE'].data)
         s_m_z_c = np.zeros(cubeshape)
 
+        # redden model cube according to galactic E(B-V)
+        s_m_z = ut.extinction_atten(
+            l=l_m_z * u.AA, f=s_m_z, EBV=drp_base[0].header['EBVGAL'])
+
+        rimg = drp_base['RIMG'].data
+
         for ind in np.ndindex(mapshape):
             newspec = self.resample_spaxel(
-                logl_m_z[:, ind[0], ind[1]], s_m_z[:, ind[0], ind[1]], logl_f)
+                logl_in=logl_m_z[:, ind[0], ind[1]],
+                flam_in=s_m_z[:, ind[0], ind[1]], logl_out=logl_f)
             s_m_z_c[:, ind[0], ind[1]] = newspec
 
-        drp_base['IVAR'].data[s_m_z_c < 1.0e-5] = 0.
+            '''
+            if rimg[ind[0], ind[1]] >= 0.25 * rimg.max():
+                plt.close('all')
+                fig = plt.figure(figsize=(6, 4), dpi=300)
+                ax = fig.add_subplot(111)
+                ax.plot(10.**logl_m_z[:, ind[0], ind[1]], s_m_z[:, ind[0], ind[1]],
+                        linewidth=0.25, label='old')
+                ax.plot(10.**logl_f, newspec, linewidth=0.25, label='new')
+                ax.legend(loc='best')
+                plt.show()
+            '''
 
         # normalize everything to have the same observed-frame r-band flux
         u_flam = 1.0e-17 * (u.erg / (u.s * u.cm**2 * u.AA))
@@ -91,7 +108,16 @@ class FakeData(object):
 
         # add error vector based on ivar
         err = np.random.randn(*cubeshape)
-        fakecube = s_m_z_c + (err / np.sqrt(drp_base['IVAR'].data))
+        ivar_obs = drp_base['IVAR'].data
+        fakecube = s_m_z_c + (err / np.sqrt(ivar_obs))
+        fakecube[ivar_obs == 0] = (100. * r[None, ...] * \
+                                   np.random.randn(*cubeshape))[ivar_obs == 0.]
+
+        # mask where the native datacube has no signal
+        nosignal = (drp_base['RIMG'].data == 0.)[None, ...]
+        fakecube[nosignal] = 0.
+        ivar_obs[s_m_z_c == 0.] = 0
+        drp_base['IVAR'].data = ivar_obs
 
         # mask where there's bad velocity info
         badvel = m.mask_from_maskbits(
@@ -117,6 +143,12 @@ class FakeData(object):
         models_specs = models_hdulist['flam'].data
 
         models_lam = models_hdulist['lam'].data
+
+        # restrict wavelength range to same as PCA
+        goodlam = (models_lam >= pca.l.value.min()) * \
+                  (models_lam <= pca.l.value.max())
+        models_lam, models_specs = models_lam[goodlam], models_specs[:, goodlam]
+
         models_logl = np.log10(models_lam)
 
         models_meta = t.Table(models_hdulist['meta'].data)
@@ -125,6 +157,7 @@ class FakeData(object):
             [models_meta, get_stellar_indices(l=models_lam,
                                               spec=models_specs.T)])
         models_meta.keep_columns(pca.metadata.colnames)
+
         for n in models_meta.colnames:
             if pca.metadata[n].meta.get('scale', 'linear') == 'log':
                 models_meta[n] = np.log10(models_meta[n])
@@ -155,6 +188,7 @@ class FakeData(object):
 
         interp = interp1d(x=logl_in, y=flam_in, kind='linear', bounds_error=False,
                           fill_value=0.)
+        # 0. is a sentinel value, that tells us where to mask later
         return interp(logl_out)
 
     def write(self):
@@ -190,3 +224,23 @@ def get_stellar_indices(l, spec):
         names=indices.data['ixname'])
 
     return inds
+
+
+if __name__ == '__main__':
+
+    from find_pcs import setup_pca
+
+    pca_kwargs = {'lllim': 3500. * u.AA, 'lulim': 8800. * u.AA}
+
+    pca, K_obs = setup_pca(
+        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
+        redo=True, pkl=False, q=10, fre_target=.005, nfiles=10,
+        pca_kwargs=pca_kwargs, zpt_corr=True)
+
+    plateifu = '8083-12704'
+
+    data = FakeData.from_FSPS(
+        fname='CSPs_CKC14_MaNGA/CSPs_test.fits', i=None,
+        plateifu_base=plateifu, pca=pca)
+
+    data.write()
