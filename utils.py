@@ -88,6 +88,7 @@ def lsf2cov(f, l, dl):
 
 class MaNGA_LSF(object):
     '''
+    instrumental line-spread function of MaNGA
     '''
     def __init__(self, LSF_R_obs_gpr, **kwargs):
         self.LSF_R_obs_gpr = LSF_R_obs_gpr
@@ -129,10 +130,15 @@ class MaNGA_LSF(object):
             list(map(np.isfinite, [lam, specres, dspecres])))
         lam, specres, dspecres = lam[good], specres[good], dspecres[good]
 
-        regressor = gp.GaussianProcessRegressor(alpha=dspecres)
+        kernel_ = gp.kernels.RBF(
+                      length_scale=1., length_scale_bounds=(.2, 5.)) + \
+                  gp.kernels.WhiteKernel(
+                      noise_level=.02, noise_level_bounds=(.002, 2.))
+        regressor = gp.GaussianProcessRegressor(
+            normalize_y=True, kernel=kernel_)
         regressor.fit(X=np.atleast_2d(lam).T, y=specres)
 
-        return cls(LSF_pix_obs=wpix, **kwargs)
+        return cls(LSF_R_obs_gpr=regressor, **kwargs)
 
     def __call__(self, lam, dlogl, y, z):
         '''
@@ -140,7 +146,7 @@ class MaNGA_LSF(object):
         '''
         wpix_z = self.LSF_pix_z(lam, dlogl, z)
         yfilt = np.row_stack(
-            [gaussian_filter(spec=s, sig=wpix_z)] for s in y)
+            [gaussian_filter(spec=s, sig=wpix_z) for s in y])
         return yfilt
 
 
@@ -188,6 +194,8 @@ def interp_large(x0, y0, xnew, axis, nchunks=1, **kwargs):
             success = True
 
     return ynew
+
+    from time import localtime
 
 def _nearest(loglgrid, loglrest, frest, ivarfrest):
     '''
@@ -261,7 +269,7 @@ class Regridder(object):
 
         self.dlogl = dlogl
 
-    def nearest(self):
+    def nearest(self, **kwargs):
         '''
         integer-pixel deredshifting
         '''
@@ -277,7 +285,7 @@ class Regridder(object):
 
         return flux_regr, ivar_regr
 
-    def invdistwt(self):
+    def invdistwt(self, **kwargs):
         '''
         inverse-distance-weighted deredshifting
         '''
@@ -357,10 +365,116 @@ class Regridder(object):
 
         return fluxs, ivars
 
-    def interp(self):
-        pass
+    def drizzle(self, **kwargs):
+        '''
+        drizzle flux between pixels
+        '''
 
-    def supersample(self, nper=10):
+        loglgrid = self.loglgrid
+        loglrest = self.loglrest
+        frest = self.frest
+        ivarfrest = self.ivarfrest
+        dlogl = self.dlogl
+
+        dl_rest = (10.**(loglrest + dlogl / 2)) - (10.**(loglrest - dlogl / 2))
+        dl_grid = (10.**(loglrest + dlogl / 2)) - (10.**(loglrest - dlogl / 2))
+
+        return flux_regr, ivar_regr
+
+    def interp(self, **kwargs):
+        loglgrid = self.loglgrid
+        loglrest = self.loglrest
+        frest = self.frest
+        ivarfrest = self.ivarfrest
+        dlogl = self.dlogl
+
+    def supersample(self, nper=2, **kwargs):
+        '''
+        regrid from rest to fixed frame by supersampling
+        '''
+        loglgrid = self.loglgrid
+        loglrest = self.loglrest
+        frest = self.frest
+        ivarfrest = self.ivarfrest
+        dlogl = self.dlogl
+        nlrest, NY, NX = loglrest.shape
+        mapshape = (NY, NX)
+
+        # dummy offset array
+        offset_ = lin_transform(
+            x=np.linspace(-.5 + .5 / nper, .5 - .5 / nper, nper,
+                          dtype=np.float32),
+            r1=[-.5, .5], r2=[-dlogl, dlogl])
+        # construct supersampled logl array
+        loglrest_super = loglrest.repeat(nper, axis=0) + \
+                         offset_.repeat(nlrest, axis=0)[:, None, None]
+        # nudge logl right a little
+        #loglrest += dlogl / (10. * nper)
+        lrest_super = 10.**loglrest_super
+        dlrest_super = determine_dl(loglrest_super)
+        frest_super = frest.repeat(nper, axis=0)
+        frest_integ_super = frest_super * dlrest_super
+
+        ivarfrest_super = ivarfrest.repeat(nper, axis=0) / nper**2.
+
+        # now here's the tricky bit...
+        # first zero out entries of flam_obs_rest_integ_super that are out of range
+        obs_in_range = np.logical_and(
+            loglrest_super >= loglgrid.min() - dlogl / 2.,
+            loglrest_super <= loglgrid.max() + dlogl / 2.)
+        frest_integ_super[~obs_in_range] = 0.
+
+        # set up empty dummy arrays for flux and variance
+        flam_obs_rest_integ_regr = np.empty((len(loglgrid), ) + mapshape)
+        ivar_obs_rest_regr = np.empty((len(loglgrid), ) + mapshape)
+
+        # set up bin edges for histogramming
+        bin_edges = np.concatenate(
+            [loglgrid - dlogl / 2., loglgrid[-1:] + dlogl / 2.])
+
+        # iterate through indices, and assign fluxes & variances
+        for i, j in np.ndindex(*mapshape):
+            # assign each super-sampled wavelength to a hist bin
+            # weighted according to its flux
+            hist, _ = np.histogram(
+                a=loglrest_super[:, i, j], bins=bin_edges,
+                weights=obs_in_range[:, i, j] * frest_integ_super[:, i, j])
+            flam_obs_rest_integ_regr[:, i, j] = hist
+
+            # assign each super-sampled wavelength to a hist bin
+            # weighted according to its flux variance
+            hist, _ = np.histogram(
+                a=loglrest_super[:, i, j], bins=bin_edges,
+                weights=obs_in_range[:, i, j] * ivarfrest_super[:, i, j])
+            ivar_obs_rest_regr[:, i, j] = hist
+
+        # and divide by dl to get a flux density
+        flam_obs_rest_regr = flam_obs_rest_integ_regr / determine_dl(
+            loglgrid)[:, None, None]
+
+        # there's this issue where sometimes regridded flams get bumped
+        # solve this quickly by specifying that when fregr lies outside
+        # the range of the two nearest integer-pixel-deredshift solutions
+        # (with some tolerance) set ivar to zero
+        flux_regr_nr1, ivar_regr_nr1, regr_res1 = _nearest(
+            loglgrid=loglgrid, loglrest=loglrest,
+            frest=frest, ivarfrest=ivarfrest)
+        flux_regr_nr2, ivar_regr_nr2, regr_res2 = _nearest(
+            loglgrid=loglgrid, loglrest=loglrest - dlogl * np.sign(regr_res1),
+            frest=frest, ivarfrest=ivarfrest)
+
+        nrst_range = np.stack([flux_regr_nr1, flux_regr_nr2], axis=0)
+        nrst_med = np.abs(np.median(nrst_range, axis=0))
+        flam_in_range = np.logical_and(
+            flam_obs_rest_regr >= nrst_range.min(axis=0) - 5.0e-2 * nrst_med,
+            flam_obs_rest_regr <= nrst_range.max(axis=0) + 5.0e-2 * nrst_med)
+
+        ivar_obs_rest_regr[~flam_in_range] = 0.
+
+        return flam_obs_rest_regr, ivar_obs_rest_regr
+
+class MapInterpolator(object):
+    def __init__(self):
         pass
 
 class FilterFuncs(object):
@@ -411,6 +525,17 @@ def lin_transform(r1, r2, x):
 def determine_dlogl(logl):
     dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
     return dlogl
+
+def determine_dl(logl):
+    dlogl = determine_dlogl(logl)
+    logl_lbd = logl - dlogl / 2
+    logl_ubd = logl + dlogl / 2
+    l_lbd = 10.**logl_lbd
+    l_ubd = 10.**logl_ubd
+
+    dl = l_ubd - l_lbd
+
+    return dl
 
 def gaussian_filter(spec, sig):
     '''
