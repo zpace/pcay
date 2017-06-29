@@ -168,6 +168,7 @@ class Diagnostic(object):
 
         if xqty == 'SNRMED':
             ax.set_xscale('log')
+            ax.set_xlim([.01, ax.get_xlim()[1]])
 
         return ax
 
