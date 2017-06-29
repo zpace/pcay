@@ -398,6 +398,7 @@ class Regridder(object):
         ivarfrest = self.ivarfrest
         dlogl = self.dlogl
         nlrest, NY, NX = loglrest.shape
+        (nlgrid, ) = loglgrid.shape
         mapshape = (NY, NX)
 
         # dummy offset array
@@ -408,14 +409,13 @@ class Regridder(object):
         # construct supersampled logl array
         loglrest_super = loglrest.repeat(nper, axis=0) + \
                          offset_.repeat(nlrest, axis=0)[:, None, None]
-        # nudge logl right a little
-        #loglrest += dlogl / (10. * nper)
+
         lrest_super = 10.**loglrest_super
         dlrest_super = determine_dl(loglrest_super)
         frest_super = frest.repeat(nper, axis=0)
         frest_integ_super = frest_super * dlrest_super
 
-        ivarfrest_super = ivarfrest.repeat(nper, axis=0) / nper**2.
+        ivarfrest_super = ivarfrest.repeat(nper, axis=0) / nper
 
         # now here's the tricky bit...
         # first zero out entries of flam_obs_rest_integ_super that are out of range
@@ -431,45 +431,96 @@ class Regridder(object):
         # set up bin edges for histogramming
         bin_edges = np.concatenate(
             [loglgrid - dlogl / 2., loglgrid[-1:] + dlogl / 2.])
+        low_edge = bin_edges[0]
+
+        # figure out what index (in each spaxel of supersampled array)
+        # is the first to be assigned
+        ix0s = np.argmin(np.abs(loglrest_super - low_edge),
+                         axis=0)
 
         # iterate through indices, and assign fluxes & variances
         for i, j in np.ndindex(*mapshape):
-            # assign each super-sampled wavelength to a hist bin
-            # weighted according to its flux
-            hist, _ = np.histogram(
-                a=loglrest_super[:, i, j], bins=bin_edges,
-                weights=obs_in_range[:, i, j] * frest_integ_super[:, i, j])
-            flam_obs_rest_integ_regr[:, i, j] = hist
+            ix0 = ix0s[i, j]
+            if loglrest_super[ix0, i, j] < low_edge:
+                ix0 += 1
 
-            # assign each super-sampled wavelength to a hist bin
-            # weighted according to its flux variance
-            hist, _ = np.histogram(
-                a=loglrest_super[:, i, j], bins=bin_edges,
-                weights=obs_in_range[:, i, j] * ivarfrest_super[:, i, j])
-            ivar_obs_rest_regr[:, i, j] = hist
+            # select flux elements in range, reshape, and sum
+            _spax = frest_integ_super[
+                ix0:ix0 + nlgrid * nper, i, j].reshape(
+                    (-1, nper)).sum(axis=1)
+            flam_obs_rest_integ_regr[:, i, j] = _spax
+
+            # select ivar elements
+            _spax = ivarfrest_super[
+                ix0:ix0 + nlgrid * nper, i, j].reshape(
+                    (-1, nper)).sum(axis=1)
+            ivar_obs_rest_regr[:, i, j] = _spax
 
         # and divide by dl to get a flux density
         flam_obs_rest_regr = flam_obs_rest_integ_regr / determine_dl(
             loglgrid)[:, None, None]
 
-        # there's this issue where sometimes regridded flams get bumped
-        # solve this quickly by specifying that when fregr lies outside
-        # the range of the two nearest integer-pixel-deredshift solutions
-        # (with some tolerance) set ivar to zero
-        flux_regr_nr1, ivar_regr_nr1, regr_res1 = _nearest(
-            loglgrid=loglgrid, loglrest=loglrest,
-            frest=frest, ivarfrest=ivarfrest)
-        flux_regr_nr2, ivar_regr_nr2, regr_res2 = _nearest(
-            loglgrid=loglgrid, loglrest=loglrest - dlogl * np.sign(regr_res1),
-            frest=frest, ivarfrest=ivarfrest)
+        return flam_obs_rest_regr, ivar_obs_rest_regr
 
-        nrst_range = np.stack([flux_regr_nr1, flux_regr_nr2], axis=0)
-        nrst_med = np.abs(np.median(nrst_range, axis=0))
-        flam_in_range = np.logical_and(
-            flam_obs_rest_regr >= nrst_range.min(axis=0) - 5.0e-2 * nrst_med,
-            flam_obs_rest_regr <= nrst_range.max(axis=0) + 5.0e-2 * nrst_med)
+    def supersample_vec(self, nper=2, **kwargs):
+        '''
+        regrid from rest to fixed frame by supersampling
+        '''
+        loglgrid = self.loglgrid
+        loglrest = self.loglrest
+        frest = self.frest
+        ivarfrest = self.ivarfrest
+        dlogl = self.dlogl
+        nlrest, NY, NX = loglrest.shape
+        (nlgrid, ) = loglgrid.shape
+        mapshape = (NY, NX)
 
-        ivar_obs_rest_regr[~flam_in_range] = 0.
+        # dummy offset array
+        offset_ = lin_transform(
+            x=np.linspace(-.5 + .5 / nper, .5 - .5 / nper, nper,
+                          dtype=np.float32),
+            r1=[-.5, .5], r2=[-dlogl, dlogl])
+        # construct supersampled logl array
+        loglrest_super = loglrest.repeat(nper, axis=0) + \
+                         offset_.repeat(nlrest, axis=0)[:, None, None]
+
+        lrest_super = 10.**loglrest_super
+        dlrest_super = determine_dl(loglrest_super)
+        frest_super = frest.repeat(nper, axis=0)
+        frest_integ_super = frest_super * dlrest_super
+
+        ivarfrest_super = ivarfrest.repeat(nper, axis=0) / nper
+
+        # set up bin edges for histogramming
+        bin_edges = np.concatenate(
+            [loglgrid - dlogl / 2., loglgrid[-1:] + dlogl / 2.])
+        low_edge = bin_edges[0]
+
+        # figure out what index (in each spaxel of supersampled array)
+        # is the first to be assigned
+        ix0s = np.argmin(np.abs(loglrest_super - low_edge),
+                         axis=0)
+
+        L, I, J = np.ix_(*[range(i) for i in frest_super.shape])
+
+        start_too_low = (loglrest_super[ix0s, I, J].squeeze() < low_edge)
+        ix0s[start_too_low] += 1
+
+        # select correct elements
+        # set up empty dummy arrays for flux and variance
+        assign = ix0s[None, :, :] + np.linspace(
+            0, nlgrid * nper - 1, nlgrid * nper, dtype=int)[:, None, None]
+        flam_obs_rest_integ_super = frest_integ_super[assign, I, J].reshape(
+            (nlgrid, nper) + mapshape)
+        ivar_obs_rest_super = ivarfrest_super[assign, I, J].reshape(
+            (nlgrid, nper) + mapshape)
+
+        flam_obs_rest_integ_regr = flam_obs_rest_integ_super.sum(axis=1)
+        ivar_obs_rest_regr = ivar_obs_rest_super.sum(axis=1)
+
+        # and divide by dl to get a flux density
+        flam_obs_rest_regr = flam_obs_rest_integ_regr / determine_dl(
+            loglgrid)[:, None, None]
 
         return flam_obs_rest_regr, ivar_obs_rest_regr
 

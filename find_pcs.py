@@ -250,9 +250,9 @@ class StellarPop_PCA(object):
                    K_obs=K_obs, src='YMC')
 
     @classmethod
-    def from_FSPS(cls, K_obs, base_dir='CSPs', base_fname='CSPs', nfiles=None,
+    def from_FSPS(cls, K_obs, lsf, base_dir='CSPs', base_fname='CSPs', nfiles=None,
                   log_params=['MWA', 'MLr', 'MLi', 'MLz', 'Fstar'],
-                  vel_params={}, dlogl=1.0e-4, **kwargs):
+                  vel_params={}, dlogl=1.0e-4, z0_=.04, **kwargs):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
         '''
@@ -349,18 +349,14 @@ class StellarPop_PCA(object):
 
         # convolve spectra with instrument LSF
         dlogl_hires = ut.determine_dlogl(logl)
-        v_lsf = 200. * u.km / u.s
-        z_ = (v_lsf / c.c).decompose().value
-        z0_ = .03
-        sig_lsf_pix = np.log(10.) * (z_ / dlogl_hires) / (1. + z0_)
-        spec = gaussian_filter1d(spec, sigma=sig_lsf_pix, axis=1)
+        spec_lsf = lsf(y=spec, lam=l.value, dlogl=dlogl_hires, z=z0_)
 
         # interpolate models to desired l range
         logl_final = np.arange(np.log10(l.value.min()),
                                np.log10(l.value.max()), dlogl)
 
         l_final = 10.**logl_final
-        spec_lores = ut.interp_large(x0=logl, y0=spec, xnew=logl_final,
+        spec_lores = ut.interp_large(x0=logl, y0=spec_lsf, xnew=logl_final,
                                        axis=-1, kind='linear')
 
         spec_lores /= spec_lores.max(axis=1)[..., None]
@@ -446,12 +442,10 @@ class StellarPop_PCA(object):
         run PCA on library of model spectra
         '''
 
-        # first run some prep on the model spectra
-
         # S = (T / a) - M
         # T = a * (M + S)
         # normalize each spectrum by its avg flux density
-        self.a = np.mean(self.trn_spectra, axis=1)
+        self.a = np.median(self.trn_spectra, axis=1)
 
         self.normed_trn = self.trn_spectra / self.a[:, np.newaxis]
         self.M = np.mean(self.normed_trn, axis=0)
@@ -1222,6 +1216,20 @@ class StellarPop_PCA(object):
         return evecs, PVE
 
     @staticmethod
+    def PCA_skl(data, dims=None, svd_solver='auto'):
+        '''
+        perform scikit-learn's PCA on array of data,
+            with same call signature as PCA(...)
+        '''
+        from sklearn.decomposition import PCA
+
+        pca = PCA(n_components=dims, whiten=True, svd_solver=svd_solver)
+
+        pca.fit(data)
+
+        return pca.components_, pca.explained_variance_ratio_
+
+    @staticmethod
     def P_from_K(K):
         '''
         compute straight inverse of all elements of K_PC [q, q, NX, NY]
@@ -1363,7 +1371,7 @@ class MaNGA_deredshift(object):
         return cls(drp_hdulist, dap_hdulist, row, **kwargs)
 
     def correct_and_match(self, template_logl, template_dlogl=None,
-                          method='invdistwt'):
+                          method='supersample', dered_kwargs={}):
         '''
         gets datacube ready for PCA analysis:
             - take out galactic extinction
@@ -1415,7 +1423,8 @@ class MaNGA_deredshift(object):
             frest=f_rest, ivarfrest=ivar_rest, dlogl=template_dlogl)
 
         # cal appropriate regridder method
-        self.flux_regr, self.ivar_regr = getattr(self.regrid, method)()
+        self.flux_regr, self.ivar_regr = getattr(
+            self.regrid, method)(**dered_kwargs)
 
         self.spax_mask = np.logical_or.reduce((
             self.vel_mask, self.vel_ivar_mask))
@@ -1543,7 +1552,7 @@ class PCA_Result(object):
     '''
 
     def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}, figdir='.',
-                 truth=None, dered_method='nearest'):
+                 truth=None, dered_method='nearest', dered_kwargs={}):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
@@ -1561,9 +1570,10 @@ class PCA_Result(object):
 
         self.O, self.ivar, mask_spax = dered.correct_and_match(
             template_logl=pca.logl, template_dlogl=self.pca.dlogl,
-            method=dered_method)
+            method=dered_method, dered_kwargs=dered_kwargs)
         self.mask_cube = dered.compute_eline_mask(
-            template_logl=pca.logl, template_dlogl=self.pca.dlogl)
+            template_logl=pca.logl, template_dlogl=self.pca.dlogl,
+            half_dv=500. * u.km / u.s)
 
         self.mask_cube = np.logical_or(self.mask_cube, self.ivar == 0.)
 
@@ -1583,7 +1593,7 @@ class PCA_Result(object):
         self.O_recon = np.ma.array(pca.reconstruct_normed(self.A),
                                    mask=self.mask_cube)
 
-        self.resid = np.abs((self.O_norm - self.O_recon) / self.O_norm)
+        self.resid = (self.O_norm - self.O_recon) / self.O_norm
 
         self.K_PC = pca.build_PC_cov_full_iter(
             z_map=dered.z_map, K_obs_=self.K_obs, a_map=self.a_map,
@@ -1696,28 +1706,27 @@ class PCA_Result(object):
                     c='k', linestyle=':')
 
         # inverse-variance (weight) plot
+        # artificially scaled to appear on same y scale as
+        ivar_norm = (ivar / ivm) * Onm
         ivar_ = ax1.plot(
-            self.l, (ivar / ivm) * Onm,
-            drawstyle='steps-mid', c='m', label='Wt.', linewidth=0.25)
+            self.l, ivar_norm, drawstyle='steps-mid', c='m',
+            label='Wt.', linewidth=0.25)
 
         # residual plot
+        resid = self.resid[:, ix[0], ix[1]]
+        std_err = (1. / np.sqrt(ivar)) / self.a_map[ix[0], ix[1]]
         resid_ = ax2.plot(
-            self.l, self.resid[:, ix[0], ix[1]], drawstyle='steps-mid',
-            c='blue', linewidth=0.25)
-        resid_avg_ = ax2.axhline(self.resid[:, ix[0], ix[1]].mean(),
-                                 xmin=self.l.min(), xmax=self.l.max(),
-                                 linestyle='--', c='salmon', linewidth=0.25)
-
-        try:
-            ax2.set_yscale('log')
-        except ValueError:
-            pass
+            self.l, resid, drawstyle='steps-mid', c='blue', linewidth=0.25)
+        resid_avg_ = ax2.fill_between(
+            x=self.l, y1=-std_err, y2=std_err,
+            linestyle='--', color='salmon', linewidth=0.25, zorder=0)
 
         ax1.tick_params(axis='y', which='major', labelsize=10,
                         labelbottom='off')
         ax2.tick_params(axis='both', which='major', labelsize=10)
 
         ax1.xaxis.set_major_locator(self.lamticks)
+        ax1.xaxis.set_ticklabels([])
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$ (rel)')
         ax1.set_yticks(np.arange(0.5, 2.5, 0.5))
@@ -1726,7 +1735,7 @@ class PCA_Result(object):
         ax2.xaxis.set_major_locator(self.lamticks)
         ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
         ax2.set_ylabel('Resid.')
-        ax2.set_ylim([5.0e-3, 0.5])
+        ax2.set_ylim(np.percentile(np.abs(self.resid), [84.]) * np.array([-1., 1.]))
 
         return orig_, recon_, bestfit_, ivar_, resid_, resid_avg_, ix
 
@@ -2408,6 +2417,15 @@ class PCA_Result(object):
         ax.plot(col_grid, ML_pred, c='magenta', linestyle='--', label='Bell et al. (2003)')
         ax.legend(loc='best', prop={'size': 6})
 
+        # plot IFU-integrated colors and mass-to-lights
+        ml_integr = np.average(
+            ml, weights=self.dered.drp_hdulist['{}img'.format(mlb)].data)
+        f1 = self.dered.drp_hdulist['{}img'.format(b1)].data.sum()
+        f2 = self.dered.drp_hdulist['{}img'.format(b2)].data.sum()
+        color_integr = -2.5 * np.log10(f1 / f2)
+
+        ax.scatter([color_integr], [ml_integr], marker='x', c='r')
+
         ax.set_ylim([ML_pred.min(), ML_pred.max()])
 
         ax.set_xlabel(r'${0} - {1}$'.format(b1, b2))
@@ -2659,7 +2677,7 @@ class PCA_Result(object):
 
             hdulist.append(qty_hdu)
 
-        # make extension with SNR
+        # make extension with spectral SNR
         snr_hdu = fits.ImageHDU(self.SNR_med)
         snr_hdu.header['EXTNAME'] = 'SNRMED'
         hdulist.append(snr_hdu)
@@ -2734,7 +2752,7 @@ def get_col_metadata(col, k, notfound=''):
     return res
 
 def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
-               dered_method='nearest'):
+               dered_method='nearest', dered_kwargs={}, fake_i=None):
 
     plateifu = row['plateifu']
 
@@ -2746,7 +2764,7 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
     if fake:
         if redo_fake:
             data = FakeData.from_FSPS(
-                fname='CSPs_CKC14_MaNGA/CSPs_test.fits', i=None,
+                fname='CSPs_CKC14_MaNGA/CSPs_test.fits', i=fake_i,
                 plateifu_base=plateifu, pca=pca)
             data.write()
         dered = MaNGA_deredshift.from_fakedata(
@@ -2767,7 +2785,7 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
         norm_params={'norm': 'L2', 'soft': False}, figdir=figdir,
-        truth=truth, dered_method=dered_method)
+        truth=truth, dered_method=dered_method, dered_kwargs=dered_kwargs)
 
     pca_res.make_full_QA_fig(kde=(False, False))
 
@@ -2796,48 +2814,48 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
 
     pca_res.sigma_vel()
 
-    #if fake:
-    #    for ix in np.ndindex(pca_res.mask_map.shape):
-    #        if (~pca_res.nodata[ix[0], ix[1]]) and (np.random.rand() < 0.05):
-    #            pca_res.make_full_QA_fig(ix=ix, kde=(False, False))
-
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 20
+    howmany = 30
     cosmo = WMAP9
     warn_behav = 'ignore'
-    dered_method = 'nearest'
+    dered_method = 'supersample_vec'
+    dered_kwargs = {'nper': 4}
 
     mpl_v = 'MPL-5'
 
-    pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA}
+    drpall = m.load_drpall(mpl_v, index='plateifu')
+    drpall = drpall[drpall['nsa_z'] != -9999]
+    lsf = ut.MaNGA_LSF.from_drpall(drpall=drpall, n=2)
+    pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA,
+                  'lsf': lsf, 'z0_': .04}
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
         redo=False, pkl=True, q=10, fre_target=.005, nfiles=30,
         pca_kwargs=pca_kwargs)
 
-    drpall = m.load_drpall(mpl_v, index='plateifu')
-
-    '''
-    row = drpall.loc['8156-1901']
+    #'''
+    row = drpall.loc['8465-3702']
 
     with catch_warnings():
         simplefilter(warn_behav)
 
-        pca_res_f = run_object(row=row, pca=pca, force_redo=False,
-                               fake=True, redo_fake=True,
-                               dered_method=dered_method)
-        pca_res_f.write_results()
-
         pca_res = run_object(row=row, pca=pca, force_redo=False,
-                             fake=False, dered_method=dered_method)
-    '''
+                             fake=False, dered_method=dered_method,
+                             dered_kwargs=dered_kwargs)
+
+        pca_res_f = run_object(row=row, pca=pca, force_redo=True,
+                               fake=True, redo_fake=True, fake_i=81,
+                               dered_method=dered_method,
+                               dered_kwargs=dered_kwargs)
+        pca_res_f.write_results()
+    #'''
 
     #'''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
-    drpall = drpall[drpall['ifudesignsize'] == 19]
+    #drpall = drpall[drpall['ifudesignsize'] == 19]
     drpall = m.shuffle_table(drpall)
     drpall = drpall[:howmany]
 
@@ -2855,7 +2873,7 @@ if __name__ == '__main__':
 
                     pca_res_f = run_object(
                         row=row, pca=pca, force_redo=False, fake=True,
-                        redo_fake=True, dered_method=dered_method)
+                        redo_fake=True, dered_method=dered_method, fake_i=81)
                     pca_res_f.write_results()
 
             except Exception as e:
