@@ -34,6 +34,10 @@ class FakeData(object):
     def __init__(self, l_model, s_model, meta_model,
                  row, drp_base, dap_base):
 
+        # find SNR of each pixel in cube (used to scale noise later)
+        drp_snr = (drp_base['FLUX'].data * np.sqrt(drp_base['IVAR'].data)).clip(
+            min=1.0e-3, max=1.0e3)
+
         # redshift the model spectrum
         z_cosm = row['nsa_zdist']
         z_pec = (dap_base['STELLAR_VEL'].data * u.Unit('km/s') / c.c).to('').value
@@ -81,18 +85,6 @@ class FakeData(object):
                 flam_in=s_m_z[:, ind[0], ind[1]], logl_out=logl_f)
             s_m_z_c[:, ind[0], ind[1]] = newspec
 
-            '''
-            if rimg[ind[0], ind[1]] >= 0.25 * rimg.max():
-                plt.close('all')
-                fig = plt.figure(figsize=(6, 4), dpi=300)
-                ax = fig.add_subplot(111)
-                ax.plot(10.**logl_m_z[:, ind[0], ind[1]], s_m_z[:, ind[0], ind[1]],
-                        linewidth=0.25, label='old')
-                ax.plot(10.**logl_f, newspec, linewidth=0.25, label='new')
-                ax.legend(loc='best')
-                plt.show()
-            '''
-
         # normalize everything to have the same observed-frame r-band flux
         u_flam = 1.0e-17 * (u.erg / (u.s * u.cm**2 * u.AA))
         m_r_drp = Spec2Phot(lam=drp_base['WAVE'].data,
@@ -101,14 +93,13 @@ class FakeData(object):
                             flam=s_m_z_c * u_flam).ABmags['sdss2010-r']
         # flux ratio map
         r = 10.**(-0.4 * (m_r_drp - m_r_mzc))
-        # plt.imshow(r, aspect='equal', vmin=0.)
-        # plt.colorbar()
-        # plt.show()
+        # occasionally this produces inf or nan, so just take care of that quickly
+        r[~np.isfinite(r)] = 1.
         s_m_z_c *= r[None, ...]
 
-        # add error vector based on ivar
+        # add error vector based on SNR calculated above
         err = np.random.randn(*cubeshape)
-        ivar_obs = drp_base['IVAR'].data
+        ivar_obs = ((drp_snr / s_m_z_c)**2.).clip(min=1.0e-6)
         fakecube = s_m_z_c + (err / np.sqrt(ivar_obs))
         fakecube[ivar_obs == 0] = (100. * r[None, ...] * \
                                    np.random.randn(*cubeshape))[ivar_obs == 0.]
