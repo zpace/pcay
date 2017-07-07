@@ -149,6 +149,38 @@ class MaNGA_LSF(object):
             [gaussian_filter(spec=s, sig=wpix_z) for s in y])
         return yfilt
 
+class SpecScaler(object):
+    '''
+    scale spectra to unit dispersion, and remove the mean
+    '''
+    def __init__(self, X, pctls=(16., 84.)):
+        '''
+        params:
+         - X (nspec, nl): array of spectra
+        '''
+        # first scale each spectrum (row) s.t. distance between
+        # pctls[0] and pctls[1] is unity
+        self.pctls = pctls
+        pctls_v = np.percentile(X, pctls, axis=1)
+        self.X_sc = X / np.diff(pctls_v, n=1, axis=0).squeeze()[:, None]
+
+        self.ctr = np.median(self.X_sc, axis=0)
+
+        self.X_sc_ctr = self.X_sc - self.ctr[None, ...]
+
+    def __call__(self, Y, lam_axis=0, map_axis=(1, 2)):
+        '''
+        apply the same scaling as is fit
+        '''
+
+        # first, scale to unit dispersion
+        pctls_v = np.percentile(Y, self.pctls, axis=lam_axis)
+        Y_sc = Y / np.diff(pctls_v, n=1, axis=0).squeeze()[None, ...]
+
+        # then, subtract ctr
+        Y_sc_ctr = Y_sc - self.ctr[:, None, None]
+
+        return Y_sc_ctr
 
 class KPCGen(object):
     '''
@@ -522,7 +554,7 @@ class Regridder(object):
         flam_obs_rest_regr = flam_obs_rest_integ_regr / determine_dl(
             loglgrid)[:, None, None]
 
-        return flam_obs_rest_regr, ivar_obs_rest_regr
+        return flam_obs_rest_regr, np.sqrt(2.) * ivar_obs_rest_regr
 
 class MapInterpolator(object):
     def __init__(self):

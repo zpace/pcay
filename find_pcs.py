@@ -32,6 +32,7 @@ from scipy.ndimage.filters import gaussian_filter1d
 # sklearn
 from sklearn.neighbors import KernelDensity
 from sklearn.model_selection import GridSearchCV
+import sklearn.decomposition as decomp
 
 # statsmodels
 from statsmodels.nonparametric.kde import KDEUnivariate
@@ -101,6 +102,7 @@ class StellarPop_PCA(object):
         self.dlogl = dlogl
 
         self.trn_spectra = trn_spectra[:, l_good]
+
         self.metadata = metadata
 
         # metadata array is anything with a 'TeX' metadata entry
@@ -391,7 +393,7 @@ class StellarPop_PCA(object):
             PCs, PVE = self.PCA(S, q)
 
             # normalize mean again
-            a_ = np.mean(specs, axis=1, keepdims=True)
+            a_ = np.median(specs, axis=1, keepdims=True)
             specs_ = (specs / a_)
 
             # PC amplitudes
@@ -437,21 +439,20 @@ class StellarPop_PCA(object):
 
         return q
 
-    def run_pca_models(self, q):
+    def run_pca_models(self, q, method='PCA'):
         '''
         run PCA on library of model spectra
         '''
 
-        # S = (T / a) - M
-        # T = a * (M + S)
-        # normalize each spectrum by its avg flux density
-        self.a = np.median(self.trn_spectra, axis=1)
+        self.scaler = ut.SpecScaler(X=self.trn_spectra)
+        self.S = self.scaler.X_sc_ctr
+        self.M = self.scaler.ctr
 
-        self.normed_trn = self.trn_spectra / self.a[:, np.newaxis]
-        self.M = np.mean(self.normed_trn, axis=0)
-        self.S = self.normed_trn - self.M
+        self.PCA = getattr(decomp, method)(n_components=q, whiten=True)
+        self.trn_PC_wts = self.PCA.fit_transform(self.S)
 
-        self.PCs, self.PVE = self.PCA(self.S, dims=q)
+        self.PCs = self.PCA.components_
+        self.PVE = self.PCA.explained_variance_ratio_
 
         # project back onto the PCs to get the weight vectors
         self.trn_PC_wts = (self.S).dot(self.PCs.T)
@@ -499,13 +500,8 @@ class StellarPop_PCA(object):
         # account for everywhere-zero ivar
         ivar[ivar == 0.] = eps
 
-        # normalize by average flux density
-        a = np.average(f, weights=ivar, axis=0)
-        a[a == 0.] = np.mean(a[a != 0.])
-        f = f / a
-
-        # get mean spectrum
-        O_sub = f - self.M[..., None, None]
+        # run through same normalization as training data, including scaling
+        O_sub = self.scaler(f)
 
         # need to do some reshaping
         # make f and ivar effectively a list of spectra
@@ -1185,51 +1181,6 @@ class StellarPop_PCA(object):
         return np.conj(x, x)
 
     @staticmethod
-    def PCA(data, dims=None):
-        '''
-        perform pure numpy PCA on array of data, returning `dims`-length
-            evals and evecs. This method is covariance-based, not SVD-based.
-        '''
-
-        if dims is None:
-            dims = data.shape[1]
-
-        # calculate the covariance matrix
-        R = np.cov(data.T)
-
-        # calculate eigenvectors & eigenvalues of the covariance matrix
-        # use 'eigh' rather than 'eig' since R is symmetric,
-        # the performance gain is substantial
-        evals, evecs = np.linalg.eigh(R)
-
-        # sort evals and evecs in decreasing order
-        idx = np.argsort(evals)[::-1]
-        evals, evecs = evals[idx], evecs[:, idx]
-
-        # proportion of variance explained
-        PVE = evals[:dims] / evals.sum()
-
-        # select the first n eigenvectors (n is desired dimension
-        # of rescaled data array, or dims_rescaled_data)
-        evecs = evecs[:, :dims].T
-
-        return evecs, PVE
-
-    @staticmethod
-    def PCA_skl(data, dims=None, svd_solver='auto'):
-        '''
-        perform scikit-learn's PCA on array of data,
-            with same call signature as PCA(...)
-        '''
-        from sklearn.decomposition import PCA
-
-        pca = PCA(n_components=dims, whiten=True, svd_solver=svd_solver)
-
-        pca.fit(data)
-
-        return pca.components_, pca.explained_variance_ratio_
-
-    @staticmethod
     def P_from_K(K):
         '''
         compute straight inverse of all elements of K_PC [q, q, NX, NY]
@@ -1241,7 +1192,7 @@ class StellarPop_PCA(object):
         return P_PC
 
     @staticmethod
-    def P_from_K_pinv(K, rcond=1e-15):
+    def P_from_K_pinv(K, rcond=1e-6):
         '''
         compute P_PC using Moore-Penrose pseudoinverse (pinv)
         '''
@@ -2853,7 +2804,7 @@ if __name__ == '__main__':
         pca_res_f.write_results()
     #'''
 
-    #'''
+    '''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
     #drpall = drpall[drpall['ifudesignsize'] == 19]
     drpall = m.shuffle_table(drpall)
@@ -2882,4 +2833,4 @@ if __name__ == '__main__':
                 continue
             finally:
                 bar.update()
-    #'''
+    '''
