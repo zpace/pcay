@@ -32,7 +32,7 @@ class FakeData(object):
     Make a fake IFU and fake DAP stuff
     '''
     def __init__(self, l_model, s_model, meta_model,
-                 row, drp_base, dap_base):
+                 row, drp_base, dap_base, plateifu_base):
 
         # find SNR of each pixel in cube (used to scale noise later)
         drp_snr = (drp_base['FLUX'].data * np.sqrt(drp_base['IVAR'].data)).clip(
@@ -124,8 +124,10 @@ class FakeData(object):
         self.row = row
         self.metadata = meta_model
 
+        self.plateifu_base = plateifu_base
+
     @classmethod
-    def from_FSPS(cls, fname, i, plateifu_base, pca,
+    def from_FSPS(cls, fname, i, plateifu_base, pca, row,
                   mpl_v='MPL-5', kind='SPX-GAU-MILESHC'):
 
         # load models
@@ -162,14 +164,13 @@ class FakeData(object):
         model_meta = models_meta[i]
 
         # load data
-        plate, ifu = tuple(plateifu_base.split('-'))
+        plate, ifu, *newparams = tuple(plateifu_base.split('-'))
 
         drp_base = m.load_drp_logcube(plate, ifu, mpl_v)
         dap_base = m.load_dap_maps(plate, ifu, mpl_v, kind)
-        row = m.load_drpall(mpl_v, index='plateifu').loc[plateifu_base]
 
         return cls(l_model=models_lam, s_model=model_spec,
-                   meta_model=model_meta, row=row,
+                   meta_model=model_meta, row=row, plateifu_base=plateifu_base,
                    drp_base=drp_base, dap_base=dap_base)
 
     def resample_spaxel(self, logl_in, flam_in, logl_out):
@@ -187,7 +188,7 @@ class FakeData(object):
         write out fake LOGCUBE and DAP
         '''
 
-        fname_base = self.row['plateifu']
+        fname_base = self.plateifu_base
         basedir = 'fakedata'
         drp_fname = os.path.join(basedir, '{}_drp.fits'.format(fname_base))
         dap_fname = os.path.join(basedir, '{}_dap.fits'.format(fname_base))

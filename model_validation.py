@@ -61,7 +61,7 @@ class ModelDataCompare(object):
         self.dir_meas = {}
         self.ind_meas = {}
 
-        for p in ['Hdelta_A', 'Dn4000', 'Mg_2', 'Na_D', 'Ca_HK']:
+        for p in ['Hdelta_A', 'Dn4000', 'Mg_b', 'Na_D', 'Ca_HK']:
             # retrieve appropriate function from spec_tools
             f = indices.StellarIndex(p)
 
@@ -262,20 +262,26 @@ if __name__ == '__main__':
 
     from find_pcs import *
 
+    cosmo = WMAP9
+    warn_behav = 'ignore'
+    dered_method = 'nearest'
+    pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA}
+
     mpl_v = 'MPL-5'
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=True, pkl=True, q=8, src='FSPS', nfiles=10)
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=30,
+        pca_kwargs=pca_kwargs)
 
-    gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704',
+    '''gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704',
             '8134-12702', '8134-9102', '8135-12701', '8137-12703',
-            '8140-12703', '8140-12701', '8140-3701', '8243-12704']
+            '8140-12703', '8140-12701', '8140-3701', '8243-12704']'''
     '''        '8244-9101', '8247-9101', '8249-12703', '8249-12704',
             '8252-12705', '8252-6102', '8253-6104', '8254-3704', '8254-9101',
             '8257-12701', '8257-6101', '8257-6103', '8258-12704']'''
 
-    #gals = ['8253-6104']
+    gals = ['8253-6104']
 
     p_i = [g.split('-') for g in gals]
 
@@ -284,8 +290,13 @@ if __name__ == '__main__':
     rimgs = [d.drp_hdulist['RIMG'].data for d in dereds]
     Hdelt_em_EWs = [d.dap_hdulist['EMLINE_SEW'].data[14, ...] for d in dereds]
 
-    MDComp = ModelDataCompare(pca=pca, dereds=dereds, rimgs=rimgs,
+    from warnings import warn, filterwarnings, catch_warnings, simplefilter
+
+    with catch_warnings():
+        simplefilter(warn_behav)
+        MDComp = ModelDataCompare(pca=pca, dereds=dereds, rimgs=rimgs,
                               Hd_em_EWs=Hdelt_em_EWs, K_obs=K_obs)
+
     mdcomp_fig = MDComp.D4000_Hd_scatter_fig()
     mdcomp_fig.savefig('D4000-HdA_scatter.png', dpi=300)
 

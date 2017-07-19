@@ -164,10 +164,6 @@ class SpecScaler(object):
         pctls_v = np.percentile(X, pctls, axis=1)
         self.X_sc = X / np.diff(pctls_v, n=1, axis=0).squeeze()[:, None]
 
-        self.ctr = np.median(self.X_sc, axis=0)
-
-        self.X_sc_ctr = self.X_sc - self.ctr[None, ...]
-
     def __call__(self, Y, lam_axis=0, map_axis=(1, 2)):
         '''
         apply the same scaling as is fit
@@ -175,12 +171,10 @@ class SpecScaler(object):
 
         # first, scale to unit dispersion
         pctls_v = np.percentile(Y, self.pctls, axis=lam_axis)
-        Y_sc = Y / np.diff(pctls_v, n=1, axis=0).squeeze()[None, ...]
+        a = np.diff(pctls_v, n=1, axis=0).squeeze()
+        Y_sc = Y / a[None, ...]
 
-        # then, subtract ctr
-        Y_sc_ctr = Y_sc - self.ctr[:, None, None]
-
-        return Y_sc_ctr
+        return Y_sc, a
 
 class KPCGen(object):
     '''
@@ -554,7 +548,7 @@ class Regridder(object):
         flam_obs_rest_regr = flam_obs_rest_integ_regr / determine_dl(
             loglgrid)[:, None, None]
 
-        return flam_obs_rest_regr, np.sqrt(2.) * ivar_obs_rest_regr
+        return flam_obs_rest_regr, np.sqrt(nper) * ivar_obs_rest_regr
 
 class MapInterpolator(object):
     def __init__(self):

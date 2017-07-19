@@ -277,7 +277,7 @@ class Cov_Obs(object):
         cb.ax.tick_params(labelsize=6)
         plt.tight_layout()
 
-        plt.savefig('cov_obs_{}.png'.format(kind), dpi=300)
+        plt.savefig('cov_obs_{}.png'.format(kind), dpi=200)
 
     # =====
     # properties

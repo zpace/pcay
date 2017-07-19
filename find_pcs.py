@@ -351,7 +351,8 @@ class StellarPop_PCA(object):
 
         # convolve spectra with instrument LSF
         dlogl_hires = ut.determine_dlogl(logl)
-        spec_lsf = lsf(y=spec, lam=l.value, dlogl=dlogl_hires, z=z0_)
+        spec_lsf = lsf(y=spec, lam=(l.value) * (1. + z0_),
+                       dlogl=dlogl_hires, z=z0_)
 
         # interpolate models to desired l range
         logl_final = np.arange(np.log10(l.value.min()),
@@ -439,29 +440,38 @@ class StellarPop_PCA(object):
 
         return q
 
-    def run_pca_models(self, q, method='PCA'):
+    def run_pca_models(self, q):
         '''
         run PCA on library of model spectra
         '''
 
         self.scaler = ut.SpecScaler(X=self.trn_spectra)
-        self.S = self.scaler.X_sc_ctr
-        self.M = self.scaler.ctr
+        self.normed_trn = self.scaler.X_sc
+        self.M = np.median(self.normed_trn, axis=0)
+        self.S = self.normed_trn - self.M
 
-        self.PCA = getattr(decomp, method)(n_components=q, whiten=True)
-        self.trn_PC_wts = self.PCA.fit_transform(self.S)
+        R = np.cov(self.S, rowvar=False)
+        # calculate evecs & evalse of covariance matrix
+        # (use 'eigh' rather than 'eig' since R is symmetric for performance
+        evals, evecs = np.linalg.eigh(R)
+        # sort eigenvalues and eigenvectors in decreasing order
+        idx = np.argsort(evals)[::-1]
+        # and select first `q`
+        evals, evecs = evals[idx], evecs[:,idx]
+        self.PCs = evecs[:, :q].T
+        self.PCs /= np.sign(self.PCs.sum(axis=1, keepdims=True))
+        # carry out the transformation on the data using eigenvectors
+        self.trn_PC_wts = np.dot(self.S, self.PCs.T)
 
-        self.PCs = self.PCA.components_
-        self.PVE = self.PCA.explained_variance_ratio_
+        # reconstruct the best approximation for the spectra from PCs
+        self.trn_recon = np.dot(self.trn_PC_wts, self.PCs)
+        # calculate covariance using reconstruction residuals
+        self.trn_resid = self.normed_trn - self.trn_recon
 
-        # project back onto the PCs to get the weight vectors
-        self.trn_PC_wts = (self.S).dot(self.PCs.T)
-        # and reconstruct the best approximation for the spectra from PCs
-        self.trn_recon = self.trn_PC_wts.dot(self.PCs)
-        # residuals
-        self.trn_resid = self.S - self.trn_recon
+        # percent variance explained
+        self.PVE = (evals / evals.sum())[:q]
 
-        self.cov_th = np.cov(self.trn_resid.T)
+        self.cov_th = np.cov(self.trn_resid, rowvar=False)
 
     def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
                      mask_cube=None):
@@ -500,15 +510,13 @@ class StellarPop_PCA(object):
         # account for everywhere-zero ivar
         ivar[ivar == 0.] = eps
 
-        # run through same normalization as training data, including scaling
-        O_sub = self.scaler(f)
-
-        # need to do some reshaping
-        # make f and ivar effectively a list of spectra
+        # run through same scaling normalization as training data
+        O_norm, a = self.scaler(f)
+        O_sub = O_norm - self.M[:, None, None]
 
         A = self.robust_project_onto_PCs(e=self.PCs, f=O_sub, w=ivar)
 
-        return A, self.M, a, O_sub, f
+        return A, self.M, a, O_sub, O_norm
 
     def reconstruct_normed(self, A):
         '''
@@ -1666,10 +1674,12 @@ class PCA_Result(object):
         # residual plot
         resid = self.resid[:, ix[0], ix[1]]
         std_err = (1. / np.sqrt(ivar)) / self.a_map[ix[0], ix[1]]
-        resid_ = ax2.plot(
-            self.l, resid, drawstyle='steps-mid', c='blue', linewidth=0.25)
-        resid_avg_ = ax2.fill_between(
-            x=self.l, y1=-std_err, y2=std_err,
+        fit_resid_ = ax2.plot(
+            self.l.data, resid, drawstyle='steps-mid', c='green', linewidth=0.25)
+        model_resid = ax2.plot(
+            self.l.data, bestfit - O_norm, drawstyle='steps-mid', c='cyan', linewidth=0.25)
+        conf_band_ = ax2.fill_between(
+            x=self.l.data, y1=-std_err, y2=std_err,
             linestyle='--', color='salmon', linewidth=0.25, zorder=0)
 
         ax1.tick_params(axis='y', which='major', labelsize=10,
@@ -1680,15 +1690,15 @@ class PCA_Result(object):
         ax1.xaxis.set_ticklabels([])
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$ (rel)')
-        ax1.set_yticks(np.arange(0.5, 2.5, 0.5))
         ax1.set_ylim([-0.1 * Onm, 2.25 * Onm])
+        ax1.set_yticks(np.arange(0.0, ax1.get_ylim()[1], 0.5))
 
         ax2.xaxis.set_major_locator(self.lamticks)
         ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
+        ax2.set_ylim([-.75, .75])
         ax2.set_ylabel('Resid.')
-        ax2.set_ylim(np.percentile(np.abs(self.resid), [84.]) * np.array([-1., 1.]))
 
-        return orig_, recon_, bestfit_, ivar_, resid_, resid_avg_, ix
+        return orig_, recon_, bestfit_, ivar_, fit_resid_, conf_band_, ix
 
     def make_comp_fig(self, ix=None):
         fig = plt.figure(figsize=(8, 3.5), dpi=300)
@@ -2288,16 +2298,10 @@ class PCA_Result(object):
                     markevery=10, errorevery=10)
 
         ax.legend(loc='best', prop={'size': 6})
-
         ax.set_xlabel(r'$\frac{R}{R_e}$')
-
         ax.set_ylabel(qty_tex)
 
-        pad = np.maximum(.1 * np.ones_like(sigma), 2.5 * sigma)
-        lpred = np.min(q_pred - pad)
-        upred = np.max(q_pred + pad)
-
-        ax.set_ylim([lpred, upred])
+        ax.set_ylim([-1., 1.5])
 
         return ax
 
@@ -2671,7 +2675,7 @@ def setup_pca(base_dir, base_fname, fname=None,
 
     if q == 'auto':
         q_opt = pca.xval_fromfile(
-            fname=os.path.join(base_dir, '{}_test.fits'.format(base_fname)),
+            fname=os.path.join(base_dir, '{}_validation.fits'.format(base_fname)),
             qmax=50, target=fre_target)
         print('Optimal number of PCs:', q_opt)
         pca.run_pca_models(q_opt)
@@ -2703,7 +2707,7 @@ def get_col_metadata(col, k, notfound=''):
     return res
 
 def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
-               dered_method='nearest', dered_kwargs={}, fake_i=None):
+               dered_method='nearest', dered_kwargs={}, fake_i=None, z_new=None):
 
     plateifu = row['plateifu']
 
@@ -2714,21 +2718,31 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
 
     if fake:
         if redo_fake:
+            # allow for custom new redshift
+            if not z_new:
+                plateifu_base = plateifu
+            else:
+                z_orig, zdist_orig = row['nsa_z'], row['nsa_zdist']
+                row['nsa_z'] = row['nsa_zdist'] = z_new
+                plateifu_base = '-'.join((plateifu, 'z{}'.format(z_new)))
+
             data = FakeData.from_FSPS(
                 fname='CSPs_CKC14_MaNGA/CSPs_test.fits', i=fake_i,
-                plateifu_base=plateifu, pca=pca)
+                plateifu_base=plateifu_base, pca=pca, row=row)
             data.write()
+
         dered = MaNGA_deredshift.from_fakedata(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
             basedir='fakedata', row=row)
-        figdir = os.path.join('fakedata', 'results', plateifu)
+        figdir = os.path.join('fakedata', 'results', plateifu_base)
         truth_fname = os.path.join(
-            'fakedata', '{}_truth.tab'.format(plateifu))
+            'fakedata', '{}_truth.tab'.format(plateifu_base))
         truth = t.Table.read(truth_fname, format='ascii')[0]
     else:
+        plateifu_base = plateifu
         dered = MaNGA_deredshift.from_plateifu(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row)
-        figdir = os.path.join('results', plateifu)
+        figdir = os.path.join('results', plateifu_base)
         truth = None
 
     z_dist = row['nsa_zdist']
@@ -2765,10 +2779,16 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
 
     pca_res.sigma_vel()
 
+    # reset redshift to original value
+    if not z_new:
+        pass
+    else:
+        row['nsa_z'], row['nsa_zdist'] = z_orig, zdist_orig
+
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 30
+    howmany = 35
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'supersample_vec'
@@ -2784,7 +2804,7 @@ if __name__ == '__main__':
 
     pca, K_obs = setup_pca(
         fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=False, pkl=True, q=10, fre_target=.005, nfiles=30,
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=50,
         pca_kwargs=pca_kwargs)
 
     #'''

@@ -160,6 +160,8 @@ class FSPS_SFHBuilder(object):
         self.sp.params['imf_type'] = 2
         self.sp.params['tage'] = self.time0
         self.sp.params['sfh'] = 3
+        self.sp.params['dust_type'] = 0 # Charlot & Fall 2000
+        self.sp.params['dust_tesc'] = 7.
         self.sp.params['dust1'] = 0.
         self.sp.params['dust2'] = 0.
 
@@ -246,8 +248,8 @@ class FSPS_SFHBuilder(object):
         for k in ks:
             del tab[k]
 
-        tab.add_column(t.Column(data=[self.frac_mform_dt(age=.1)],
-                                name='mf_100Myr'))
+        tab.add_column(t.Column(data=[self.frac_mform_dt(age=1)],
+                                name='mf_1Gyr'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
         tab.add_column(t.Column(data=[self.mstar], name='mstar'))
 
@@ -287,11 +289,13 @@ class FSPS_SFHBuilder(object):
         self.FSPS_args.update(params)
         self.sfh_changeflag = True
 
-    def _d1_gen(self):
-        if 'd1' not in self.override:
-            return 1. / self.RS.uniform(0.1, 5.)
+    def _d1_gen(self, mean=.5, std=1., a_=-.3, b_=1.):
+        if 'd1' in self.override:
+            return self.FSPS_args['d1']
 
-        return self.FSPS_args['d1']
+        a, b = (a_ - mean) / std, (b_ - mean) / std
+        dist = stats.truncnorm(a=a, b=b, loc=mean, scale=std)
+        return 10.**dist.rvs(1, random_state=self.RS)
 
     def _tt_gen(self, d1, d1delay=False, ddt=0.):
         # if param already set on object instantiation, leave it alone
@@ -373,7 +377,7 @@ class FSPS_SFHBuilder(object):
 
         time_form = self.FSPS_args['tf']
 
-        nburst = self.RS.poisson(self.NBB * dt / self.time0)
+        nburst = self.RS.poisson(self.NBB * dt / self.time0, 1)[0]
         if nburst > self.max_bursts:
             nburst = self.max_bursts
 
@@ -640,18 +644,22 @@ class FSPS_SFHBuilder(object):
         return '\n'.join(
             ['{}: {}'.format(k, v) for k, v in self.FSPS_args.items()])
 
-
-def make_csp(sfh):
-    sfh.gen_FSPS_args()
+def make_csp(sfh, arg_dict=None):
+    if not arg_dict:
+        sfh.gen_FSPS_args()
+    else:
+        sfh.FSPS_args = arg_dict
     spec = sfh.run_fsps()
     tab = sfh.to_table()
 
     return spec, tab, sfh.FSPS_args
 
 
-def make_spectral_library(fname, sfh, loc='CSPs', n=1, lllim=3500., lulim=10000.):
+def make_spectral_library(fname, sfh, loc='CSPs', n=1, lllim=3500., lulim=10000.,
+                          arg_dict=None):
 
-    specs, metadata, dicts = zip(*[make_csp(sfh) for _ in range(n)])
+    specs, metadata, dicts = zip(*[make_csp(sfh, arg_dict=arg_dict)
+                                 for _ in range(n)])
 
     # write out dict to pickle
     with open(os.path.join(loc, '{}.pkl'.format(fname)), 'wb') as f:
@@ -734,6 +742,27 @@ def random_SFH_plots(n=10, save=False):
     else:
         plt.show()
 
+test_dicts = {
+    '1':   {'tf': 1., 'd1': np.array([2.]), 'tt': np.array([13.71]),
+            'ud': 0.0, 'nburst': 0, 'd2': 100., 'mu': np.array([.2]), 'tau': np.array([1.]),
+            'sigma': np.array([250.]), 'logzsol': -1.,
+            'A': np.zeros(5), 'dtb': np.zeros(5), 'tb': np.zeros([5])},
+    '1.1': {'tf': 1., 'd1': np.array([2.]), 'tt': np.array([13.71]),
+            'ud': 0.0, 'nburst': 1, 'd2': 100., 'mu': np.array([.2]), 'tau': np.array([1.]),
+            'sigma': np.array([250.]), 'logzsol': -1.,
+            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.02, 0., 0., 0., 0.]),
+            'tb': np.array([8., 0. ,0., 0., 0.])},
+    '1.2': {'tf': 1., 'd1': np.array([2.]), 'tt': np.array([4.]),
+            'ud': -1., 'nburst': 0, 'd2': 1., 'mu': np.array([.2]), 'tau': np.array([1.]),
+            'sigma': np.array([250.]), 'logzsol': -1.,
+            'A': np.zeros(5), 'dtb': np.zeros(5), 'tb': np.zeros([5])},
+}
+
+def make_tailored_tests(dicts, sfh, *args, **kwargs):
+    for k, d in dicts.items():
+        make_spectral_library(fname='TestSpecs-{}'.format(k), sfh=sfh,
+                              *args, **kwargs)
+
 
 # my hobby: needlessly subclassing exceptions
 
@@ -762,11 +791,16 @@ if __name__ == '__main__':
 
     for i in range(name_ix0, name_ixf):
         sfh = make_spectral_library(
-            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA',
+            sfh=sfh, fname='CSPs_{}'.format(i), loc='CSPs_CKC14_MaNGA_new',
             n=nper, lllim=3500., lulim=10000.)
         print('Done with {} of {}'.format(i + 1, name_ixf))
 
-    print('Making validation/test data...')
+    print('Making validation data...')
     sfh = make_spectral_library(
-        sfh=sfh, fname='CSPs_test', loc='CSPs_CKC14_MaNGA',
+        sfh=sfh, fname='CSPs_validation', loc='CSPs_CKC14_MaNGA_new',
+        n=nper, lllim=3500., lulim=10000.)
+
+    print('Making test data...')
+    sfh = make_spectral_library(
+        sfh=sfh, fname='CSPs_test', loc='CSPs_CKC14_MaNGA_new',
         n=nper, lllim=3500., lulim=10000.)
