@@ -35,8 +35,11 @@ class FakeData(object):
                  row, drp_base, dap_base, plateifu_base):
 
         # find SNR of each pixel in cube (used to scale noise later)
-        drp_snr = (drp_base['FLUX'].data * np.sqrt(drp_base['IVAR'].data)).clip(
-            min=1.0e-3, max=1.0e3)
+        drp_snr = np.repeat(
+            np.median(
+                drp_base['FLUX'].data * np.sqrt(drp_base['IVAR'].data),
+                axis=0)[None, :, :],
+            drp_base['FLUX'].data.shape[0], axis=0)
 
         # redshift the model spectrum
         z_cosm = row['nsa_zdist']
@@ -93,7 +96,8 @@ class FakeData(object):
                             flam=s_m_z_c * u_flam).ABmags['sdss2010-r']
         # flux ratio map
         r = 10.**(-0.4 * (m_r_drp - m_r_mzc))
-        # occasionally this produces inf or nan, so just take care of that quickly
+        # occasionally this produces inf or nan for some reason,
+        # so just take care of that quickly
         r[~np.isfinite(r)] = 1.
         s_m_z_c *= r[None, ...]
 
@@ -106,7 +110,8 @@ class FakeData(object):
 
         # mask where the native datacube has no signal
         nosignal = (drp_base['RIMG'].data == 0.)[None, ...]
-        fakecube[nosignal] = 0.
+        nosignal_cube = np.broadcast_to(nosignal, fakecube.shape)
+        fakecube[nosignal_cube] = 0.
         ivar_obs[s_m_z_c == 0.] = 0
         drp_base['IVAR'].data = ivar_obs
 
@@ -132,9 +137,7 @@ class FakeData(object):
 
         # load models
         models_hdulist = fits.open(fname)
-
         models_specs = models_hdulist['flam'].data
-
         models_lam = models_hdulist['lam'].data
 
         # restrict wavelength range to same as PCA
@@ -146,9 +149,10 @@ class FakeData(object):
 
         models_meta = t.Table(models_hdulist['meta'].data)
         models_meta['tau_V mu'] = models_meta['tau_V'] * models_meta['mu']
-        models_meta = t.hstack(
-            [models_meta, get_stellar_indices(l=models_lam,
-                                              spec=models_specs.T)])
+
+        stellar_indices = get_stellar_indices(l=models_lam, spec=models_specs.T)
+        models_meta = t.hstack([models_meta, stellar_indices])
+
         models_meta.keep_columns(pca.metadata.colnames)
 
         for n in models_meta.colnames:
@@ -199,11 +203,15 @@ class FakeData(object):
         new_drp_cube['FLUX'].data = self.fluxcube
 
         new_dap_cube = fits.HDUList([hdu for hdu in self.dap_base])
-        sig_a = self.metadata['sigma'] * np.ones_like(
-            new_dap_cube['STELLAR_SIGMA'].data)
+        sig_a = np.sqrt(
+            self.metadata['sigma']**2. * \
+                np.ones_like(new_dap_cube['STELLAR_SIGMA'].data) + \
+            new_dap_cube['STELLAR_SIGMACORR'].data**2.)
         new_dap_cube['STELLAR_SIGMA'].data = sig_a
 
-        truth_tab = t.Table(rows=[self.metadata], names=self.metadata.colnames)
+        truth_tab = t.Table(
+            rows=[self.metadata],
+            names=self.metadata.colnames)
         truth_tab.write(truthtable_fname, overwrite=True, format='ascii')
         new_drp_cube.writeto(drp_fname, overwrite=True)
         new_dap_cube.writeto(dap_fname, overwrite=True)
@@ -211,28 +219,7 @@ class FakeData(object):
 
 def get_stellar_indices(l, spec):
     inds = t.Table(
-        data=[indices.StellarIndex(n)(l=l, flam=spec).squeeze()
-              for n in indices.data['ixname']],
-        names=indices.data['ixname'])
+        data=[t.Column(indices.StellarIndex(n)(l=l, flam=spec), n)
+              for n in indices.data['ixname']])
 
     return inds
-
-
-if __name__ == '__main__':
-
-    from find_pcs import setup_pca
-
-    pca_kwargs = {'lllim': 3500. * u.AA, 'lulim': 8800. * u.AA}
-
-    pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=True, pkl=False, q=10, fre_target=.005, nfiles=10,
-        pca_kwargs=pca_kwargs, zpt_corr=True)
-
-    plateifu = '8083-12704'
-
-    data = FakeData.from_FSPS(
-        fname='CSPs_CKC14_MaNGA/CSPs_test.fits', i=None,
-        plateifu_base=plateifu, pca=pca)
-
-    data.write()
