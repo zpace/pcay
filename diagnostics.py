@@ -43,7 +43,7 @@ class Diagnostic(object):
             # choose axis
             ax = fig.add_subplot(gs[ri, ci])
             kwarg_cycler = cycler(marker=markers_) * \
-                           cycler(facecolor=colors_)
+                           cycler(c=colors_)
 
             xqty = xnames[i]
             yqty = ynames[i]
@@ -150,8 +150,12 @@ class Diagnostic(object):
 
         good = ~(self.results[i]['MASK'].data.astype(bool))
 
-        ax.scatter(x[good], P50_ratio[good], s=2., edgecolor='None',
-                   alpha=0.6, **kwargs)
+        kwargs['c'] = good
+        kwargs['cmap'] = 'RdYlGn'
+
+        ax.scatter(x, P50_ratio, s=2., edgecolor='None',
+                   alpha=0.6, vmin=0., vmax=1., **kwargs)
+        ax.axhline(0., c='k', linewidth=0.25)
 
         if 'log' in yqty:
             ax.set_ylabel(
@@ -165,10 +169,11 @@ class Diagnostic(object):
                 size=5)
 
         ax.set_xlabel(xlabel, size=5)
+        ax.set_ylim([-1.25, 1.25])
 
         if xqty == 'SNRMED':
             ax.set_xscale('log')
-            ax.set_xlim([.01, ax.get_xlim()[1]])
+            ax.set_xlim([.5, 1.1 * ax.get_xlim()[1]])
 
         return ax
 
@@ -176,24 +181,33 @@ if __name__ == '__main__':
     from find_pcs import *
     from glob import glob
 
+    cosmo = WMAP9
+    warn_behav = 'ignore'
+    dered_method = 'supersample_vec'
+    dered_kwargs = {'nper': 5}
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_new/'
+
     mpl_v = 'MPL-5'
 
-    pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA}
+    drpall = m.load_drpall(mpl_v, index='plateifu')
+    drpall = drpall[drpall['nsa_z'] != -9999]
+    lsf = ut.MaNGA_LSF.from_drpall(drpall=drpall, n=2)
+    pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA,
+                  'lsf': lsf, 'z0_': .04}
 
     pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=False, pkl=True, q=10, fre_target=.005, nfiles=30,
+        fname='pca.pkl', base_dir=CSPs_dir, base_fname='CSPs',
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=50,
         pca_kwargs=pca_kwargs)
-    drpall = m.load_drpall(mpl_v, index='plateifu')
 
     # find appropriate files
-    hdulists = list(map(fits.open, glob('fakedata/results/*/*_res.fits')))
+    hdulists = list(map(fits.open, glob('fakedata/results/8464-1901/*_res.fits')))
 
     # make diag plots
     plt.close('all')
     diag = Diagnostic(results=hdulists, metadata=pca.metadata, drpall=drpall)
     diag_fig = diag.make_diag_figure(
-        xnames=['SNRMED', 'hdr-0-EBVGAL', 'drpall-nsa_z', 'MLr'],
-        ynames=['MLr', 'MLr', 'MLr', 'MLr'])
+        xnames=['SNRMED', 'tau_V', 'tau_V mu', 'MLV'],
+        ynames=['MLV', 'MLV', 'MLV', 'MLV'])
     diag_fig.savefig('diagplot.png');
 
