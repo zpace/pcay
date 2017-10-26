@@ -13,7 +13,7 @@ from warnings import warn
 l_eff_d = {'r': 6166. * u.AA, 'i': 7480. * u.AA, 'z': 8932. * u.AA}
 l_wid_d = {'r': 550. * u.AA, 'i': 1300. * u.AA, 'z': 1000. * u.AA}
 
-absmag_sun_band = {'u': 6.39, 'g': 5.12, 'r': 4.64, 'i': 4.53, 'z': 4.51}
+absmag_sun_band = {'u': 6.39, 'g': 5.12, 'r': 4.64, 'i': 4.53, 'z': 4.51, 'V': 4.81}
 # from Conroy
 
 
@@ -25,9 +25,17 @@ class Spec2Phot(object):
     '''
     object to convert spectra into photometric magnitudes
     '''
-    def __init__(self, lam, flam, family='sdss2010-*', axis=0):
+    def __init__(self, lam, flam, family='sdss2010-*', axis=0,
+                 redshift=None):
 
         self.filters = filters.load_filters(family)
+
+        if redshift is not None:
+            self.filters = filters.FilterSequence(
+                [f_.create_shifted(band_shift=redshift)
+                 for f_ in self.filters])
+        else:
+            pass
         # spectral dimension has to be the final one
         nl0 = flam.shape[axis]
         flam, self.lam = self.filters.pad_spectrum(
@@ -51,7 +59,7 @@ def l_eff(lam, band):
     '''
 
     # read in filter table
-    band_tab = t.Table.read('filters/{}_SDSS.res'.format(band),
+    band_tab = t.Table.read('filters/{}.res'.format(band),
                             names=['lam', 'f'], format='ascii')
 
     # set up interpolator
@@ -84,7 +92,7 @@ def spec2mag(lam, Flam, band):
     '''
 
     # read in filter table
-    band_tab = t.Table.read('filters/{}_SDSS.res'.format(band),
+    band_tab = t.Table.read('filters/{}.res'.format(band),
                             names=['lam', 'f'], format='ascii')
 
     # set up interpolator
