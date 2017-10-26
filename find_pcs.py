@@ -7,6 +7,8 @@ from matplotlib import gridspec
 import matplotlib.ticker as mticker
 from cycler import cycler
 
+from corner import corner
+
 # astropy ecosystem
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
@@ -19,6 +21,7 @@ from astropy import coordinates as coord
 import os
 import sys
 from warnings import warn, filterwarnings, catch_warnings, simplefilter
+from traceback import print_exception
 import multiprocessing as mpc
 import ctypes
 from functools import lru_cache
@@ -71,6 +74,7 @@ class StellarPop_PCA(object):
     '''
 
     def __init__(self, l, trn_spectra, gen_dicts, metadata, K_obs, src,
+                 sfh_fnames, nsubpersfh, nsfhperfile,
                  dlogl=None, lllim=3700. * u.AA, lulim=7400. * u.AA):
         '''
         params:
@@ -110,7 +114,8 @@ class StellarPop_PCA(object):
                         for n in metadata.colnames]
         metadata_incl = np.array([True if m is not False else False
                                   for m in metadata_TeX])
-        self.metadata_TeX = [m for m in metadata_TeX if m is not False]
+        self.metadata_TeX = [m for m, n in zip(metadata_TeX, metadata.colnames)
+                             if m is not False]
 
         # a kludgey conversion from structured array to regular array
         metadata_a = np.array(self.metadata)
@@ -121,6 +126,11 @@ class StellarPop_PCA(object):
 
         self.src = src
 
+        self.sfh_fnames = sfh_fnames
+
+        self.nsubpersfh = nsubpersfh
+        self.nsfhperfile = nsfhperfile
+
         # observational covariance matrix
         if K_obs.__class__ != cov_obs.Cov_Obs:
             raise TypeError('incorrect observational covariance matrix class!')
@@ -130,130 +140,8 @@ class StellarPop_PCA(object):
                            K_obs.dlogl, self.dlogl))
 
     @classmethod
-    def from_YMC(cls, base_dir, lib_para_file, form_file,
-                 spec_file_base, K_obs):
-        '''
-        initialize object from CSP library provided by Y-M Chen, which is
-            based on a BC03 model library
-        '''
-
-        # first figure out full paths
-        form_file_full = os.path.join(base_dir, form_file)
-        lib_para_file_full = os.path.join(base_dir, lib_para_file)
-
-        # get wavelength grid, and prepare for interpolation of model
-        test_spec_fname = os.path.join(
-            base_dir, '{}_1.fits'.format(spec_file_base))
-        hdulist = fits.open(test_spec_fname)
-        l_raw = hdulist[2].data
-        hdulist.close()
-
-        l_raw_good = (3700. <= l_raw) * (l_raw <= 11000.)
-        l_raw = l_raw[l_raw_good]
-        dlogl_final = 1.0e-4
-
-        l_final = 10.**np.arange(
-            np.log10(3700.), np.log10(5500.), dlogl_final)
-
-        l_full = 10.**np.arange(np.log10(3700.), np.log10(10500.),
-                                dlogl_final)
-
-        nl_full = len(l_full)
-
-        # load metadata tables
-        lib_para = t.Table.read(lib_para_file_full, format='ascii')
-
-        nspec = len(lib_para)
-        form_data = t.Table.read(form_file_full, format='ascii')
-        form_data_goodcols = ['zmet', 'Tau_v', 'mu']
-
-        for n in form_data_goodcols:
-            lib_para.add_column(
-                t.Column(data=np.zeros(len(lib_para)), name=n))
-
-        # initialize array that resampled spectra will go into
-        spec = np.empty((nspec, nl_full))
-        goodspec = np.ones(nspec).astype(bool)
-        # and fill it
-        for i in range(nspec):
-            # create a hypothetical filename
-            fname = os.path.join(
-                base_dir, '{}_{}.fits'.format(spec_file_base, i))
-
-            # handle file-DNE case exception-less-ly
-            if not os.path.exists(fname):
-                goodspec[i] = False
-                continue
-
-            try:
-                hdulist = fits.open(fname)
-            # if there's another issue...
-            except IOError:
-                # print 'bad!', fname
-                goodspec[i] = False
-            else:
-                f_lambda = hdulist[3].data[l_raw_good]
-                spec[i, :] = interp1d(l_raw, f_lambda)(l_full)
-                for n in form_data_goodcols:
-                    lib_para[i - 1][n] = float(form_data[i][n])
-
-            finally:
-                hdulist.close()
-
-        metadata = lib_para
-
-        ixs = np.arange(nspec)
-        metadata.remove_rows(ixs[~goodspec])
-        spec = spec[goodspec, :]
-        pca_spec = spec[:, :len(l_final)]
-
-        # compute mass to light ratio
-        # convert to Lnu and integrate over bandpass
-
-        L_r = lumspec2lsun(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
-                           band='r')
-        L_i = lumspec2lsun(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
-                           band='i')
-        L_z = lumspec2lsun(lam=l_full * u.AA, Llam=spec * u.Unit('Lsun/AA'),
-                           band='z')
-
-        MLr = metadata['cspm_star'] / L_r
-        MLi = metadata['cspm_star'] / L_i
-        MLz = metadata['cspm_star'] / L_z
-
-        metadata['Fstar'] = (metadata['mfb_1e9'] + metadata['mf_1e9'].astype(
-            float)) / metadata['mf_all']
-
-        metadata['Dn4000'] = spec_tools.Dn4000_index(
-            l=l_full, s=spec.T[..., None]).flatten()
-        metadata['Hdelta_A'] = spec_tools.Hdelta_A_index(
-            l=l_full, s=spec.T[..., None]).flatten()
-
-        metadata = metadata['MWA', 'Dn4000', 'Hdelta_A', 'Fstar',
-                            'zmet', 'Tau_v', 'mu']
-        metadata.add_column(t.Column(data=MLr, name='MLr'))
-        metadata.add_column(t.Column(data=MLi, name='MLi'))
-        metadata.add_column(t.Column(data=MLz, name='MLz'))
-
-        # set metadata to enable plotting later
-        metadata['MWA'].meta['TeX'] = r'$\textrm{MWA [Gyr]}$'
-        metadata['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
-        metadata['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
-        metadata['Fstar'].meta['TeX'] = r'$F^*$'
-        metadata['zmet'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
-        metadata['Tau_v'].meta['TeX'] = r'$\tau_V$'
-        metadata['mu'].meta['TeX'] = r'$\mu$'
-        metadata['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
-        metadata['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
-        metadata['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
-
-        return cls(l=l_final * u.AA, trn_spectra=pca_spec,
-                   gen_dicts=None, metadata=metadata, dlogl=dlogl_final,
-                   K_obs=K_obs, src='YMC')
-
-    @classmethod
-    def from_FSPS(cls, K_obs, lsf, base_dir='CSPs', base_fname='CSPs', nfiles=None,
-                  log_params=['MWA', 'MLr', 'MLi', 'MLz', 'Fstar'],
+    def from_FSPS(cls, K_obs, lsf, base_dir, nfiles=None,
+                  log_params=['MWA', 'MLr', 'MLi', 'MLz', 'MLV', 'Fstar'],
                   vel_params={}, dlogl=1.0e-4, z0_=.04, **kwargs):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
@@ -263,28 +151,25 @@ class StellarPop_PCA(object):
         from utils import pickle_loader, add_losvds
         from itertools import chain
 
-        d_names = glob(os.path.join(base_dir,'{}_*.pkl'.format(base_fname)))
-        f_names = glob(os.path.join(base_dir,'{}_*.fits'.format(base_fname)))
-
-        # filter out test data
-        istest = ['test' in n for n in d_names]
-        d_names = [n for n, t in zip(d_names, istest) if not t]
-        f_names = [n for n, t in zip(f_names, istest) if not t]
+        d_names = glob(os.path.join(base_dir,'CSPs_*.pkl'))
+        csp_fnames = glob(os.path.join(base_dir,'CSPs_*.fits'))
+        sfh_fnames = glob(os.path.join(base_dir,'SFHs_*.fits'))
 
         if nfiles is not None:
             d_names = d_names[:nfiles]
-            f_names = f_names[:nfiles]
+            csp_fnames = csp_fnames[:nfiles]
+            sfh_fnames = sfh_fnames[:nfiles]
 
-        hdulists = [fits.open(f) for f in f_names]
-
-        l = hdulists[0][2].data * u.AA
+        l = fits.getdata(csp_fnames[0], 'lam') * u.AA
         logl = np.log10(l.value)
 
-        *_, specs = zip(*hdulists)
+        Nsubsample = fits.getval(sfh_fnames[0], ext=0, keyword='NSUBPER')
+        Nsfhper = fits.getval(sfh_fnames[0], ext=0, keyword='NSFHPER')
 
         meta = t.vstack([t.Table.read(f, format='fits', hdu=1)
-                         for f in f_names])
-        spec = np.row_stack([s.data for s in specs])
+                         for f in csp_fnames])
+        spec = np.row_stack(list(map(
+            lambda fn: fits.getdata(fn, 'flam'), csp_fnames)))
 
         meta['Dn4000'] = indices.StellarIndex('Dn4000')(
             l=l.value, flam=spec.T, axis=0).flatten()
@@ -297,11 +182,10 @@ class StellarPop_PCA(object):
         meta['Na_D'] = indices.StellarIndex('Na_D')(
             l=l.value, flam=spec.T, axis=0).flatten()
         meta['tau_V mu'] = meta['tau_V'] * meta['mu']
-        meta = meta['MWA', 'sigma','logzsol',
-                    'MLr', 'MLi', 'MLz',
-                    'tau_V', 'mu', 'tau_V mu',
+        meta = meta['sigma', 'logzsol', 'tau_V', 'mu',
+                    'tau_V mu', 'theta', 'MWA', 'MLV', 'MLi',
                     'Dn4000', 'Hdelta_A', 'Mg_b',
-                    'Ca_HK', 'Na_D', 'mf_100Myr']
+                    'Ca_HK', 'Na_D', 'mf_1Gyr']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
@@ -313,11 +197,13 @@ class StellarPop_PCA(object):
         meta['tau_V'].meta['TeX'] = r'$\tau_V$'
         meta['mu'].meta['TeX'] = r'$\mu$'
         meta['tau_V mu'].meta['TeX'] = r'$\tau_V ~ \mu$'
-        meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
+        #meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
         meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
-        meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
+        #meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
+        meta['MLV'].meta['TeX'] = r'$\Upsilon^*_V$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
-        meta['mf_100Myr'].meta['TeX'] = r'$f_m^{\textrm{100~Myr}}$'
+        meta['mf_1Gyr'].meta['TeX'] = r'$f_m^{\textrm{1~Gyr}}$'
+        meta['theta'].meta['TeX'] = r'$\Theta$'
 
         for n in meta.colnames:
             if n in log_params:
@@ -326,9 +212,10 @@ class StellarPop_PCA(object):
                 if 'ML' in n:
                     meta[n].meta['unc_incr'] = .008
 
+        '''
         # M/L thresholds
         ML_ths = [-10 if meta[n].meta.get('scale', 'linear') == 'log' else 0.
-                  for n in ['MLr', 'MLi', 'MLz']]
+                  for n in ['MLV', 'MLi]]
 
         # MWA bounds
         if meta['MWA'].meta.get('scale', 'linear') == 'log':
@@ -343,11 +230,13 @@ class StellarPop_PCA(object):
              (np.array(meta['MWA']) > MWA_bds[0]),
              (np.array(meta['MWA']) < MWA_bds[1])]), axis=0)
 
-        dicts = chain.from_iterable(
-            [pickle_loader(f) for (i, f) in enumerate(d_names)
-             if models_good[i]])
+        print('not good models:', np.argwhere(~models_good))
+        '''
 
-        spec, meta = spec[models_good, :], meta[models_good]
+        dicts = list(chain.from_iterable(
+            [pickle_loader(f) for (i, f) in enumerate(d_names)]))
+
+        #spec, meta = spec[models_good, :], meta[models_good]
 
         # convolve spectra with instrument LSF
         dlogl_hires = ut.determine_dlogl(logl)
@@ -368,8 +257,10 @@ class StellarPop_PCA(object):
         for k in meta.colnames:
             meta[k] = meta[k].astype(np.float32)
 
-        return cls(l=l_final * l.unit, trn_spectra=spec_lores, gen_dicts=dicts, metadata=meta,
-                   K_obs=K_obs, dlogl=None, src='FSPS', **kwargs)
+        return cls(l=l_final * l.unit, trn_spectra=spec_lores,
+                   gen_dicts=dicts, metadata=meta, sfh_fnames=sfh_fnames,
+                   K_obs=K_obs, dlogl=None, src='FSPS',
+                   nsubpersfh=Nsubsample, nsfhperfile=Nsfhper, **kwargs)
 
     # =====
     # methods
@@ -436,6 +327,8 @@ class StellarPop_PCA(object):
         # return smallest q value for which target FRE is reached
         q = np.min(qs[err < target])
 
+        hdulist.close()
+
         fig.savefig('xval_test.png')
 
         return q
@@ -445,7 +338,7 @@ class StellarPop_PCA(object):
         run PCA on library of model spectra
         '''
 
-        self.scaler = ut.SpecScaler(X=self.trn_spectra)
+        self.scaler = ut.MedianSpecScaler(X=self.trn_spectra)
         self.normed_trn = self.scaler.X_sc
         self.M = np.median(self.normed_trn, axis=0)
         self.S = self.normed_trn - self.M
@@ -512,11 +405,33 @@ class StellarPop_PCA(object):
 
         # run through same scaling normalization as training data
         O_norm, a = self.scaler(f)
+        ivar_wt = ivar * a**2.
         O_sub = O_norm - self.M[:, None, None]
 
-        A = self.robust_project_onto_PCs(e=self.PCs, f=O_sub, w=ivar)
+        A = self.robust_project_onto_PCs(e=self.PCs, f=O_sub, w=ivar_wt)
 
         return A, self.M, a, O_sub, O_norm
+
+    def write_pcs_fits(self):
+        '''
+        write training data mean and PCs to fits
+        '''
+
+        hdulist = fits.HDUList([fits.PrimaryHDU()])
+        lam_hdu = fits.ImageHDU(self.l.value)
+        lam_hdu.header['EXTNAME'] = 'LAM'
+        lam_hdu.header['BUNIT'] = 'AA'
+        hdulist.append(lam_hdu)
+
+        mean_hdu = fits.ImageHDU(self.M)
+        mean_hdu.header['EXTNAME'] = 'MEAN'
+        hdulist.append(mean_hdu)
+
+        pc_hdu = fits.ImageHDU(self.PCs)
+        pc_hdu.header['EXTNAME'] = 'EVECS'
+        hdulist.append(pc_hdu)
+
+        hdulist.writeto('pc_vecs.fits', overwrite=True)
 
     def reconstruct_normed(self, A):
         '''
@@ -574,50 +489,6 @@ class StellarPop_PCA(object):
 
         return i0_map
 
-    def compute_spec_cov_full(self, snr_map, z_map, K_obs_):
-        '''
-        DO NOT USE!! Array output too large, raises MemoryError
-        Additionally, this is not up-to-date with the iterative method,
-            in that it does not use the MaNGA covariance matrix to set
-            the scale of the full matrix
-
-        compute a full PC covariance matrix for each spaxel
-
-        params:
-         - a_map: mean flux-density of original spectra (n by n)
-         - z_map: spaxel redshift map (get this from an dered instance)
-         - obs_logl: log-lambda vector (1D) of datacube
-         - K_obs_: observational spectral covariance
-
-        all params with _map as part of the name have to be n by n arrays,
-            with the same shape as the last two dimensions of a datacube
-
-        returns:
-         - K: array giving the spectral covariance for each spaxel
-
-        shape of K: (nl, nl, n, n) -- that is, each spaxel gets a
-            covariance matrix, and final two dimensions have the same
-            shape as the final two dimensions of a datacube
-
-        Full cov matrix is q x q for each spaxel
-
-        This raises MemoryError as float64
-        '''
-
-        q, nl = self.E.shape
-
-        cov_logl = K_obs_.logl
-        I0 = self._compute_i0_map(z_map=z_map, cov_logl=cov_logl)
-
-        nl_ = np.arange(nl)[..., None, None]
-        I, J = np.meshgrid(nl_, nl_)
-
-        K_s = KK_l_obs[I0[..., None, None] + J, I0[..., None, None] + I]
-        K_s = K_s / a_map[..., None, None] + k_l_th[None, None, ...]
-
-        K_PC = E @ K_s @ E.T
-        K_PC = np.moveaxis(K_PC, [0, 1], [-2, -1])
-
     def build_PC_cov_full_iter(self, z_map, K_obs_, a_map, ivar_cube,
                                snr_map):
         '''
@@ -646,61 +517,25 @@ class StellarPop_PCA(object):
         # compute starting indices for covariance matrix
         i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
         # bring ivar cube to same SNR as data
-        ivar_scaled = ivar_cube * (a_map[None, ...])**2.
 
         inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
 
         k_pc_gen = ut.KPCGen(
-            kspec_obs=K_obs_.cov, i0_map=i0_map, E=E, ivar_scaled=ivar_scaled)
+            kspec_obs=K_obs_.cov, i0_map=i0_map, E=E, ivar_scaled=ivar_cube)
 
         for ind in inds:
             # handle bad (SNR < 1) spaxels
             if snr_map[ind[0], ind[1]] < 1.:
                 pass
             else:
-                K_PC[..., ind[0], ind[1]] = k_pc_gen(ind[0], ind[1])
+                K_PC[..., ind[0], ind[1]] = k_pc_gen(ind[0], ind[1]) / \
+                    a_map[ind[0], ind[1]]**2.
 
-        K_PC += (E @ self.cov_th @ E.T)[..., None, None] * \
-                a_map[None, None, ...]**2.
-
-        return K_PC
-
-    def build_PC_cov_full_mpc(self, z_map, K_obs_, snr_map, nproc=8):
-        '''
-        use multiprocessing to build PC cov matrix
-        '''
-
-        q, l = self.PCs.shape
-        mapshape = z_map.shape
-
-        # build an array to hold covariances
-        K_PC = 10. * np.ones((q, q) + mapshape)
-
-        cov_logl = K_obs_.logl
-
-        # compute starting indices for covariance matrix
-        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
-
-        inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
-        nl = self.cov_th.shape[0]
-
-        isnr = 1. / snr_map
-
-        def args():
-            for ix in inds:
-                yield (K_obs.cov, snr_map[ix[0], ix[1]],
-                       i0_map[ix[0], ix[1]], self.PCs, nl, q)
-
-        pool = mpc.Pool(processes=nproc)
-        K_PC = pool.starmap(ut.PC_cov, args)
-        K_PC = np.moveaxis(np.reshape(K_PC, mapshape + (q, q)), [0, 1], [2, 3])
-
-        K_PC *= isnr[None, None, ...]
         K_PC += (E @ self.cov_th @ E.T)[..., None, None]
 
         return K_PC
 
-    def compute_model_weights(self, P, A, norm='L2', soft=False):
+    def compute_model_weights(self, P, A):
         '''
         compute model weights for each combination of spaxel (PC fits)
             and model
@@ -722,27 +557,9 @@ class StellarPop_PCA(object):
         # A shape: [PCNUM, XNUM, YNUM]
         D = C[..., None, None] - A[None, ...]
         # D shape: [MODELNUM, PCNUM, XNUM, YNUM]
-        nmodels, q, NX, NY = D.shape
-        Xhalf, Yhalf = NX // 2, NY // 2
 
-        if norm == 'L2':
-            # this is really mahalanobis distance
-            chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
-        elif norm == 'L1':
-            P_ = np.moveaxis(np.diagonal(P), [0, 1, 2], [1, 2, 0])
-            chi2 = (D * P_ * D).sum(axis=1)
-        elif norm == 'cos':
-            C_norm = np.sqrt((C**2.).sum(axis=1))[..., None, None]
-            A_norm = np.sqrt((A**2.).sum(axis=0))[None, ...]
-            chi2 = (np.sqrt(np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)) /
-                    (A_norm * C_norm))
-
-        if soft:
-            f = C.shape[1]
-        else:
-            f = 1.
-
-        w = np.exp(-chi2 / (2. * f))
+        chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
+        w = np.exp(-0.5 * chi2)
 
         return w
 
@@ -931,7 +748,7 @@ class StellarPop_PCA(object):
                       linewidth=0.5)
             # handle when there are tons and tons of models
             except MemoryError:
-                ahist(self.trn_PC_wts[:, i], bins=50, ax=ax,
+                ahist(self.metadata_a[:, i], bins=50, ax=ax,
                       histtype='step', orientation='horizontal',
                       linewidth=0.5)
             except ValueError:
@@ -1510,16 +1327,17 @@ class PCA_Result(object):
     store results of PCA for one galaxy using this
     '''
 
-    def __init__(self, pca, dered, K_obs, z, cosmo, norm_params={}, figdir='.',
-                 truth=None, dered_method='nearest', dered_kwargs={}):
+    def __init__(self, pca, dered, K_obs, z, cosmo, figdir='.',
+                 truth=None, truth_sfh=None, dered_method='nearest',
+                 dered_kwargs={}, vdisp_wt=False):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
         self.cosmo = cosmo
         self.z = z
-        self.norm_params = norm_params
         self.K_obs = K_obs
         self.truth = truth  #  known-truth parameters for fake data
+        self.truth_sfh = truth_sfh  #  known-true SFH for fake data
 
         # where to save all figures
         self.figdir = figdir
@@ -1532,7 +1350,7 @@ class PCA_Result(object):
             method=dered_method, dered_kwargs=dered_kwargs)
         self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=self.pca.dlogl,
-            half_dv=500. * u.km / u.s)
+            half_dv=200. * u.km / u.s)
 
         self.mask_cube = np.logical_or(self.mask_cube, self.ivar == 0.)
 
@@ -1545,7 +1363,7 @@ class PCA_Result(object):
 
         # original spectrum
         self.O = np.ma.array(self.O, mask=self.mask_cube)
-        self.ivar = np.ma.array(self.ivar, mask=self.mask_cube)
+        self.ivar = np.ma.array(self.ivar * self.a_map**2., mask=self.mask_cube)
         self.O_norm = np.ma.array(self.O_norm, mask=self.mask_cube)
 
         # how to reconstruct datacube from PC weights cube
@@ -1563,8 +1381,29 @@ class PCA_Result(object):
         self.map_shape = self.O.shape[-2:]
         self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
 
-        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A,
-                                           **norm_params)
+        self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
+
+        if vdisp_wt:
+            vdisp_raw = self.dered.dap_hdulist['STELLAR_SIGMA'].data
+            vdisp_corr = self.dered.dap_hdulist['STELLAR_SIGMACORR'].data
+            vdisp2 = vdisp_raw**2. - vdisp_corr**2.
+            vdisp = np.sqrt(vdisp2)
+            vdisp[vdisp2 <= 0.] = 30.
+
+            vdisp_ivar = self.dered.dap_hdulist['STELLAR_SIGMA_IVAR'].data
+            vdisp_bitmask = m.mask_from_maskbits(
+                a=self.dered.dap_hdulist['STELLAR_SIGMA_MASK'].data, b=[30])
+            vdisp_ivar *= (~ vdisp_bitmask)
+            vdisp_ivar[vdisp2 <= 0.] /= 100
+            vdisp_ivar[vdisp_ivar < 1.0e-8] = 1.0e-8
+            vdisp_ivar[vdisp_ivar > 100.] = 100.
+            vdisp_wts = ut.gaussian_weightify(
+                mu=vdisp, ivar=vdisp_ivar, vals=self.pca.metadata['sigma'].data,
+                soft=4.)
+            self.w *= vdisp_wts
+        else:
+            pass
+
         # no data
         self.nodata = (dered.drp_hdulist['RIMG'].data == 0.)
 
@@ -1573,7 +1412,7 @@ class PCA_Result(object):
 
         # spaxel is bad if < 25 models have weights 1/100 max, and no other problems
         self.badPDF = np.logical_and.reduce(
-            ((self.sample_diag(f=.01) < 25), ~self.mask_map))
+            ((self.sample_diag(f=.01) < 10), ~self.mask_map))
         self.goodPDF = ~self.badPDF
 
         self.l = 10.**self.pca.logl
@@ -1646,7 +1485,7 @@ class PCA_Result(object):
         # best fitting spectrum
         bestfit = self.pca.normed_trn[np.argmax(self.w[:, ix[0], ix[1]]), :]
         bestfit_ = ax1.plot(self.l, bestfit, drawstyle='steps-mid',
-                            c='c', label='Best Model', linewidth=0.25)
+                            c='c', label='Best Trn.', linewidth=0.5, zorder=0)
 
         # original & reconstructed
         O_norm = self.O_norm[:, ix[0], ix[1]]
@@ -1658,9 +1497,9 @@ class PCA_Result(object):
         ivm = np.ma.median(ivar)
 
         orig_ = ax1.plot(self.l, O_norm, drawstyle='steps-mid',
-                         c='b', label='Orig.', linewidth=0.25)
+                         c='b', label='Obs.', linewidth=0.5, zorder=1)
         recon_ = ax1.plot(self.l, O_recon, drawstyle='steps-mid',
-                          c='g', label='Recon.', linewidth=0.25)
+                          c='g', label='PCA Fit', linewidth=0.5, zorder=2)
         ax1.axhline(y=0., xmin=self.l.min(), xmax=self.l.max(),
                     c='k', linestyle=':')
 
@@ -1669,15 +1508,17 @@ class PCA_Result(object):
         ivar_norm = (ivar / ivm) * Onm
         ivar_ = ax1.plot(
             self.l, ivar_norm, drawstyle='steps-mid', c='m',
-            label='Wt.', linewidth=0.25)
+            label='IVAR', linewidth=0.5, zorder=0)
 
         # residual plot
         resid = self.resid[:, ix[0], ix[1]]
         std_err = (1. / np.sqrt(ivar)) / self.a_map[ix[0], ix[1]]
         fit_resid_ = ax2.plot(
-            self.l.data, resid, drawstyle='steps-mid', c='green', linewidth=0.25)
+            self.l.data, resid, drawstyle='steps-mid', c='green',
+            linewidth=0.5, alpha=.5)
         model_resid = ax2.plot(
-            self.l.data, bestfit - O_norm, drawstyle='steps-mid', c='cyan', linewidth=0.25)
+            self.l.data, bestfit - O_norm, drawstyle='steps-mid', c='cyan',
+            linewidth=0.5, alpha=.5)
         conf_band_ = ax2.fill_between(
             x=self.l.data, y1=-std_err, y2=std_err,
             linestyle='--', color='salmon', linewidth=0.25, zorder=0)
@@ -1858,7 +1699,7 @@ class PCA_Result(object):
 
         P_PC = StellarPop_PCA.P_from_K_pinv(K_PC)
 
-        w = pca.compute_model_weights(P=P_PC, A=A, **self.norm_params)
+        w = pca.compute_model_weights(P=P_PC, A=A)
 
         lum = np.ma.masked_invalid(self.lum(band=band))
 
@@ -2044,11 +1885,11 @@ class PCA_Result(object):
         if kde_prior:
             qgrid, prigrid = self.qty_kde(
                 q=q, kernel='gau', bw='scott', fft=False)
-            hprior = ax.plot(qgrid, prigrid, color='orange', linestyle='-',
+            hprior = ax.plot(qgrid, prigrid, color='fuchsia', linestyle='-',
                              label='prior', linewidth=0.5)
         else:
             hprior = ax_.hist(
-                q, bins=bins, normed=True, histtype='step', color='orange',
+                q, bins=bins, normed=True, histtype='step', color='fuchsia',
                 label='prior', linewidth=0.5)
 
         # log odds ratio
@@ -2478,16 +2319,20 @@ class PCA_Result(object):
         ax = fig.add_subplot(111)
 
         sig_dap = self.dered.dap_hdulist['STELLAR_SIGMA'].data
-        sig_dap_corr = self.dered.dap_hdulist['STELLAR_SIGMACORR'].data
+        # apply correction for real data, since fake data already builds in LSF
+        if self.truth is not None:
+            sig_dap_corr = self.dered.dap_hdulist['STELLAR_SIGMACORR'].data
+        else:
+            sig_dap_corr = 0.
         sig_dap = np.sqrt(sig_dap**2. - sig_dap_corr**2.)
-        sig_dap_mask = self.dered.dap_hdulist['STELLAR_SIGMA_MASK'].data
+        sig_dap_mask = m.mask_from_maskbits(
+            self.dered.dap_hdulist['STELLAR_SIGMA_MASK'].data, b=[30])
         sig_dap = np.ma.array(sig_dap, mask=sig_dap_mask).flatten()
         sig_dap_unc = 1. / np.sqrt(
             self.dered.dap_hdulist['STELLAR_SIGMA_IVAR'].data).flatten()
 
         sig_pca, sig_pca_lunc, sig_pca_uunc, _ = self.pca.param_cred_intvl(
             qty='sigma', W=self.w)
-        sig_pca = np.sqrt(sig_pca**2. - sig_dap_corr**2.)
         sig_pca = np.ma.array(sig_pca, mask=self.mask_map).flatten()
         sig_pca_unc = np.row_stack([sig_pca_lunc.flatten(),
                                     sig_pca_uunc.flatten()])
@@ -2504,6 +2349,8 @@ class PCA_Result(object):
         ax.set_ylabel('PCA value')
 
         fig.tight_layout()
+        ax.set_ylim([0., 700.])
+        ax.set_ylim([0., 700.])
 
         fname = '_'.join((self.dered.plateifu, 'sigma_comp.png'))
         self.savefig(fig, fname, self.figdir, dpi=300)
@@ -2540,11 +2387,193 @@ class PCA_Result(object):
 
         ax.set_xlabel('Vel. offset')
         ax.set_ylabel(r'$\sigma$ (PCA)')
+
         fig.suptitle('Effects of integer-pixel deredshifting')
         fig.tight_layout()
 
         fname = '_'.join((self.dered.plateifu, 'sigma_vel.png'))
 
+        self.savefig(fig, fname, self.figdir, dpi=300)
+
+    def plot_sfh(self, i, w, ax, label=None, massnorm='mformed',
+                 **kwargs):
+        '''
+        plot a single SFH
+        '''
+
+        ts, sfrs, fii = csp.retrieve_SFHs(
+            filelist=self.pca.sfh_fnames, nsubpersfh=self.pca.nsubpersfh,
+            nsfhperfile=self.pca.nsfhperfile, i=i, massnorm=massnorm)
+
+        ax.plot(
+            ts, w + sfrs[fii, :], alpha=w,
+            linewidth=0.5, label=label, **kwargs)
+
+    def plot_top_sfhs(self, ax, ix, n=10):
+        '''
+        overplot top `n` SFHs (normalized to 10^9 Msun **formed**)
+        '''
+        nper = len(self.pca.gen_dicts[0]['mu'])
+        # find top ten SFHs
+        w_spax = self.w[:, ix[0], ix[1]]
+        # sort in descending weight order
+        best_i = np.argsort(w_spax)[::-1][:(n - 1)] // nper
+        ws = np.linspace(1., 0., n + 1)[:-1]
+
+        for ci, (i, w) in enumerate(zip(best_i, ws)):
+            self.plot_sfh(
+                w=w, ax=ax, i=i, label='SFH {}'.format(i),
+                c='C{}'.format(ci))
+
+        if self.truth is not None:
+            ts, *_ = csp.retrieve_SFHs(
+                filelist=self.pca.sfh_fnames, i=0)
+            mnorm = np.trapz(x=ts, y=self.truth_sfh)
+            ax.plot(ts, self.truth_sfh / mnorm, linewidth=1., label='Truth', c='r')
+
+    def make_top_sfhs_fig(self, ix=None, n=10, fig=None, ax=None, ax_loc=111):
+
+        if ix is None:
+            ix = self.ifu_ctr_ix
+
+        # create figure and axis if necessary
+        if not (ax is None):
+            pass
+        elif (fig is None):
+            fig = plt.figure(figsize=(3, 2), dpi=300)
+            ax = fig.add_subplot(ax_loc)
+        elif (ax is None):
+            ax = fig.add_subplot(ax_loc)
+
+        self.plot_top_sfhs(ax, ix, n=n)
+
+        ax.set_title('Best-fitting SFHs - {}: ({}, {})'.format(
+            self.objname, ix[0], ix[1]), size=6)
+
+        ax.set_xlabel('time [Gyr]', size=8)
+        ax.set_ylabel('Normed SFR ( + C)', size=8)
+
+        ax.tick_params(labelsize=8)
+
+        # compute y-axis limits
+        # cover a dynamic range of a few OOM, plus bursts
+        ax.set_xlim([0., 13.7])
+        ax.legend(loc='best', prop={'size': 4})
+
+        fig.tight_layout()
+
+        fname = '{}_SFHs_{}-{}.png'.format(self.objname, ix[0], ix[1])
+        self.savefig(fig, fname, self.figdir, dpi=300)
+
+    def make_all_sfhs_fig(self, ix=None, fig=None, ax=None, ax_loc=111,
+                          massnorm='mstar', mass_abs=False, mass_band='i'):
+        '''
+        make figure with histogram of all sfhs, weighted
+        '''
+        if ix is None:
+            ix = self.ifu_ctr_ix
+
+        w_spax = self.w[:, ix[0], ix[1]]
+
+        w_spax_norm = w_spax / w_spax.max()
+
+        # create figure and axis if necessary
+        if not (ax is None):
+            pass
+        elif (fig is None):
+            fig = plt.figure(figsize=(3, 2), dpi=300)
+            ax = fig.add_subplot(ax_loc)
+        elif (ax is None):
+            ax = fig.add_subplot(ax_loc)
+
+        nspecperfile = self.pca.nsfhperfile * self.pca.nsubpersfh
+        plchldr_ixs = nspecperfile * \
+                      np.arange(0, len(self.pca.sfh_fnames), dtype=int)
+
+        _, allsfrs, _ = zip(
+            *map(lambda i: csp.retrieve_SFHs(
+                filelist=self.pca.sfh_fnames, i=i, massnorm=massnorm,
+                nsubpersfh=self.pca.nsubpersfh, nsfhperfile=self.pca.nsfhperfile),
+                plchldr_ixs))
+        allsfrs = np.row_stack(allsfrs)
+
+        if (massnorm == 'mstar') and mass_abs:
+            ml = self.pca.metadata['ML{}'.format(mass_band)]
+            if ml.meta.get('scale', 'linear') == 'log':
+                lum = np.log10(self.lum(mass_band))[ix[0], ix[1]]
+                m = 10.**(ml + lum)
+            else:
+                lum = self.lum(mass_band)[ix[0], ix[1]]
+                m = ml * lum
+            allsfrs *= (m[:, None] / 1.0e9)
+
+        ts = fits.getdata(self.pca.sfh_fnames[0], 'allts')
+        allts = np.repeat(ts[None, :], allsfrs.shape[0], axis=0)
+        wts = np.repeat(w_spax[:, None], len(ts), axis=1)
+
+        sfrpctls = np.column_stack(
+            [ut.weighted_pctls_single(
+                 a=allsfrs[:, i], w=wts[:, i], qtls=[16., 50., 84.])
+             for i in range(allsfrs.shape[1])])
+
+        ax.fill_between(ts, sfrpctls[0, :], sfrpctls[2, :], color='k', alpha=.5)
+        # 50th pctl
+        ax.plot(ts, sfrpctls[1, :], color='k')
+
+        rangemin = .001
+        rangemax = 4. * np.nanmax(sfrpctls[1, :])
+
+        ax.hist2d(x=allts.flatten(), y=allsfrs.flatten(),
+                  weights=wts.flatten(),
+                  bins=[100, 25],
+                  range=[[0., 13.77], [rangemin, rangemax]])
+
+        if self.truth is not None:
+            if (massnorm == 'mstar') and mass_abs:
+                if ml.meta.get('scale', 'linear') == 'log':
+                    mtruth = 10.**(self.truth['ML{}'.format(mass_band)] + lum)
+                else:
+                    mtruth = lum * self.truth['ML{}'.format(mass_band)]
+                ax.plot(ts, self.truth_sfh * mtruth / 1.0e9, color='r')
+            else:
+                ax.plot(ts, self.truth_sfh, color='r')
+
+        ax.set_xlabel('time [Gyr]', size=8)
+        if mass_abs:
+            ax.set_ylabel(r'SFR $[\frac{M_{\odot}}{\rm yr}]$', size=8)
+        else:
+            ax.set_ylabel('Normed SFR', size=8)
+
+        ax.tick_params(labelsize=8)
+        ax.set_title('All SFHs', size=6)
+
+        fig.tight_layout()
+
+        fname = '{}_allSFHs_{}-{}.png'.format(self.objname, ix[0], ix[1])
+        self.savefig(fig, fname, self.figdir, dpi=300)
+
+    def cornerplot(self, ix=None):
+        '''
+        make spaxel parameter corner plot
+        '''
+
+        if ix is None:
+            ix = self.ifu_ctr_ix
+
+        w_spax = self.w[:, ix[0], ix[1]]
+
+        if self.truth is not None:
+            truth = [self.truth[n] for n in self.pca.metadata.colnames]
+        else:
+            truth = None
+
+        fig = corner(xs=self.pca.metadata_a, weights=w_spax,
+                     labels=self.pca.metadata_TeX,
+                     truths=truth, truth_color='r')
+
+        fig.tight_layout()
+
+        fname = '{}_cornerplot_{}-{}.png'.format(self.objname, ix[0], ix[1])
         self.savefig(fig, fname, self.figdir, dpi=300)
 
     @property
@@ -2606,7 +2635,7 @@ class PCA_Result(object):
 
         return P50, l_unc, u_unc, scale
 
-    def write_results(self, qtys='all'):
+    def write_results(self, qtys='all', pc_info=False):
 
         # initialize FITS hdulist
         # PrimaryHDU is identical to DRP 0th HDU
@@ -2632,7 +2661,7 @@ class PCA_Result(object):
 
             hdulist.append(qty_hdu)
 
-        # make extension with spectral SNR
+        # make extension with median spectral SNR
         snr_hdu = fits.ImageHDU(self.SNR_med)
         snr_hdu.header['EXTNAME'] = 'SNRMED'
         hdulist.append(snr_hdu)
@@ -2641,6 +2670,26 @@ class PCA_Result(object):
         mask_hdu = fits.ImageHDU(self.mask_map.astype(float))
         mask_hdu.header['EXTNAME'] = 'MASK'
         hdulist.append(mask_hdu)
+
+        # make extension with PDF population statistics
+        fracs = np.array([.01, .05, .1, .25, .5, .9])
+        goodpdf_hdu = fits.ImageHDU(np.stack(
+            [self.sample_diag(f=f_) / len(self.pca.metadata)
+             for f_ in fracs]))
+        for fi, f_ in enumerate(fracs):
+            goodpdf_hdu.header['FRAC{}'.format(fi)] = f_
+        goodpdf_hdu.header['EXTNAME'] = 'GOODFRAC'
+        hdulist.append(goodpdf_hdu)
+
+        # make extensions with pc amplitudes and normalization array
+        if pc_info:
+            pc_hdu = fits.ImageHDU(self.A)
+            pc_hdu.header['EXTNAME'] = 'CALPHA'
+            hdulist.append(pc_hdu)
+
+            norm_hdu = fits.ImageHDU(self.a_map)
+            norm_hdu.header['EXTNAME'] = 'NORM'
+            hdulist.append(norm_hdu)
 
         fname = os.path.join(self.figdir, '{}_res.fits'.format(self.objname))
 
@@ -2651,20 +2700,19 @@ def setup_pca(base_dir, base_fname, fname=None,
               redo=True, pkl=True, q=7, nfiles=5, fre_target=.005,
               pca_kwargs={}):
     import pickle
-    if (fname is None):
-        redo = True
-
-        if pkl:
-            fname = 'pca.pkl'
+    if (fname is None) or (not os.path.isfile(fname)) or (redo):
+        run_pca = True
+    else:
+        run_pca = False
 
     kspec_fname = 'manga_Kspec_norm_smooth101.fits'
 
-    if redo:
+    if run_pca:
         K_obs = cov_obs.Cov_Obs.from_fits(kspec_fname)
         #K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
         #    'cov_obs_YMC_BOSS.fits')
         pca = StellarPop_PCA.from_FSPS(
-            K_obs=K_obs, base_dir=base_dir, base_fname=base_fname,
+            K_obs=K_obs, base_dir=base_dir,
             nfiles=nfiles, **pca_kwargs)
         if pkl:
             pickle.dump(pca, open(fname, 'wb'))
@@ -2707,7 +2755,9 @@ def get_col_metadata(col, k, notfound=''):
     return res
 
 def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
-               dered_method='nearest', dered_kwargs={}, fake_i=None, z_new=None):
+               dered_method='nearest', dered_kwargs={}, mockspec_ix=None, z_new=None,
+               CSPs_dir='.', mockspec_fname='CSPs_test.fits',
+               mocksfh_fname='SFHs_test.fits', vdisp_wt=False):
 
     plateifu = row['plateifu']
 
@@ -2726,9 +2776,39 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
                 row['nsa_z'] = row['nsa_zdist'] = z_new
                 plateifu_base = '-'.join((plateifu, 'z{}'.format(z_new)))
 
+            mockspec_fullpath = os.path.join(CSPs_dir, mockspec_fname)
+            mocksfh_fullpath = os.path.join(CSPs_dir, mocksfh_fname)
+
+            nsubpersfh = fits.getval(mocksfh_fullpath, ext=0, keyword='NSUBPER')
+            nsfhperfile = fits.getval(mocksfh_fullpath, ext=0, keyword='NSFHPER')
+            nspecperfile = nsubpersfh * nsfhperfile
+
+            if mockspec_ix is None:
+                if nspecperfile == 1:
+                    mockspec_ix = 0
+                else:
+                    mockspec_ix = np.random.randint(0, nspecperfile - 1)
+
+            # get SFH data from table
+            mock_metadata, mock_metadata_ix = csp.retrieve_meta_table(
+                filelist=[mockspec_fullpath], i=mockspec_ix,
+                nsfhperfile=nsfhperfile, nsubpersfh=nsubpersfh)
+            mock_metadata.keep_columns(csp.req_param_keys)
+            mock_metadata_row = mock_metadata[mock_metadata_ix]
+
+            _, mockspec_row, mocksfh_row, _ = csp.find_sfh_ixs(
+                i=mockspec_ix, nsfhperfile=nsfhperfile, nsubpersfh=nsubpersfh)
+            mock_metadata_row = mock_metadata[mocksfh_row]
+            _, truth_sfh, _ = csp.retrieve_SFHs(
+                [mocksfh_fullpath], i=0, massnorm='mstar')
+            truth_sfh = truth_sfh[mocksfh_row, :]
+
+            mock_metadata_row = mock_metadata[mockspec_row]
+
             data = FakeData.from_FSPS(
-                fname='CSPs_CKC14_MaNGA/CSPs_test.fits', i=fake_i,
+                fname=mockspec_fullpath, i=mockspec_row,
                 plateifu_base=plateifu_base, pca=pca, row=row)
+
             data.write()
 
         dered = MaNGA_deredshift.from_fakedata(
@@ -2743,32 +2823,41 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
         dered = MaNGA_deredshift.from_plateifu(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row)
         figdir = os.path.join('results', plateifu_base)
+        mock_metadata_row = None
+        truth_sfh = None
         truth = None
 
     z_dist = row['nsa_zdist']
 
     pca_res = PCA_Result(
-        pca=pca, dered=dered, K_obs=K_obs, z=z_dist, cosmo=cosmo,
-        norm_params={'norm': 'L2', 'soft': False}, figdir=figdir,
-        truth=truth, dered_method=dered_method, dered_kwargs=dered_kwargs)
+        pca=pca, dered=dered, K_obs=K_obs, z=z_dist,
+        cosmo=cosmo, figdir=figdir,
+        truth=truth, truth_sfh=truth_sfh, vdisp_wt=vdisp_wt,
+        dered_method=dered_method, dered_kwargs=dered_kwargs)
 
     pca_res.make_full_QA_fig(kde=(False, False))
 
-    pca_res.make_sample_diag_fig()
+    # pca_res.cornerplot()
 
-    pca_res.make_qty_fig(qty_str='MLr')
+    pca_res.make_sample_diag_fig()
+    pca_res.make_top_sfhs_fig()
+    pca_res.make_all_sfhs_fig(massnorm='mstar', mass_abs=True)
+
+    #pca_res.make_qty_fig(qty_str='MLr')
     pca_res.make_qty_fig(qty_str='MLi')
-    pca_res.make_qty_fig(qty_str='MLz')
+    #pca_res.make_qty_fig(qty_str='MLz')
+    pca_res.make_qty_fig(qty_str='MLV')
 
     pca_res.make_qty_fig(qty_str='MWA')
 
-    pca_res.make_Mstar_fig(band='r')
+    #pca_res.make_Mstar_fig(band='r')
     pca_res.make_Mstar_fig(band='i')
-    pca_res.make_Mstar_fig(band='z')
+    #pca_res.make_Mstar_fig(band='z')
 
-    pca_res.make_radial_gp_fig(qty='MLr', q_bdy=[.01, 100.])
+    #pca_res.make_radial_gp_fig(qty='MLr', q_bdy=[.01, 100.])
     pca_res.make_radial_gp_fig(qty='MLi', q_bdy=[.01, 100.])
-    pca_res.make_radial_gp_fig(qty='MLz', q_bdy=[.01, 100.])
+    #pca_res.make_radial_gp_fig(qty='MLz', q_bdy=[.01, 100.])
+    pca_res.make_radial_gp_fig(qty='MLV', q_bdy=[.01, 100.])
 
     pca_res.make_qty_fig('Dn4000')
 
@@ -2788,11 +2877,12 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 35
+    howmany = 10
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'supersample_vec'
-    dered_kwargs = {'nper': 4}
+    dered_kwargs = {'nper': 10}
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171025-1/'
 
     mpl_v = 'MPL-5'
 
@@ -2802,31 +2892,36 @@ if __name__ == '__main__':
     pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA,
                   'lsf': lsf, 'z0_': .04}
 
+    pca_pkl_fname = os.path.join(CSPs_dir, 'pca.pkl')
     pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=False, pkl=True, q=10, fre_target=.005, nfiles=50,
+        fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=40,
         pca_kwargs=pca_kwargs)
 
+    pca.write_pcs_fits()
+
     #'''
-    row = drpall.loc['8465-3702']
+    row = drpall.loc['8464-1901']
 
     with catch_warnings():
         simplefilter(warn_behav)
 
-        pca_res = run_object(row=row, pca=pca, force_redo=False,
-                             fake=False, dered_method=dered_method,
-                             dered_kwargs=dered_kwargs)
+        pca_res = run_object(
+            row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
+            dered_method=dered_method, dered_kwargs=dered_kwargs)
+        pca_res.write_results(pc_info=True)
 
-        pca_res_f = run_object(row=row, pca=pca, force_redo=True,
-                               fake=True, redo_fake=True, fake_i=81,
-                               dered_method=dered_method,
-                               dered_kwargs=dered_kwargs)
+        pca_res_f = run_object(
+            row=row, pca=pca, force_redo=True, fake=True,
+            redo_fake=True, mockspec_ix=0, dered_method=dered_method,
+            dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
+            mockspec_fname='TestSpecs-4.3.fits', mocksfh_fname='TestSFH-4.3.fits')
         pca_res_f.write_results()
     #'''
 
-    '''
-    drpall = drpall[drpall['ifudesignsize'] > 0.]
-    #drpall = drpall[drpall['ifudesignsize'] == 19]
+    #'''
+    #drpall = drpall[drpall['ifudesignsize'] > 0.]
+    drpall = drpall[drpall['ifudesignsize'] == 19]
     drpall = m.shuffle_table(drpall)
     drpall = drpall[:howmany]
 
@@ -2839,18 +2934,22 @@ if __name__ == '__main__':
                     simplefilter(warn_behav)
 
                     pca_res = run_object(
-                        row=row, pca=pca, force_redo=False,
-                        fake=False, dered_method=dered_method)
+                        row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
+                        dered_method=dered_method, dered_kwargs=dered_kwargs)
+                    pca_res.write_results()
 
                     pca_res_f = run_object(
-                        row=row, pca=pca, force_redo=False, fake=True,
-                        redo_fake=True, dered_method=dered_method, fake_i=81)
+                        row=row, pca=pca, force_redo=True, fake=True,
+                        redo_fake=True, mockspec_ix=None, dered_method=dered_method,
+                        dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
+                        mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
                     pca_res_f.write_results()
 
-            except Exception as e:
+            except Exception:
+                exc_info = sys.exc_info()
                 print('ERROR: {}'.format(plateifu))
-                print(e)
+                print_exception(*exc_info)
                 continue
             finally:
                 bar.update()
-    '''
+    #'''
