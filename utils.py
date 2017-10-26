@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import pickle as pkl
 
 from astropy import units as u, constants as c, table as t
+from astropy.io import fits
 from specutils import extinction
 from speclite import redshift as slrs
 from speclite import accumulate as slacc
@@ -16,6 +17,7 @@ import ctypes
 
 import os
 import sys
+from copy import copy
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -32,6 +34,46 @@ import manga_tools as m
 ln10 = np.log(10.)
 mpl_v = 'MPL-5'
 
+def gaussian_weightify(vals, mu, sigma=None, ivar=None, soft=1.):
+    '''
+    give a weight to each value in `vals` according to how close it is to `mu`,
+        in a Gaussian sense
+
+    params:
+     - mu: nominal value in each spaxel
+     - sigma: standard deviation of `mu`
+     - vals: 1-d array of values to compare to `mu` and `sigma`
+    '''
+
+    dist = vals[:, None, None] - mu[None, :, :]
+
+    if (ivar is None) and (sigma is None):
+        raise ValueError('give me either sigma or ivar')
+    elif (ivar is None):
+        wts = np.exp(-dist**2. / (2. * sigma**2. * soft**2.))
+    else:
+        wts = np.exp(-dist**2. * ivar / (2. * soft**2.))
+    return wts
+
+def weighted_pctls_single(a, w=None, qtls=[50]):
+    if w is None:
+        w = np.ones_like(a)
+
+    w[np.logical_or.reduce((~np.isfinite(a), ~np.isfinite(w)))] = 0
+
+    i_ = np.argsort(a, axis=0)
+    a, w = a[i_], w[i_]
+    qvals = np.interp(
+        qtls, 100. * w.cumsum() / w.sum(), a)
+    return qvals
+
+def copyFITS(fname):
+    hdulist = fits.open(fname)
+    hdulist_copy = copy(hdulist)
+
+    hdulist.close()
+
+    return hdulist_copy
 
 class GaussPeak(object):
     def __init__(self, pos, wid, ampl=None, flux=None):
@@ -151,7 +193,7 @@ class MaNGA_LSF(object):
 
 class SpecScaler(object):
     '''
-    scale spectra to unit dispersion, and remove the mean
+    scale spectra to unit dispersion
     '''
     def __init__(self, X, pctls=(16., 84.)):
         '''
@@ -176,6 +218,29 @@ class SpecScaler(object):
 
         return Y_sc, a
 
+class MedianSpecScaler(object):
+    '''
+    scale spectra to unit median
+    '''
+    def __init__(self, X):
+        '''
+        params:
+         - X (nspec, nl): array of spectra
+        '''
+
+        med = np.median(X, axis=1, keepdims=True)
+        self.X_sc = X / med
+
+    def __call__(self, Y, lam_axis=0, map_axis=(1, 2)):
+        '''
+        apply the same scaling as is fit
+        '''
+
+        med = np.median(Y, axis=lam_axis, keepdims=True)
+        Y_sc = Y / med
+
+        return Y_sc, med.squeeze()
+
 class KPCGen(object):
     '''
     compute some spaxel's PC cov matrix
@@ -192,12 +257,26 @@ class KPCGen(object):
         i0_ = self.i0_map[i, j]
         sl = [slice(i0_, i0_ + self.nl) for _ in range(2)]
         kspec = self.kspec_obs[sl]
+
         # add to diagonal term from actual variance, floored at .1%
         var = 1. / self.ivar_scaled[..., i, j]
-        np.einsum('ii->i', kspec)[:] = 1. / self.ivar_scaled[..., i, j].clip(
-            min=1.0e-6, max=1.0e6)
-        return (self.E @ (kspec) @ self.E.T)
 
+        #kspec = .001 * np.ones_like(kspec)
+        np.einsum('ii->i', kspec)[:] = var.clip(min=1.0e-6, max=1.0e6)
+
+        '''
+        rows, cols = np.indices(kspec.shape)
+        for i in range(1, 10):
+            urow_vals = np.diag(rows, k=i)
+            lrow_vals = np.diag(rows, k=-i)
+            ucol_vals = np.diag(cols, k=i)
+            lcol_vals = np.diag(cols, k=-i)
+            z = np.sqrt(var[i:]**2. + var[:-i]**2.) / np.e**(0.8 * i)
+            kspec[urow_vals, ucol_vals] = z
+            kspec[lrow_vals, lcol_vals] = z
+        '''
+
+        return (self.E @ (kspec) @ self.E.T)
 
 def interp_large(x0, y0, xnew, axis, nchunks=1, **kwargs):
     '''
