@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as mplcm
 from matplotlib import ticker as mticker
+import mpl_scatter_density
 
 from astropy import table as t
 from astropy.cosmology import WMAP9 as cosmo
@@ -31,7 +32,6 @@ import spec_tools
 
 eps = np.finfo(float).eps
 
-
 class ModelDataCompare(object):
     """
     Compare the model set and the data in a bunch of spaces
@@ -54,8 +54,7 @@ class ModelDataCompare(object):
         PCA_Results = [
             find_pcs.PCA_Result(
                 pca=pca, dered=dered, K_obs=K_obs,
-                z=dered.drpall_row['nsa_zdist'], cosmo=cosmo,
-                norm_params={'norm': 'L2', 'soft': False}, figdir='.')
+                z=dered.drpall_row['nsa_zdist'], cosmo=cosmo, figdir='.')
             for dered in dereds]
 
         self.dir_meas = {}
@@ -81,7 +80,8 @@ class ModelDataCompare(object):
         self.mask = np.logical_or.reduce(
             ((self.rimgs <= rimg_thr), ) + \
             tuple(~self._in_param_range(self.dir_meas[k], k)
-                  for k in self.dir_meas))
+                  for k in self.dir_meas),
+            tuple(pca_r.SNR_med < 10 for pca_r in PCA_Results))
 
     def _in_param_range(self, a, n, nstd=10.):
         '''
@@ -145,7 +145,7 @@ class ModelDataCompare(object):
 
     def D4000_Hd_fig(self):
         fig = plt.figure(figsize=(4, 4), dpi=300)
-        ax = fig.add_subplot(111)
+        ax = fig.add_subplot(111, projection='scatter_density')
 
         # directly observed indices
         direct = np.column_stack(
@@ -159,34 +159,15 @@ class ModelDataCompare(object):
         infer_good = infer[(~self.mask) * (~self.infer_badPDF)]
         infer_bad = infer[(~self.mask) * (self.infer_badPDF)]
 
-        KDE_direct = KDEMultivariate(data=direct, var_type='cc')
-        KDE_models = KDEMultivariate(data=[self.pca.metadata['Dn4000'],
-                                           self.pca.metadata['Hdelta_A']],
-                                     var_type='cc')
-        KDE_infer_good = KDEMultivariate(data=infer_good, var_type='cc')
-        KDE_infer_bad = KDEMultivariate(data=infer_bad, var_type='cc')
-
-        nx, ny = 200, 200
-
-        XX, YY = np.meshgrid(np.linspace(0., 3.5, nx),
-                             np.linspace(-8., 12., ny))
-
-        XXYY = np.column_stack((XX.flatten(), YY.flatten()))
-
-        ZZ_direct = KDE_direct.pdf(XXYY).reshape((nx, ny))
-        ZZ_models = KDE_models.pdf(XXYY).reshape((nx, ny))
-        ZZ_infer_bad = KDE_infer_bad.pdf(XXYY).reshape((nx, ny))
-        ZZ_infer_good = KDE_infer_good.pdf(XXYY).reshape((nx, ny))
-
-        ax.contour(XX, YY, ZZ_direct, colors='k')
-        ax.contour(XX, YY, ZZ_models, colors='b')
-        ax.contour(XX, YY, ZZ_infer_bad, colors='r')
-        ax.contour(XX, YY, ZZ_infer_good, colors='g')
-
-        ax.plot([0., 1.], [20., 20.], c='k', label='MaNGA: direct')
-        ax.plot([0., 1.], [20., 20.], c='b', label='CSP models')
-        ax.plot([0., 1.], [20., 20.], c='r', label='MaNGA: inferred (bad)')
-        ax.plot([0., 1.], [20., 20.], c='g', label='MaNGA: inferred (good)')
+        ax.scatter_density(
+            direct[:, 0], direct[:, 1], color='k', label='MaNGA: direct')
+        ax.scatter_density(
+            self.pca.metadata['Dn4000'], self.pca.metadata['Hdelta_A'],
+            color='g', label='CSP models')
+        ax.scatter_density(
+            infer_bad[:, 0], infer_bad[:, 1], color='r', label='MaNGA: bad fits')
+        ax.scatter_density(
+            infer_good[:, 0], infer_good[:, 1], color='g', label='MaNGA: good fits')
 
         ax.legend(loc='best', prop={'size': 6})
 
@@ -262,26 +243,36 @@ if __name__ == '__main__':
 
     from find_pcs import *
 
+    howmany = 10
     cosmo = WMAP9
     warn_behav = 'ignore'
-    dered_method = 'nearest'
-    pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA}
+    dered_method = 'supersample_vec'
+    dered_kwargs = {'nper': 10}
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171025-1/'
 
     mpl_v = 'MPL-5'
 
+    drpall = m.load_drpall(mpl_v, index='plateifu')
+    drpall = drpall[drpall['nsa_z'] != -9999]
+    lsf = ut.MaNGA_LSF.from_drpall(drpall=drpall, n=2)
+    pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA,
+                  'lsf': lsf, 'z0_': .04}
+
+    pca_pkl_fname = os.path.join(CSPs_dir, 'pca.pkl')
     pca, K_obs = setup_pca(
-        fname='pca.pkl', base_dir='CSPs_CKC14_MaNGA', base_fname='CSPs',
-        redo=False, pkl=True, q=10, fre_target=.005, nfiles=30,
+        fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=40,
         pca_kwargs=pca_kwargs)
 
-    '''gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704',
-            '8134-12702', '8134-9102', '8135-12701', '8137-12703',
-            '8140-12703', '8140-12701', '8140-3701', '8243-12704']'''
-    '''        '8244-9101', '8247-9101', '8249-12703', '8249-12704',
-            '8252-12705', '8252-6102', '8253-6104', '8254-3704', '8254-9101',
-            '8257-12701', '8257-6101', '8257-6103', '8258-12704']'''
 
-    gals = ['8253-6104']
+    gals = ['8566-12705', '8567-12701', '8939-12704', '8083-12704',
+            '8134-12702', '8134-9102', '8135-12701', '8137-12703',
+            '8140-12703', '8140-12701', '8140-3701', '8243-12704',
+            '8244-9101', '8247-9101', '8249-12703', '8249-12704',
+            '8252-12705', '8252-6102', '8253-6104', '8254-3704', '8254-9101',
+            '8257-12701', '8257-6101', '8257-6103', '8258-12704']
+
+    gals = ['8259-1902']
 
     p_i = [g.split('-') for g in gals]
 
@@ -294,11 +285,12 @@ if __name__ == '__main__':
 
     with catch_warnings():
         simplefilter(warn_behav)
-        MDComp = ModelDataCompare(pca=pca, dereds=dereds, rimgs=rimgs,
-                              Hd_em_EWs=Hdelt_em_EWs, K_obs=K_obs)
+        MDComp = ModelDataCompare(
+            pca=pca, dereds=dereds, rimgs=rimgs,
+            Hd_em_EWs=Hdelt_em_EWs, K_obs=K_obs)
 
-    mdcomp_fig = MDComp.D4000_Hd_scatter_fig()
-    mdcomp_fig.savefig('D4000-HdA_scatter.png', dpi=300)
+    #mdcomp_fig = MDComp.D4000_Hd_scatter_fig()
+    #mdcomp_fig.savefig('D4000-HdA_scatter.png', dpi=300)
 
     mdcont_fig = MDComp.D4000_Hd_fig()
     mdcont_fig.savefig('D4000-HdA_contours.png', dpi=300)
