@@ -305,6 +305,13 @@ class FSPS_SFHBuilder(object):
         elif self.tform_key == 'log':
             self.FSPS_args['tf'] = 10.**self.RS.uniform(
                 low=np.log10(earlyt), high=np.log10(latet))
+        elif self.tform_key == 'loglinmix':
+            # 50-50 mix between log-uniform and lin-uniform
+            if np.random.rand() < .5:
+                self.FSPS_args['tf'] = 10.**self.RS.uniform(
+                    low=np.log10(earlyt), high=np.log10(latet))
+            else:
+                self.FSPS_args['tf'] = self.RS.uniform(low=earlyt, high=latet)
         else:
             self.FSPS_args['tf'] = self.RS.uniform(low=earlyt, high=latet)
 
@@ -1138,17 +1145,17 @@ class TemplateCoverageError(TemplateError):
 
 if __name__ == '__main__':
 
-    nfiles, nper, Nsubsample = 40, 25, 50
+    nfiles, nper, Nsubsample = 80, 25, 25
     name_ix0 = 0
     name_ixf = name_ix0 + nfiles
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171025-2/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171102-1/'
     if not os.path.isdir(CSPs_dir):
-        os.path.makedirs(CSPs_dir)
+        os.makedirs(CSPs_dir)
 
     RS = np.random.RandomState()
     sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=10, NBB=4,
-                          pct_notrans=0.5, tform_key=None, trans_mode=0.5)
+                          pct_notrans=0.5, tform_key='loglinmix', trans_mode=0.75)
     sfh.dump_tuners(loc=CSPs_dir)
 
 
