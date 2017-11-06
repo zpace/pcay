@@ -50,6 +50,7 @@ from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
 import utils as ut
 import indices
 from fakedata import FakeData
+from partition import CovCalcPartitioner
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -489,6 +490,35 @@ class StellarPop_PCA(object):
 
         return i0_map
 
+    def build_PC_cov_partitioned(self, z_map, K_obs_, a_map, ivar_cube,
+                                 snr_map):
+        '''
+        build covariance matrix using partitioned linear-algebraic method
+        '''
+
+        E = self.PCs
+        q, l = E.shape
+        mapshape = z_map.shape
+
+        # build an array to hold covariances
+        K_PC = 100. * np.ones((q, q) + mapshape)
+
+        # compute starting indices for covariance matrix
+        cov_logl = K_obs_.logl
+        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
+
+        covcalc = CovCalcPartitioner(
+            kspec_obs=K_obs_.cov, a_map=a_map, i0_map=i0_map,
+            E=E, ivar_scaled=ivar_cube)
+
+        K_PC = covcalc.calc_allchunks()
+        # set places with bad SNRs to high variance
+        np.moveaxis(K_PC, (0, 1, 2, 3), (2, 3, 0, 1))[snr_map < 1] = 10.
+        # add theoretical component
+        K_PC += (E @ self.cov_th @ E.T)[..., None, None]
+
+        return K_PC
+
     def build_PC_cov_full_iter(self, z_map, K_obs_, a_map, ivar_cube,
                                snr_map):
         '''
@@ -521,15 +551,15 @@ class StellarPop_PCA(object):
         inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
 
         k_pc_gen = ut.KPCGen(
-            kspec_obs=K_obs_.cov, i0_map=i0_map, E=E, ivar_scaled=ivar_cube)
+            kspec_obs=K_obs_.cov, i0_map=i0_map, E=E, ivar_scaled=ivar_cube,
+            a_map=a_map)
 
         for ind in inds:
             # handle bad (SNR < 1) spaxels
             if snr_map[ind[0], ind[1]] < 1.:
                 pass
             else:
-                K_PC[..., ind[0], ind[1]] = k_pc_gen(ind[0], ind[1]) / \
-                    a_map[ind[0], ind[1]]**2.
+                K_PC[..., ind[0], ind[1]] = k_pc_gen(ind[0], ind[1])
 
         K_PC += (E @ self.cov_th @ E.T)[..., None, None]
 
@@ -1017,7 +1047,7 @@ class StellarPop_PCA(object):
         return P_PC
 
     @staticmethod
-    def P_from_K_pinv(K, rcond=1e-6):
+    def P_from_K_pinv(K, rcond=1e-4):
         '''
         compute P_PC using Moore-Penrose pseudoinverse (pinv)
         '''
@@ -1085,8 +1115,7 @@ class MaNGA_deredshift(object):
         # mask all the spaxels that have high stellar velocity uncertainty
         self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
         self.vel_mask = m.mask_from_maskbits(
-            self.dap_hdulist['STELLAR_VEL_MASK'].data,
-            [0, 1, 2, 3, 28, 29, 30])
+            self.dap_hdulist['STELLAR_VEL_MASK'].data, [30])
 
         self.drp_l = drp_hdulist['WAVE'].data
         self.drp_logl = np.log10(self.drp_l)
@@ -1208,7 +1237,7 @@ class MaNGA_deredshift(object):
         return self.flux_regr, self.ivar_regr, self.spax_mask
 
     def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
-                           half_dv=200. * u.Unit('km/s')):
+                           half_dv=150. * u.Unit('km/s')):
 
         from elines import (balmer_low, balmer_high, helium,
                             bright_metal, faint_metal)
@@ -1219,13 +1248,13 @@ class MaNGA_deredshift(object):
         EW = self.eline_EW(ix=ix_eline)
         # thresholds are set very aggressively for debugging, but should be
         # revisited in the future
-        # proposed values... balmer_low: 0, balmer_high: 2, helium: 2
-        #                    brightmetal: 0, faintmetal: 5, paschen: 10
+        # proposed values... balmer_low: 0, balmer_high: 2, helium: 10
+        #                    brightmetal: 0, faintmetal: 10, paschen: 10
         add_balmer_low = (EW >= 0. * u.AA)
-        add_balmer_high = (EW >= .5 * u.AA)
-        add_helium = (EW >= .5 * u.AA)
+        add_balmer_high = (EW >= 2. * u.AA)
+        add_helium = (EW >= 10. * u.AA)
         add_brightmetal = (EW >= 0. * u.AA)
-        add_faintmetal = (EW >= .5 * u.AA)
+        add_faintmetal = (EW >= 10. * u.AA)
 
         temlogl = template_logl
         teml = 10.**temlogl
@@ -1329,7 +1358,7 @@ class PCA_Result(object):
 
     def __init__(self, pca, dered, K_obs, z, cosmo, figdir='.',
                  truth=None, truth_sfh=None, dered_method='nearest',
-                 dered_kwargs={}, vdisp_wt=False):
+                 dered_kwargs={}, vdisp_wt=False, pc_cov_method='full_iter'):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
         self.dered = dered
@@ -1372,11 +1401,15 @@ class PCA_Result(object):
 
         self.resid = (self.O_norm - self.O_recon) / self.O_norm
 
-        self.K_PC = pca.build_PC_cov_full_iter(
-            z_map=dered.z_map, K_obs_=self.K_obs, a_map=self.a_map,
-            ivar_cube=self.ivar, snr_map=self.SNR_med)
+        pc_cov_f = getattr(pca, '_'.join(('build_PC_cov', pc_cov_method)))
+        self.K_PC = pc_cov_f(z_map=dered.z_map, K_obs_=self.K_obs,
+            a_map=self.a_map, ivar_cube=self.ivar,
+            snr_map=self.SNR_med)
 
-        self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
+        try:
+            self.P_PC = StellarPop_PCA.P_from_K_pinv(self.K_PC)
+        except np.linalg.LinAlgError:
+            self.P_PC = StellarPop_PCA.P_from_K(self.K_PC)
 
         self.map_shape = self.O.shape[-2:]
         self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
@@ -1384,17 +1417,18 @@ class PCA_Result(object):
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
 
         if vdisp_wt:
+            vdisp_fill = 30.
             vdisp_raw = self.dered.dap_hdulist['STELLAR_SIGMA'].data
             vdisp_corr = self.dered.dap_hdulist['STELLAR_SIGMACORR'].data
             vdisp2 = vdisp_raw**2. - vdisp_corr**2.
             vdisp = np.sqrt(vdisp2)
-            vdisp[vdisp2 <= 0.] = 30.
+            vdisp[vdisp2 <= 0.] = vdisp_fill
 
             vdisp_ivar = self.dered.dap_hdulist['STELLAR_SIGMA_IVAR'].data
             vdisp_bitmask = m.mask_from_maskbits(
                 a=self.dered.dap_hdulist['STELLAR_SIGMA_MASK'].data, b=[30])
             vdisp_ivar *= (~ vdisp_bitmask)
-            vdisp_ivar[vdisp2 <= 0.] /= 100
+            vdisp_ivar[vdisp2 <= 0.] = (3. * vdisp_fill)**-2.
             vdisp_ivar[vdisp_ivar < 1.0e-8] = 1.0e-8
             vdisp_ivar[vdisp_ivar > 100.] = 100.
             vdisp_wts = ut.gaussian_weightify(
@@ -2757,7 +2791,8 @@ def get_col_metadata(col, k, notfound=''):
 def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
                dered_method='nearest', dered_kwargs={}, mockspec_ix=None, z_new=None,
                CSPs_dir='.', mockspec_fname='CSPs_test.fits',
-               mocksfh_fname='SFHs_test.fits', vdisp_wt=False):
+               mocksfh_fname='SFHs_test.fits', vdisp_wt=False,
+               pc_cov_method='full_iter', makefigs=True, mpl_v='MPL-5'):
 
     plateifu = row['plateifu']
 
@@ -2833,40 +2868,42 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist,
         cosmo=cosmo, figdir=figdir,
         truth=truth, truth_sfh=truth_sfh, vdisp_wt=vdisp_wt,
-        dered_method=dered_method, dered_kwargs=dered_kwargs)
+        dered_method=dered_method, dered_kwargs=dered_kwargs,
+        pc_cov_method=pc_cov_method)
 
-    pca_res.make_full_QA_fig(kde=(False, False))
+    if makefigs:
+        pca_res.make_full_QA_fig(kde=(False, False))
 
-    # pca_res.cornerplot()
+        # pca_res.cornerplot()
 
-    pca_res.make_sample_diag_fig()
-    pca_res.make_top_sfhs_fig()
-    pca_res.make_all_sfhs_fig(massnorm='mstar', mass_abs=True)
+        pca_res.make_sample_diag_fig()
+        pca_res.make_top_sfhs_fig()
+        pca_res.make_all_sfhs_fig(massnorm='mstar', mass_abs=True)
 
-    #pca_res.make_qty_fig(qty_str='MLr')
-    pca_res.make_qty_fig(qty_str='MLi')
-    #pca_res.make_qty_fig(qty_str='MLz')
-    pca_res.make_qty_fig(qty_str='MLV')
+        #pca_res.make_qty_fig(qty_str='MLr')
+        pca_res.make_qty_fig(qty_str='MLi')
+        #pca_res.make_qty_fig(qty_str='MLz')
+        pca_res.make_qty_fig(qty_str='MLV')
 
-    pca_res.make_qty_fig(qty_str='MWA')
+        pca_res.make_qty_fig(qty_str='MWA')
 
-    #pca_res.make_Mstar_fig(band='r')
-    pca_res.make_Mstar_fig(band='i')
-    #pca_res.make_Mstar_fig(band='z')
+        #pca_res.make_Mstar_fig(band='r')
+        pca_res.make_Mstar_fig(band='i')
+        #pca_res.make_Mstar_fig(band='z')
 
-    #pca_res.make_radial_gp_fig(qty='MLr', q_bdy=[.01, 100.])
-    pca_res.make_radial_gp_fig(qty='MLi', q_bdy=[.01, 100.])
-    #pca_res.make_radial_gp_fig(qty='MLz', q_bdy=[.01, 100.])
-    pca_res.make_radial_gp_fig(qty='MLV', q_bdy=[.01, 100.])
+        #pca_res.make_radial_gp_fig(qty='MLr', q_bdy=[.01, 100.])
+        pca_res.make_radial_gp_fig(qty='MLi', q_bdy=[.01, 100.])
+        #pca_res.make_radial_gp_fig(qty='MLz', q_bdy=[.01, 100.])
+        pca_res.make_radial_gp_fig(qty='MLV', q_bdy=[.01, 100.])
 
-    pca_res.make_qty_fig('Dn4000')
+        pca_res.make_qty_fig('Dn4000')
 
-    pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='R')
-    pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='tau_V mu')
+        pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='R')
+        pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='tau_V mu')
 
-    pca_res.compare_sigma()
+        pca_res.compare_sigma()
 
-    pca_res.sigma_vel()
+        pca_res.sigma_vel()
 
     # reset redshift to original value
     if not z_new:
@@ -2877,12 +2914,14 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 10
+    howmany = 0
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'supersample_vec'
     dered_kwargs = {'nper': 10}
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171025-1/'
+    pc_cov_method = 'full_iter'
+
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171102-1/'
 
     mpl_v = 'MPL-5'
 
@@ -2895,7 +2934,7 @@ if __name__ == '__main__':
     pca_pkl_fname = os.path.join(CSPs_dir, 'pca.pkl')
     pca, K_obs = setup_pca(
         fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
-        redo=False, pkl=True, q=10, fre_target=.005, nfiles=40,
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=80,
         pca_kwargs=pca_kwargs)
 
     pca.write_pcs_fits()
@@ -2908,7 +2947,8 @@ if __name__ == '__main__':
 
         pca_res = run_object(
             row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
-            dered_method=dered_method, dered_kwargs=dered_kwargs)
+            dered_method=dered_method, dered_kwargs=dered_kwargs,
+            pc_cov_method=pc_cov_method)
         pca_res.write_results(pc_info=True)
 
         pca_res_f = run_object(
