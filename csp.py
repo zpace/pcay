@@ -431,6 +431,20 @@ class FSPS_SFHBuilder(object):
         A_ = np.pad(A_, (0, npad), mode='constant', constant_values=0.)
         return A_
 
+    def recent_variability(self, n, N):
+        '''
+        turn on recent variability in SFR, acc. to Faucher-Giguere '17
+        '''
+
+        mlin, slin2 = 1., 25.
+        mlog = 2. * np.log(mlin) - 0.5 * np.log(slin2 + mlin**2.)
+        slog2 = -2. * np.log(mlin) + np.log(slin2 + mlin**2.)
+        norm = stats.norm(loc=mlog, scale=np.sqrt(slog2))
+        factor = norm.rvs(n, random_state=self.RS)
+
+        return np.pad(factor, pad_width=(N - n, 0), mode='constant',
+                      constant_values=1.)
+
     def burst_gen(self):
         # statistically, `self.NBB` bursts occur in duration time0
         # but forbidden to happen after cutoff
@@ -1118,7 +1132,72 @@ test_dicts = {
             'nburst': 1, 'gamma': 0.5, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
             'sigma': np.array([80.]), 'logzsol': 0.0969,
             'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])}
+            'tb': np.array([9., 0., 0., 0., 0.])},
+    '5':   {'tf': .25, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.1': {'tf': 1.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.2': {'tf': 3.25, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.3': {'tf': 5., 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.4': {'tf': 6.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.5': {'tf': 8., 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.6': {'tf': 9.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.7': {'tf': 10.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.8': {'tf': 11.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.9': {'tf': 12.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.10':{'tf': 13.25, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.11':{'tf': 13.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
+    '5.12':{'tf': 13.70, 'd1': np.array([.01]), 'tt': np.array([13.71]),
+            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+            'sigma': np.array([100.]), 'logzsol': 0.,
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])}
 }
 
 def make_tailored_tests(dicts, sfh, *args, **kwargs):
@@ -1145,11 +1224,11 @@ class TemplateCoverageError(TemplateError):
 
 if __name__ == '__main__':
 
-    nfiles, nper, Nsubsample = 80, 25, 25
+    nfiles, nper, Nsubsample = 50, 100, 10
     name_ix0 = 0
     name_ixf = name_ix0 + nfiles
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171102-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171107-1/'
     if not os.path.isdir(CSPs_dir):
         os.makedirs(CSPs_dir)
 
