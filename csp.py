@@ -158,8 +158,13 @@ class FSPS_SFHBuilder(object):
             # bursts
             self.burst_gen()
 
-            good = ((0 <= self.mass_weighted_age <= self.time0) * \
-                    (self.mstar > 0.) * (np.isfinite(self.mstar)))
+            goodMWA = (0 <= self.mass_weighted_age <= self.time0)
+            nonzeromstar = (self.mstar > 0.)
+            finitemstar = (np.isfinite(self.mstar))
+            good = goodMWA * nonzeromstar * finitemstar
+            if not good:
+                print('REDO -- goodMWA {} ({}); nonzeromstar {} ({}); finitemstar {}'.format(
+                      goodMWA, self.mass_weighted_age, nonzeromstar, self.mstar, finitemstar))
 
     def _init_sp_(self):
         self.sp = fsps.StellarPopulation(
@@ -506,7 +511,7 @@ class FSPS_SFHBuilder(object):
         if 'tau_V' in self.override:
             tau_V = self.override['tau_V']
         else:
-            mu_tau_V = 1.
+            mu_tau_V = 2.5
             std_tau_V = 1.75
             lclip_tau_V, uclip_tau_V = 0., 7.
             a_tau_V = (lclip_tau_V - mu_tau_V) / std_tau_V
@@ -524,7 +529,7 @@ class FSPS_SFHBuilder(object):
         if 'mu' in self.override:
             mu = self.override['mu']
         else:
-            mu_mu = 0.3
+            mu_mu = 0.4
             # std_mu = self.RS.uniform(.1, 1)
             std_mu = 0.3
             # 68th percentile range means that stdev is in range .1 - 1
@@ -601,9 +606,11 @@ class FSPS_SFHBuilder(object):
         # ages starting at 1Myr, and going to start of SF
         ages = (np.arange(1, 10, .1) * 10.**np.arange(-3, 2, 1)[:, None]).flatten()
         ts = self.time0 - ages
+        dts = self.FSPS_args['d1'] * np.linspace(0., 2., 5)
         ts = np.unique(np.concatenate(
-            [np.array([0, self.FSPS_args['tf']]), ts, discont]))
-        ts = ts[ts >= 0]
+            [np.array([0, self.FSPS_args['tf'], self.FSPS_args['tf'] - .001]),
+             ts, self.FSPS_args['tf'] + dts, discont]))
+        ts = ts[(ts >= 0) * (ts <= self.time0)]
         ts.sort()
         return ts
 
@@ -613,18 +620,24 @@ class FSPS_SFHBuilder(object):
 
     @property
     def sfrs(self):
-        return self.all_sf_v(self.ts)
+        sfrs = self.all_sf_v(self.ts)
+        if sfrs.max() < 1.:
+            sfrs /= sfrs.max()
+        return sfrs
 
     @property
     def allsfrs(self):
-        return self.all_sf_v(self.allts)
+        sfrs = self.all_sf_v(self.allts)
+        if sfrs.max() < 1.:
+            sfrs /= sfrs.max()
+        return sfrs
 
     @property
     def disconts(self):
         burst_starts = self.FSPS_args['tb']
         dtb = self.FSPS_args['dtb']
         burst_ends = burst_starts + dtb
-        dt = .01
+        dt = .001
 
         burst_starts_m = burst_starts - dt
         burst_ends_p = burst_ends + dt
@@ -1054,30 +1067,30 @@ test_dicts = {
             'A': np.array([2., 1.5, 0., 0., 0.]), 'dtb': np.array([.125, .125, 0., 0., 0.]),
             'tb': np.array([9., 11., 0., 0., 0.])},
     '3':   {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 1, 'gamma': 0., 'mu': np.array([.1]), 'tau_V': np.array([.75]),
+            'nburst': 0, 'gamma': 0., 'mu': np.array([.1]), 'tau_V': np.array([1.5]),
             'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.75, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
     '3.1': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 1, 'gamma': 0., 'mu': np.array([.1]), 'tau_V': np.array([1.5]),
+            'nburst': 0, 'gamma': 0., 'mu': np.array([.1]), 'tau_V': np.array([1.5]),
             'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.75, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
     '3.2': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 1, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([2.]),
+            'nburst': 0, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([2.]),
             'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.75, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
     '3.3': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 1, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([3.]),
+            'nburst': 0, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([3.]),
             'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.75, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
     '3.4': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 1, 'gamma': 0., 'mu': np.array([.5]), 'tau_V': np.array([3.]),
+            'nburst': 0, 'gamma': 0., 'mu': np.array([.5]), 'tau_V': np.array([3.]),
             'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.75, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
+            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
+            'tb': np.array([0., 0., 0., 0., 0.])},
     '4':   {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.71]),
             'nburst': 1, 'gamma': 0., 'mu': np.array([.4]), 'tau_V': np.array([2.]),
             'sigma': np.array([80.]), 'logzsol': 0.0969,
@@ -1133,80 +1146,80 @@ test_dicts = {
             'sigma': np.array([80.]), 'logzsol': 0.0969,
             'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
             'tb': np.array([9., 0., 0., 0., 0.])},
-    '5':   {'tf': .25, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5':   {'tf': .5, 'd1': np.array([1.]), 'tt': np.array([.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.1': {'tf': 1.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.1': {'tf': 1.5, 'd1': np.array([1.]), 'tt': np.array([1.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.2': {'tf': 3.25, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.2': {'tf': 3.25, 'd1': np.array([1.]), 'tt': np.array([3.35]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.3': {'tf': 5., 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.3': {'tf': 5., 'd1': np.array([1.]), 'tt': np.array([5.1]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.4': {'tf': 6.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.4': {'tf': 6.5, 'd1': np.array([1.]), 'tt': np.array([6.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.5': {'tf': 8., 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.5': {'tf': 8., 'd1': np.array([1.]), 'tt': np.array([8.1]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.6': {'tf': 9.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.6': {'tf': 9.5, 'd1': np.array([1.]), 'tt': np.array([9.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.7': {'tf': 10.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.7': {'tf': 10.5, 'd1': np.array([1.]), 'tt': np.array([10.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.8': {'tf': 11.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.8': {'tf': 11.5, 'd1': np.array([1.]), 'tt': np.array([11.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.9': {'tf': 12.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.9': {'tf': 12.5, 'd1': np.array([1.]), 'tt': np.array([12.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.10':{'tf': 13.25, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.10':{'tf': 13.25, 'd1': np.array([1.]), 'tt': np.array([13.3]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.11':{'tf': 13.5, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.11':{'tf': 13.5, 'd1': np.array([1.]), 'tt': np.array([13.6]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.12':{'tf': 13.70, 'd1': np.array([.01]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.25]),
+    '5.12':{'tf': 13.61, 'd1': np.array([1.]), 'tt': np.array([13.71]),
+            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
             'sigma': np.array([100.]), 'logzsol': 0.,
             'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
             'tb': np.array([0., 0., 0., 0., 0.])}
 }
 
 def make_tailored_tests(dicts, sfh, *args, **kwargs):
-    for k, d in dicts.items():
+    for k in sorted(dicts):
         print('Test SFH', k)
         make_spectral_library(
             spec_fname='TestSpecs-{}'.format(k), sfh=sfh,
             sfh_fname='TestSFH-{}'.format(k),
-            override=d, *args, **kwargs)
+            override=dicts[k], *args, **kwargs)
 
 # my hobby: needlessly subclassing exceptions
 
@@ -1228,7 +1241,7 @@ if __name__ == '__main__':
     name_ix0 = 0
     name_ixf = name_ix0 + nfiles
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171107-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
     if not os.path.isdir(CSPs_dir):
         os.makedirs(CSPs_dir)
 
@@ -1266,7 +1279,9 @@ if __name__ == '__main__':
         sfh_fname='SFHs_test', loc=CSPs_dir,
         nsfhper=2 * nper, nsubper=Nsubsample,
         lllim=3500., lulim=10000.)
+    #'''
 
+    #'''
     print('Making tailored tests...')
     sfh.Nsubsample = 1
     sfh = make_tailored_tests(
