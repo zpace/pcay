@@ -27,136 +27,186 @@ if mangarc.tools_loc not in sys.path:
 # personal
 import manga_tools as m
 
-def noisify_cov(self, cov, mapshape, i0, nl):
+def noisify_cov(cov, mapshape):
     assert cov is not None, 'covariance object not passed'
 
-    cov_noise = np.random.multivariate_normalrvs(
+    cov_noise = np.random.multivariate_normal(
         mean=np.zeros_like(np.diag(cov.cov)),
         cov=cov.cov, size=mapshape)
-    cov_noise = np.moveaxis(cov_noise, [0, 1, 2], [2, 0, 1])
-    cov_noise = cov_noise[i0:i0 + nl, :, :]
+    cov_noise = np.moveaxis(cov_noise, [0, 1, 2], [1, 2, 0])
+    #cov_noise = cov_noise[i0:i0 + nl, :, :]
     rms = np.sqrt(np.mean(cov_noise, axis=0))
+    print(cov_noise.shape, rms.shape)
     return cov_noise, rms
+
+def compute_snrcube(flux, ivar, filtersize_l=15, return_rms_map=False):
+    '''
+    compute the (appx) SNR cube, and if specified, return the spaxelwise
+        rms map of the cube
+    '''
+
+    snrcube = medfilt(flux * np.sqrt(ivar), [filtersize_l, 1, 1])
+    rms_map = 1. / np.mean(snrcube, axis=0)
+
+    if return_rms_map:
+        return snrcube, rms_map
+    else:
+        return snrcube
 
 class FakeData(object):
     '''
     Make a fake IFU and fake DAP stuff
     '''
-    def __init__(self, l_model, s_model, meta_model,
+    def __init__(self, lam_model, spec_model, meta_model,
                  row, drp_base, dap_base, plateifu_base, model_ix,
                  noisify_method='cov', Kspec_obs=None):
+        '''
+        create mocks of DRP LOGCUBE and DAP MAPS
+
+        1. characterize SNR of observed data
+        2. redshift model to observed-frame
+        3. attenuate according to MW reddening law
+        4. blur according to instrumental dispersion
+        5. resample onto rectified (observed) wavelength grid
+        6. add noise from full covariance prescription OR from SNR
+        7. scale according to r-band surface brightness
+        8. mask where there's no flux
+        '''
 
         self.model_ix = model_ix
 
+        '''STEP 1'''
         # find SNR of each pixel in cube (used to scale noise later)
-        drp_snr = medfilt(drp_base['FLUX'].data * np.sqrt(drp_base['IVAR'].data),
-                          [15, 1, 1])
-        spax_rms = np.mean(drp_snr, axis=0)
+        drp_snr, spax_rms = compute_snrcube(
+            flux=drp_base['FLUX'].data, ivar=drp_base['IVAR'].data,
+            filtersize_l=15, return_rms_map=True)
 
-        # redshift the model spectrum
+        '''STEP 2'''
+        # compute the redshift map
         z_cosm = row['nsa_zdist']
         z_pec = (dap_base['STELLAR_VEL'].data * u.Unit('km/s') / c.c).to('').value
-        z_out = (1. + z_cosm) * (1. + z_pec) - 1.
+        z_obs = (1. + z_cosm) * (1. + z_pec) - 1.
 
-        # instrumental blurring
-        # interpolate specres to model wavelength grid
-        specres = interp1d(
+        # create a placeholder model cube since flexible broadcasting is hard
+        spec_model_cube = np.tile(spec_model[:, None, None], (1, ) + mapshape)
+        ivar_model_cube = np.ones_like(spec_model_cube)
+        lam_model_z, spec_model_z, ivar_model_z = ut.redshift(
+            l=lam_model, f=spec_model_cube, ivar=ivar_model_cube,
+            z_in=0., z_out=z_obs)
+
+        '''STEP 3'''
+        spec_model_mwred, ivar_model_mwred = ut.extinction_atten(
+            lam_model_z * u.AA, f=spec_model_z, ivar=ivar_model_z,
+            EBV=drp_base[0].header['EBVGAL'])
+
+        '''STEP 4'''
+        # specres of observed cube at model wavelengths
+        specres_obs = interp1d(
             x=drp_base['WAVE'].data, y=drp_base['SPECRES'].data,
-            bounds_error=False, fill_value='extrapolate')(l_model)
-        velres = 1. / specres * c.c
-        dlogl_model = ut.determine_dlogl(np.log10(l_model))
-        vpix = dlogl_model * np.log(10.) * c.c
-        # we're blurring rest frame: observed frame is a narrower blur
-        # (Cappellari 2017)
-        blur_npix = ((velres / vpix).to('').value) / (1. + z_cosm)
-        s_model_blur = ut.gaussian_filter(s_model, blur_npix)
+            bounds_error=False, fill_value='extrapolate')(lam_model_z)
+        # convert specres of observations into dlnl
+        dlnl_obs = 1. / specres_obs
 
-        # make cube
-        cubeshape = drp_base['FLUX'].data.shape
-        nl, *mapshape = cubeshape
-        mapshape = tuple(mapshape)
+        # dlogl of a pixel in model
+        dloglcube_model = ut.determine_dloglcube(np.log10(lam_model_z))
+        # convert dlogl of pixel in model to dlnl
+        dlnlcube_model = dloglcube_model * np.log(10.)
+        # number of pixels is dlnl of obs div by dlnl of model
+        specres_pix = dlnl_obs[:, None, None] / dlnlcube_model
 
-        s_norm = s_model_blur.max()
-        f = np.tile(s_model_blur[..., None, None] / s_norm, (1, ) + mapshape)
+        # create placeholder for instrumental-blurred model
+        spec_model_instblur = np.empty_like()
 
-        # redshift model cube
-        l_m_z, s_m_z, _ = ut.redshift(l=l_model, f=f, ivar=np.ones_like(f),
-                                      z_in=0., z_out=z_out)
-        logl_m_z = np.log10(l_m_z)
-
-        # redden model cube according to galactic E(B-V)
-        s_m_z = ut.extinction_atten(
-            l=l_m_z * u.AA, f=s_m_z, EBV=drp_base[0].header['EBVGAL'])
-
-        # interpolate redshifted model cube
-        logl_f = np.log10(drp_base['WAVE'].data)
-        s_m_z_c = np.zeros(cubeshape)
-
+        # populate pixel-by-pixel (should take < 15 sec)
         for ind in np.ndindex(mapshape):
-            newspec = self.resample_spaxel(
-                logl_in=logl_m_z[:, ind[0], ind[1]],
-                flam_in=s_m_z[:, ind[0], ind[1]], logl_out=logl_f)
-            s_m_z_c[:, ind[0], ind[1]] = newspec
+            spec_model_instblur[:, ind[0], ind[1]] = ut.gaussian_filter(
+                spec=spec_model_mwred[:, ind[0], ind[1]],
+                sig=specres_pix[:, ind[0], ind[1]])
 
-        # add error vector based on SNR calculated above
-        # SNR = F sqrt(I) ===> (SNR / F)^2 = I
+        ivar_model_instblur = ivar_model_mwred
 
+        '''STEP 5'''
+        # create placeholder arrays for ivar and flux
+        spec_model_rect = np.zeros(cubeshape)
+        ivar_model_rect = np.zeros(cubeshape)
+
+        # wavelength grid for final cube
+        l_grid = drp_base['WAVE'].data
+
+        # populate flam and ivar pixel-by-pixel
+        for ind in np.ndindex(mapshape):
+            final_fluxcube[:, ind[0], ind[1]] = np.interp(
+                xp=lam_model_z[:, ind[0], ind[1]],
+                fp=spec_model_instblur[:, ind[0], ind[1]],
+                x=l_grid)
+            final_ivarcube[:, ind[0], ind[1]] = np.interp(
+                xp=lam_model_z[:, ind[0], ind[1]],
+                fp=ivar_model_instblur[:, ind[0], ind[1]],
+                x=l_grid)
+
+        '''STEP 6'''
         if noisify_method == 'cov':
             # assume cosmological redshift
             # key onto **final** value in model wavelengths
-            ifinal = np.argmin(np.abs(l_model[-1] * (1. + z_cosm) - cov.l))
+            ifinal = np.argmin(np.abs(l_model[-1] * (1. + z_cosm) - Kspec_obs.l))
             i0 = ifinal - nl
             noise, noise_rms = noisify_cov(
-                Kspec_obs, mapshape=mapshape, i0=i0, nl=nl)
+                Kspec_obs, mapshape=mapshape)
         elif noisify_method == 'ivar':
             noise = np.random.randn(*cubeshape) / drp_snr
             noise_rms = np.sqrt(np.mean(noise**2., axis=0))
 
+        # scale noise
         noise_rmsscaled = noise * (spax_rms / noise_rms)[None, :, :]
-        fakecube = s_m_z_c * (1. + noise_rmsscaled)
+        # add noise
+        final_fluxcube += noise_rmsscaled
 
+        '''STEP 7'''
         # normalize everything to have the same observed-frame r-band flux
         u_flam = 1.0e-17 * (u.erg / (u.s * u.cm**2 * u.AA))
-        m_r_drp = Spec2Phot(lam=drp_base['WAVE'].data,
-                            flam=drp_base['FLUX'].data * u_flam).ABmags['sdss2010-r']
-        m_r_mzc = Spec2Phot(lam=drp_base['WAVE'].data,
-                            flam=s_m_z_c * u_flam).ABmags['sdss2010-r']
+        rband_drp = Spec2Phot(
+            lam=drp_base['WAVE'].data,
+            flam=drp_base['FLUX'].data * u_flam).ABmags['sdss2010-r']
+        rband_model = Spec2Phot(
+            lam=drp_base['WAVE'].data,
+            flam=final_fluxcube * u_flam).ABmags['sdss2010-r']
         # flux ratio map
         r = 10.**(-0.4 * (m_r_drp - m_r_mzc))
         # occasionally this produces inf or nan for some reason,
         # so just take care of that quickly
         r[np.log10(r) > 4.] = 4.
         r[np.log10(r) < -4] = -4.
-        fakecube *= r[None, ...]
 
-        ivar_cube = (noise_rmsscaled * r)**2.
+        final_fluxcube *= r[None, ...]
+        final_ivarcube *= (noise_rmsscaled * r)**2.
 
+        '''STEP 8'''
         # mask where the native datacube has no signal
         rimg = drp_base['RIMG'].data
         nosignal = (rimg == 0.)[None, ...]
-        nosignal_cube = np.broadcast_to(nosignal, fakecube.shape)
-        fakecube[nosignal_cube] = 0.
-        ivar_obs[s_m_z_c == 0.] = 0.
+        nosignal_cube = np.broadcast_to(nosignal, final_fluxcube.shape)
+        final_fluxcube[nosignal_cube] = 0.
+        final_ivarobs[final_fluxcube == 0.] = 0.
 
         # mask where there's bad velocity info
         badvel = m.mask_from_maskbits(
             dap_base['STELLAR_VEL_MASK'].data, [30])[None, ...]
 
         # logical_or.reduce doesn't work (different size arrays?)
-        bad = np.logical_or(~np.isfinite(fakecube), badvel)
+        bad = np.logical_or(~np.isfinite(final_fluxcube), badvel)
         fakecube[bad] = 0.
 
         self.dap_base = dap_base
         self.drp_base = drp_base
-        self.fluxcube = fakecube
-        self.fluxcube_ivar = ivar_obs
+        self.fluxcube = final_fluxcube
+        self.fluxcube_ivar = final_ivarcube
         self.row = row
         self.metadata = meta_model
 
         self.plateifu_base = plateifu_base
 
     @classmethod
-    def from_FSPS(cls, fname, i, plateifu_base, pca, row,
+    def from_FSPS(cls, fname, i, plateifu_base, pca, row, K_obs,
                   mpl_v='MPL-5', kind='SPX-GAU-MILESHC'):
 
         # load models
@@ -165,8 +215,9 @@ class FakeData(object):
         models_lam = models_hdulist['lam'].data
 
         # restrict wavelength range to same as PCA
-        goodlam = (models_lam >= pca.l.value.min()) * \
-                  (models_lam <= pca.l.value.max())
+        lmin, lmax = pca.l.value.min(), pca.l.value.max()
+        lmin, lmax = 3000., 10500.
+        goodlam = (models_lam >= lmin) * (models_lam <= lmax)
         models_lam, models_specs = models_lam[goodlam], models_specs[:, goodlam]
 
         models_logl = np.log10(models_lam)
@@ -197,10 +248,10 @@ class FakeData(object):
         drp_base = m.load_drp_logcube(plate, ifu, mpl_v)
         dap_base = m.load_dap_maps(plate, ifu, mpl_v, kind)
 
-        return cls(l_model=models_lam, s_model=model_spec,
+        return cls(lam_model=models_lam, spec_model=model_spec,
                    meta_model=model_meta, row=row, plateifu_base=plateifu_base,
                    drp_base=drp_base, dap_base=dap_base, model_ix=i,
-                   Kspec_obs=pca.Kspec_obs)
+                   Kspec_obs=K_obs)
 
     def resample_spaxel(self, logl_in, flam_in, logl_out):
         '''
