@@ -8,6 +8,7 @@ from astropy import units as u, table as t  # , constants as c
 from astropy.io import fits
 
 from scipy.signal import medfilt
+import sklearn.covariance
 
 import os, sys, io
 from itertools import takewhile, combinations as comb
@@ -141,7 +142,8 @@ class Cov_Obs(object):
 
     @classmethod
     def from_MaNGA_reobs(cls, dlogl=1.0e-4, MPL_v=mpl_v, n=None,
-                         mednorm=True, zeronorm=True, smooth=False):
+                         norm_unity=True, zeronorm=True, smooth=False,
+                         cov_f='np', cov_f_kwargs=dict(assume_centered=True)):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
@@ -159,7 +161,7 @@ class Cov_Obs(object):
             return len(set(tab['ifudsgn'])) == 1
 
         groups = find_mult_obs(drpall, groupby_key='mangaid',
-                               filter_funcs=[oneifudsgn_], minlen=2, n=n)
+                               filter_funcs=[onesize_], minlen=2, n=n)
 
         # figure out lam low lim and nlam
         lam = m.load_drp_logcube('8083', '12704', MPL_v)['WAVE'].data
@@ -169,7 +171,7 @@ class Cov_Obs(object):
         # process multiply-observed datacubes, up to limit set
         diffs, w, good = zip(
             *[Cov_Obs.process_MaNGA_mult(
-                  grp, MPL_v, nl, mednorm=mednorm, smooth=smooth)
+                  grp, MPL_v, nl, norm_unity=norm_unity, smooth=smooth)
               for grp in groups])
 
         # stack all the differences
@@ -181,8 +183,11 @@ class Cov_Obs(object):
 
         N = w.shape[0]
 
-        cov = diffs.T.dot(diffs) / (N - 1.)
-        print(np.median(np.abs(cov)))
+        if cov_f == 'np':
+            cov = diffs.T.dot(diffs) * np.linalg.inv(w.T @ w)
+        else:
+            cov_obj = getattr(sklearn.covariance, cov_f)(**cov_f_kwargs)
+            cov_obj.fit(diffs)
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=N)
 
@@ -297,7 +302,8 @@ class Cov_Obs(object):
     # =====
 
     @staticmethod
-    def process_MaNGA_mult(tab, MPL_v, nspec=4563, mednorm=False, smooth=False):
+    def process_MaNGA_mult(tab, MPL_v, nspec=4563, norm_unity=False, smooth=False,
+                           voronoi_snr=50.):
         '''
         check for presence of datacubes for a single multiply-observed
             MaNGA object, and (if the data exists) process the observations
@@ -319,8 +325,8 @@ class Cov_Obs(object):
 
         (diffs, ), w, RIMGs, bincounts, coadd = process_MaNGA_mult(
             tab, MPL_v, nspec, SN_thresh=5., f_mask_thresh=.05,
-            voronoi=50., operations=np.subtract, quiet=True, plot=False,
-            mednorm=mednorm, smooth=smooth)
+            voronoi=voronoi_snr, operations=np.subtract, quiet=True, plot=False,
+            norm_unity=norm_unity, smooth=smooth)
 
         return diffs, w, True
 
@@ -494,8 +500,8 @@ def apply_op_(op, fluxs, n_reobs):
     return res
 
 def process_MaNGA_mult(tab, MPL_v, nspec=4563, SN_thresh=3., f_mask_thresh=.05,
-                       voronoi=50., operations=np.subtract, mednorm=False,
-                       kernelsize=301, smooth=False, **kwargs):
+                       voronoi=50., operations=np.subtract, norm_unity=True,
+                       kernelsize=101, smooth=False, **kwargs):
     '''
     check for presence of datacubes for a single multiply-observed
         MaNGA object, and (if the data exists) process the observations
@@ -540,6 +546,12 @@ def process_MaNGA_mult(tab, MPL_v, nspec=4563, SN_thresh=3., f_mask_thresh=.05,
 
     n_reobs, n_spax, _ = fluxs.shape
 
+    # normalize spectra
+    if norm_unity:
+        a = np.average(fluxs, weights=ivars, axis=(0, 2))[None, :, None]
+        fluxs /= a
+        ivars *= a**2.
+
     if voronoi > 0:
         # now aggregate spectra in each observation by bin number
         binnum = voronoi_bin_multiple(
@@ -556,12 +568,6 @@ def process_MaNGA_mult(tab, MPL_v, nspec=4563, SN_thresh=3., f_mask_thresh=.05,
         bincounts = np.ones(fluxs.shape[1])
 
     coadd = fluxs.sum(axis=1)
-
-    # normalize spectra
-    if mednorm:
-        med = np.median(binfluxs, axis=(0, 2), keepdims=True)
-        binfluxs /= med
-        binweights *= med**2.
 
     results = tuple(apply_op_(op, binfluxs, n_reobs) for op in operations)
     def weight_agg_f(ivar1, ivar2):
@@ -650,7 +656,7 @@ if __name__ == '__main__':
     # =====
     #'''
     Cov_manga = Cov_Obs.from_MaNGA_reobs(
-        n=None, mednorm=True, zeronorm=True, smooth=101)
-    Cov_manga.write_fits('manga_Kspec_norm_smooth101.fits')
-    Cov_manga.make_im(kind='manga', max_disp=0.4)
+        n=2, norm_unity=True, zeronorm=False, smooth=101, cov_f='np')
+    Cov_manga.write_fits('manga_Kspec_wtd.fits')
+    #Cov_manga.make_im(kind='manga', max_disp=0.4)
     #'''
