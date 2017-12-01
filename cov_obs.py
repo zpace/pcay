@@ -452,6 +452,9 @@ def load_MaNGA_mult(tab, MPL_v, nspec, maskbits=[0, 1, 2, 3, 10]):
     RIMGs = np.stack([cube['RIMG'].data.flatten() for cube in logcubes])
     mapshape = logcubes[0]['RIMG'].data.shape
 
+    for lc in logcubes:
+        lc.close()
+
     return fluxs, ivars, masks, RIMGs, mapshape
 
 def _filter_spaxels_(fluxs, ivars, masks, RIMGs, mapshape,
