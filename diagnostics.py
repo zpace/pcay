@@ -101,29 +101,21 @@ class Diagnostic(object):
 
         return P50_ratio, l_unc_ratio, u_unc_ratio
 
-    def _add_log_offset_plot(self, i, xqty, yqty, ax, **kwargs):
-        '''
-        plot ratio of best-fit vs some other qty
-        '''
-
-        # get y qty ratios
-        P50_ratio, l_unc_ratio, u_unc_ratio = self.get_meas_vs_truth(
-            i, yqty)
-
+    def _munge_xqty(self, xqty, i, arr_len):
         # get x qty
         if 'drpall' in xqty:
             # fetch value from drpall
             _, drpall_col = xqty.split('-')
             plateifu = self.results[i][0].header['PLATEIFU']
             x = self.drpall.loc[plateifu][drpall_col] * \
-                np.ones_like(P50_ratio)
+                np.ones(arr_len)
             xlabel = r'${{\rm {}}}$'.format(
                 drpall_col.replace('_', '\_'))
         elif 'hdr' in xqty:
             # fetch value from header
             _, hdr_i, hdr_key = xqty.split('-')
             x = self.results[i][int(hdr_i)].header[hdr_key] * \
-                np.ones_like(P50_ratio)
+                np.ones(arr_len)
             xlabel = r'${{\rm {}}}$'.format(
                 hdr_key.replace('_', '\_'))
         else:
@@ -137,7 +129,7 @@ class Diagnostic(object):
             # check if "truth" value is available: if not, use array
             xtruth = x_hdu.header.get('TRUTH', None)
             if xtruth is not None:
-                x = np.ones_like(P50_ratio) * xtruth
+                x = np.ones(arr_len) * xtruth
                 xlabel = r'${{ \rm {0} }}$'.format(xstr)
             else:
                 # if value used is not true value, denote with tilde
@@ -148,32 +140,40 @@ class Diagnostic(object):
                 else:
                     x = xdata
 
-        good = ~(self.results[i]['MASK'].data.astype(bool))
+        return x, xlabel
 
-        kwargs['c'] = good
-        kwargs['cmap'] = 'RdYlGn'
+    def _munge_yqty(self, yqty, i):
+        P50_ratio, l_unc_ratio, u_unc_ratio = self.get_meas_vs_truth(
+            i, yqty)
 
-        ax.scatter(x, P50_ratio, s=2., edgecolor='None',
+        if 'log' in yqty:
+            ylabel = r'$\tilde{{{0}}} - {0}$'.format(
+                self.metadata[yqty].meta.get('TeX', yqty).strip('$'))
+        else:
+            ylabel = r'$\log_{{10}}{{\frac{{\tilde{{{0}}}}}{{{0}}}}}$'.format(
+                self.metadata[yqty].meta.get('TeX', yqty).strip('$'))
+
+        return P50_ratio, l_unc_ratio, u_unc_ratio, ylabel
+
+    def _add_log_offset_plot(self, i, xqty, yqty, ax, **kwargs):
+        '''
+        plot ratio of best-fit vs some other qty
+        '''
+        P50_ratio, l_unc_ratio, u_unc_ratio, ylabel = self._munge_yqty(yqty, i)
+        x, xlabel = self._munge_xqty(xqty, i, arr_len=P50_ratio.shape)
+
+        ax.scatter(x, P50_ratio, s=1., edgecolor='None',
                    alpha=0.6, vmin=0., vmax=1., **kwargs)
         ax.axhline(0., c='k', linewidth=0.25)
 
-        if 'log' in yqty:
-            ax.set_ylabel(
-                r'$\tilde{{{0}}} - {0}$'.format(
-                    self.metadata[yqty].meta.get('TeX', yqty).strip('$')),
-                size=5)
-        else:
-            ax.set_ylabel(
-                r'$\log_{{10}}{{\frac{{\tilde{{{0}}}}}{{{0}}}}}$'.format(
-                    self.metadata[yqty].meta.get('TeX', yqty).strip('$')),
-                size=5)
+        ax.set_ylabel(ylabel, size='x-small')
 
         ax.set_xlabel(xlabel, size=5)
         ax.set_ylim([-1.25, 1.25])
 
         if xqty == 'SNRMED':
             ax.set_xscale('log')
-            ax.set_xlim([.5, 1.1 * ax.get_xlim()[1]])
+            ax.set_xlim([.1, 1.1 * ax.get_xlim()[1]])
 
         return ax
 
@@ -185,12 +185,13 @@ if __name__ == '__main__':
     warn_behav = 'ignore'
     dered_method = 'supersample_vec'
     dered_kwargs = {'nper': 5}
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_new/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
 
     mpl_v = 'MPL-5'
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
     drpall = drpall[drpall['nsa_z'] != -9999]
+
     lsf = ut.MaNGA_LSF.from_drpall(drpall=drpall, n=2)
     pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA,
                   'lsf': lsf, 'z0_': .04}
@@ -201,7 +202,7 @@ if __name__ == '__main__':
         pca_kwargs=pca_kwargs)
 
     # find appropriate files
-    hdulists = list(map(fits.open, glob('fakedata/results/8464-1901/*_res.fits')))
+    hdulists = list(map(fits.open, glob('fakedata/results/*/*_res.fits')))
 
     # make diag plots
     plt.close('all')

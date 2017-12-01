@@ -18,6 +18,7 @@ import ctypes
 import os
 import sys
 from copy import copy
+from functools import lru_cache
 
 # add manga RC location to path, and import config
 if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
@@ -241,42 +242,44 @@ class MedianSpecScaler(object):
 
         return Y_sc, med.squeeze()
 
+class SqFromSqCacher(object):
+    '''
+    takes square subarray, caching results
+    '''
+    def __init__(self, large_array, n):
+        self.large_array = large_array
+        self.n = n
+
+    @lru_cache(maxsize=128)
+    def take(self, i0):
+        return self.large_array[i0:i0 + self.n, i0:i0 + self.n]
+
 class KPCGen(object):
     '''
     compute some spaxel's PC cov matrix
     '''
 
-    def __init__(self, kspec_obs, i0_map, E, ivar_scaled):
+    def __init__(self, kspec_obs, i0_map, E, ivar_scaled, a_map):
         self.kspec_obs = kspec_obs
         self.i0_map = i0_map
+        self.a_map = a_map
         self.E = E
         self.q, self.nl = E.shape
         self.ivar_scaled = ivar_scaled
 
+        self.sqfromsq = SqFromSqCacher(kspec_obs, self.nl)
+
     def __call__(self, i, j):
         i0_ = self.i0_map[i, j]
-        sl = [slice(i0_, i0_ + self.nl) for _ in range(2)]
-        kspec = self.kspec_obs[sl]
+        kspec = self.sqfromsq.take(i0_) / self.a_map[i, j]**2.
 
         # add to diagonal term from actual variance, floored at .1%
-        var = 1. / self.ivar_scaled[..., i, j]
+        var = np.nan_to_num(1. / self.ivar_scaled[..., i, j])
 
-        #kspec = .001 * np.ones_like(kspec)
-        np.einsum('ii->i', kspec)[:] = var.clip(min=1.0e-6, max=1.0e6)
-
-        '''
-        rows, cols = np.indices(kspec.shape)
-        for i in range(1, 10):
-            urow_vals = np.diag(rows, k=i)
-            lrow_vals = np.diag(rows, k=-i)
-            ucol_vals = np.diag(cols, k=i)
-            lcol_vals = np.diag(cols, k=-i)
-            z = np.sqrt(var[i:]**2. + var[:-i]**2.) / np.e**(0.8 * i)
-            kspec[urow_vals, ucol_vals] = z
-            kspec[lrow_vals, lcol_vals] = z
-        '''
+        np.einsum('ii->i', kspec)[:] += var
 
         return (self.E @ (kspec) @ self.E.T)
+
 
 def interp_large(x0, y0, xnew, axis, nchunks=1, **kwargs):
     '''
@@ -301,6 +304,22 @@ def interp_large(x0, y0, xnew, axis, nchunks=1, **kwargs):
     return ynew
 
     from time import localtime
+
+def rolling_window(a, size):
+    '''
+    take constant-sized windows of array
+    '''
+    shape = a.shape[:-1] + (a.shape[-1] - size + 1, size)
+    strides = a.strides + (a. strides[-1],)
+    return numpy.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+
+def index_of_matching_subarray(arr, subarr, *args, **kwargs):
+    '''
+    search for beginning index in arr where subarray matches the
+        appropriate elements of arr
+    '''
+    all_subarrays = rolling_window(arr, size=subarr.shape)
+    does_subarray_match = np.allclose(*args, **kwargs)
 
 def _nearest(loglgrid, loglrest, frest, ivarfrest):
     '''
@@ -480,6 +499,8 @@ class Regridder(object):
         frest = self.frest
         ivarfrest = self.ivarfrest
         dlogl = self.dlogl
+
+
 
         dl_rest = (10.**(loglrest + dlogl / 2)) - (10.**(loglrest - dlogl / 2))
         dl_grid = (10.**(loglrest + dlogl / 2)) - (10.**(loglrest - dlogl / 2))
@@ -693,6 +714,16 @@ def determine_dl(logl):
 
     return dl
 
+def determine_dloglcube(logl):
+    # make array of boundaries btwn logl pixels
+    logl_midbds = 0.5 * (logl[:-1] + logl[1:])
+    # this omits endpoints, so just assume the same dlogl between
+    # 0 & 1 as 1 & 2, and the same between -1 & -2 as -2 & -3
+    dlogl_ = logl_midbds[1:] - logl_midbds[:-1]
+    dlogl = np.pad(
+        dlogl_, pad_width=((1, 1), (0, 0), (0, 0)), mode='edge')
+    return dlogl
+
 def gaussian_filter(spec, sig):
     '''
     variable-width convolution of a spectrum
@@ -719,6 +750,36 @@ def gaussian_filter(spec, sig):
     f = np.sum(a * gau, axis=0)
 
     return f
+
+def blur_cube_to_psf(l_ref, specres_ref, l_eval, spec_unblurred):
+    '''
+    blur a flux-density cube using a psf cube
+    '''
+    specres_obs = interp1d(
+        x=l_ref, y=specres_ref,
+        bounds_error=False, fill_value='extrapolate')(l_eval)
+    cubeshape = l_eval.shape
+    mapshape = cubeshape[1:]
+    # convert specres of observations into dlnl
+    dlnl_obs = 1. / specres_obs
+
+    # dlogl of a pixel in model
+    dloglcube_model = determine_dloglcube(np.log10(l_eval))
+    # convert dlogl of pixel in model to dlnl
+    dlnlcube_model = dloglcube_model * np.log(10.)
+    # number of pixels is dlnl of obs div by dlnl of model
+    specres_pix = dlnl_obs / dlnlcube_model
+
+    # create placeholder for instrumental-blurred model
+    spec_model_instblur = np.empty_like(specres_obs)
+
+    # populate pixel-by-pixel (should take < 15 sec)
+    for ind in np.ndindex(mapshape):
+        spec_model_instblur[:, ind[0], ind[1]] = gaussian_filter(
+            spec=spec_unblurred[:, ind[0], ind[1]],
+            sig=specres_pix[:, ind[0], ind[1]])
+
+    return spec_model_instblur
 
 def add_losvds(meta, spec, dlogl, vmin=10, vmax=500, nv=10, LSF=None):
     '''

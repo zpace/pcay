@@ -1,6 +1,7 @@
 import numpy as np
 from functools import reduce
 from itertools import product
+import utils as ut
 
 def factors(n):
     return set(reduce(
@@ -23,12 +24,15 @@ def nsub_subshape(chunkspec1, chunkspec2):
 
     return (chunkspec1[0], chunkspec2[0]), (chunkspec1[1], chunkspec2[1])
 
-def find_largest_good_chunkshape(chunkspecs_I, chunkspecs_J, nl):
+def find_largest_good_chunkshape(chunkspecs_I, chunkspecs_J, nl, k_pc_shape):
     lgst_chunksize = (0, 0)
     nchunksperaxis = (0, 0)
     for chunkspec_i, chunkspec_j in product(chunkspecs_I, chunkspecs_J):
         nsub, subshape = nsub_subshape(chunkspec_i, chunkspec_j)
-        if try_arraysize(shape=(nl, nl) + subshape, dtype=np.float):
+
+        # need to also leave roon for PC cov matrix
+        shapes = ((nl, nl) + subshape, ) * 100 + (k_pc_shape, ) * 5
+        if try_arraysize(shapes=shapes, dtype=np.float):
             if np.product(subshape) > np.product(lgst_chunksize):
                 lgst_chunksize = subshape
                 nchunksperaxis = nsub
@@ -44,18 +48,19 @@ def extract_fixedlength_subarray(large_array, i0, n):
     out = large_array[i0[:, None, None] + np.arange(n), II, JJ]
     return out
 
-def extract_sq_from_sq(large_array, i0, n):
+def extract_sq_from_sq(sqfsq, i0):
     '''
-    extract index interval [i0, i0 + n] from large array into another array
+    extract index interval [i0:i0 + n, i0:i0 + n] from large array into another array
     '''
     mapshape = i0.shape
-    II, JJ = np.meshgrid(n, n)
-    out = large_array[i0[..., None, None] + II, i0[..., None, None] + JJ]
+    out = np.empty((sqfsq.n, ) * 2 + mapshape)
+    for ind in np.ndindex(mapshape):
+        out[:, :, ind[0], ind[1]] = sqfsq.take(i0[ind[0], ind[1]])
     return out
 
-def try_arraysize(shape, dtype):
+def try_arraysize(shapes, dtype):
     try:
-        test = np.empty(shape, dtype)
+        tests = tuple(np.empty(shape, dtype) for shape in shapes)
     except MemoryError:
         return False
     else:
@@ -103,34 +108,50 @@ def blockgen(array, bpa):
         yield blockbounds
 
 class CovCalcPartitioner(object):
-    def __init__(self, kspec_obs, a_map, i0_map, E, ivar_scaled):
+    def __init__(self, kspec_obs, a_map, i0_map, E, ivar_scaled, quiet=False):
+        self.quiet = quiet
         self.kspec_obs = kspec_obs
         self.a_map = a_map
         self.i0_map = i0_map
         self.mapshape = a_map.shape
-        self.nl, self.q = E.shape
+        self.q, self.nl = E.shape
+        self.k_pc_shape = (self.q, self.q) + self.mapshape
         self.E = E
         self.ivar_scaled = ivar_scaled
 
-        self.lgst_chunksize, self.nchunksperaxis = self._how_to_chunkify_maps()
+        self.lgst_chunksize = (4, 4)
+        self.nchunksperaxis = (self.mapshape[0] // 2, self.mapshape[1] // 2)
+
+        #self.lgst_chunksize, self.nchunksperaxis = self._how_to_chunkify_maps()
         self.blockgen = blockgen(ivar_scaled, (1, ) + self.nchunksperaxis)
+
+        self.sqfsq = ut.SqFromSqCacher(large_array=kspec_obs, n=self.nl)
 
     def _how_to_chunkify_maps(self):
         chunkspecsI, chunkspecsJ = tuple(map(factor_pairs, self.mapshape))
         lgst_chunksize, nchunksperaxis = find_largest_good_chunkshape(
-            chunkspecsI, chunkspecsJ, nl)
+            chunkspecsI, chunkspecsJ, self.nl, self.k_pc_shape)
+
+        if not self.quiet:
+            print('Chunk size:', lgst_chunksize)
+            print('Chunks per axis:', nchunksperaxis)
         return lgst_chunksize, nchunksperaxis
 
     def calc(self, i0, a, var):
         '''
         vector calculation of PC covariance matrix
         '''
-        # retrieve appropriate obs cov for each spaxel
-        kspec_obs_sub = extract_sq_from_sq(self.kspec_obs, i0, self.nl)
-        # replace main diag of each spaxel's k_obs with its variance array
-        np.einsum('abii->abi', kspec)[:] = var
 
-        K_PC_sub = self.E @ kspec_obs_sub @ self.E.T
+        if np.all(a == 0.):
+            return 10. * np.ones((self.q, self.q) + self.mapshape)
+        # retrieve appropriate obs cov for each spaxel
+        kspec_obs_sub = extract_sq_from_sq(self.sqfsq, i0) / a**2.
+        # replace main diag of each spaxel's k_obs with its variance array
+        np.einsum('iiab->iab', kspec_obs_sub)[:] = var
+
+        K_PC_sub = np.moveaxis(
+            self.E @ np.moveaxis(kspec_obs_sub, (0, 1, 2, 3), (2, 3, 0, 1)) @ self.E.T,
+            (0, 1, 2, 3), (2, 3, 0, 1))
         return K_PC_sub
 
     def calc_allchunks(self, K_PC=None):
@@ -138,17 +159,19 @@ class CovCalcPartitioner(object):
         use the blockgen generator to build the full K_PC
         '''
         if K_PC is None:
-            K_PC = 100. * np.ones((q, q) + self.mapshape)
+            K_PC = np.empty(self.k_pc_shape)
 
-        for block in blockbounds:
-            cubeblk = next(self.blockgen)
-            lamblk, Iblk, Jblk = blk
+        for cubeblk in self.blockgen:
+            lamblk, Iblk, Jblk = cubeblk
+            Istart, Istop = Iblk.start, Iblk.stop
+            Jstart, Jstop = Jblk.start, Jblk.stop
 
             mapblk = (Iblk, Jblk)
 
             i0_ = self.i0_map[mapblk]
             a_ = self.a_map[mapblk]
-            var_ = (1. / self.ivar_scaled[cubeblk]).clip(min=1.0e-4, max=1.0e4)
+            var_ = (1. / self.ivar_scaled[:, Istart:Istop, Jstart:Jstop]).clip(
+                min=1.0e-6, max=1.0e6)
 
             K_PC[(slice(None, None), slice(None, None)) + mapblk] = self.calc(
                 i0=i0_, a=a_, var=var_)

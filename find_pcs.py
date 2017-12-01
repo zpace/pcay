@@ -380,7 +380,6 @@ class StellarPop_PCA(object):
          - f: flux array (should be regridded to rest, need not be normalized)
             with shape (nl, m, m) (shape of IFU datacube)
          - ivar: inverse-variance (same shape as f)
-         - dl: width of wavelength bins (nspec-length array)
          - mask_spax: sets ivar in True spaxels to zero at all wavelengths
             within a given spaxel
          - mask_spec: sets ivar in True elements to zero in all spaxels
@@ -497,7 +496,6 @@ class StellarPop_PCA(object):
         '''
         build covariance matrix using partitioned linear-algebraic method
         '''
-        print('partitioned')
 
         E = self.PCs
         q, l = E.shape
@@ -527,7 +525,6 @@ class StellarPop_PCA(object):
         '''
         build covariance matrix assuming same starting index throughout cube
         '''
-        print('medix')
 
         E = self.PCs
         q, nl = E.shape
@@ -546,7 +543,7 @@ class StellarPop_PCA(object):
         k_ivar = np.einsum('li,ijk,mi->lmjk',
                            E, np.nan_to_num(1. / ivar_cube), E)
 
-        return (kpc00[..., None, None] * a_map**2.) + k_ivar
+        return (kpc00[..., None, None] * (50. / snr_map)**2.) + k_ivar
 
     def build_PC_cov_ivaronly(self, z_map, K_obs_, a_map, ivar_cube,
                               snr_map):
@@ -554,7 +551,6 @@ class StellarPop_PCA(object):
         build PC covariance matrix assuming only main-diagonal
             contribution from ivar
         '''
-        print('ivaronly')
         E = self.PCs
         k_ivar = np.einsum('li,ijk,mi->lmjk',
                            E, np.nan_to_num(1. / ivar_cube), E)
@@ -576,7 +572,6 @@ class StellarPop_PCA(object):
          - obs_logl: log-lambda vector (1D) of datacube
          - K_obs_: observational spectral covariance object
         '''
-        print('full_iter')
 
         E = self.PCs
         q, l = E.shape
@@ -1343,7 +1338,7 @@ class PCA_Result(object):
         self.resid = (self.O_norm - self.O_recon) / self.O_norm
 
         pc_cov_f = getattr(pca, '_'.join(('build_PC_cov', pc_cov_method)))
-        self.pc_cov_method = pc_cov_method
+        self.pc_cov_f = pc_cov_f
         self.K_PC = pc_cov_f(z_map=dered.z_map, K_obs_=self.K_obs,
             a_map=self.a_map, ivar_cube=self.ivar,
             snr_map=self.SNR_med)
@@ -1671,12 +1666,14 @@ class PCA_Result(object):
         z_map, SNR, a_map = (np.atleast_2d(z_map), np.atleast_2d(SNR),
                              np.atleast_2d(a_map))
 
-        pc_cov_f = getattr(pca, '_'.join(('build_PC_cov', pc_cov_method)))
-        K_PC = pc_cov_f(z_map=dered.z_map, K_obs_=self.K_obs,
-            a_map=self.a_map, ivar_cube=self.ivar,
-            snr_map=self.SNR_med)
+        K_PC = self.pc_cov_f(z_map=z_map, K_obs_=self.K_obs,
+            a_map=a_map, ivar_cube=ivar,
+            snr_map=SNR)
 
-        P_PC = P_from_K_pinv(K_PC)
+        try:
+            P_PC = P_from_K_pinv(K_PC)
+        except np.linalg.LinAlgError:
+            P_PC = P_from_K(K_PC)
 
         w = pca.compute_model_weights(P=P_PC, A=A)
 
@@ -1688,7 +1685,7 @@ class PCA_Result(object):
             qty='ML{}'.format(band), factor=lum.sum(), W=w)
 
         if scale == 'log':
-            return 10.**P50
+            return 10.**P50.sum()
 
         return P50
 
@@ -1740,14 +1737,15 @@ class PCA_Result(object):
             TeX2 = ''.join((r'$\log{\frac{M_{*,add}}{M_{\odot}}}$ = ',
                             '{:.2f}'.format(logmstar_allspec)))
         except TypeError:
+            print(self.objname, logmstar_allspec)
             TeX2 = 'ERROR'
 
         ax1xlims, ax1ylims = ax1.get_xlim(), ax1.get_ylim()
 
         ax1.text(x=tr((0, 1), ax1xlims, 0.05),
-                 y=tr((0, 1), ax1ylims, 0.05), s=TeX1, color='r')
-        ax1.text(x=tr((0, 1), ax1xlims, 0.5),
-                 y=tr((0, 1), ax1ylims, 0.05), s=TeX2, color='r')
+                 y=tr((0, 1), ax1ylims, 0.05),
+                 s='; '.join((TeX1, TeX2)),
+                 color='k', bbox=figures_tools.textboxprops)
 
         return m, s, mcb, scb
 
@@ -2759,7 +2757,7 @@ def get_col_metadata(col, k, notfound=''):
 
     return res
 
-def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
+def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
                dered_method='nearest', dered_kwargs={}, mockspec_ix=None, z_new=None,
                CSPs_dir='.', mockspec_fname='CSPs_test.fits',
                mocksfh_fname='SFHs_test.fits', vdisp_wt=False,
@@ -2771,6 +2769,13 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
         return
 
     plate, ifu = plateifu.split('-')
+
+    if pc_cov_method == 'full_iter':
+        noisify_method = 'cov'
+    elif pc_cov_method == 'medix':
+        noisify_method = 'cov'
+    elif pc_cov_method == 'ivar_only':
+        noisify_method = 'ivar'
 
     if fake:
         if redo_fake:
@@ -2811,7 +2816,8 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
 
             data = FakeData.from_FSPS(
                 fname=mockspec_fullpath, i=mockspec_ix,
-                plateifu_base=plateifu_base, pca=pca, row=row)
+                plateifu_base=plateifu_base, pca=pca, row=row,
+                K_obs=K_obs)
 
             data.write()
 
@@ -2883,7 +2889,7 @@ def run_object(row, pca, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 10
+    howmany = 5
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'nearest'
@@ -2903,7 +2909,7 @@ if __name__ == '__main__':
     pca_pkl_fname = os.path.join(CSPs_dir, 'pca.pkl')
     pca, K_obs = setup_pca(
         fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
-        redo=True, pkl=True, q=10, fre_target=.005, nfiles=None,
+        redo=False, pkl=True, q=10, fre_target=.005, nfiles=None,
         pca_kwargs=pca_kwargs)
 
     pca.write_pcs_fits()
@@ -2914,21 +2920,22 @@ if __name__ == '__main__':
     with catch_warnings():
         simplefilter(warn_behav)
 
-        pca_res = run_object(
-            row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
-            dered_method=dered_method, dered_kwargs=dered_kwargs,
-            pc_cov_method=pc_cov_method)
-        pca_res.write_results(pc_info=True)
+        #pca_res = run_object(
+        #    row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
+        #    dered_method=dered_method, dered_kwargs=dered_kwargs,
+        #    pc_cov_method=pc_cov_method)
+        #pca_res.write_results(pc_info=True)
 
         pca_res_f = run_object(
-            row=row, pca=pca, force_redo=True, fake=True,
+            row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
             redo_fake=True, mockspec_ix=0, dered_method=dered_method,
             dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
-            mockspec_fname='TestSpecs-5.10.fits', mocksfh_fname='TestSFH-5.10.fits')
+            pc_cov_method=pc_cov_method,
+            mockspec_fname='TestSpecs-5.9.fits', mocksfh_fname='TestSFH-5.9.fits')
         pca_res_f.write_results()
     #'''
 
-    '''
+    #'''
     #drpall = drpall[drpall['ifudesignsize'] > 0.]
     #drpall = drpall[drpall['ifudesignsize'] == 127]
     #drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.4]
@@ -2937,7 +2944,7 @@ if __name__ == '__main__':
     drpall = drpall[[r['plateifu'] in mwolf['plateifu'] for r in drpall]]
 
     drpall = m.shuffle_table(drpall)
-    #drpall = drpall[:howmany]
+    drpall = drpall[:howmany]
 
     with ProgressBar(len(drpall)) as bar:
         for i, row in enumerate(drpall):
@@ -2947,13 +2954,14 @@ if __name__ == '__main__':
                 with catch_warnings():
                     simplefilter(warn_behav)
 
-                    pca_res = run_object(
-                        row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
-                        dered_method=dered_method, dered_kwargs=dered_kwargs)
-                    pca_res.write_results()
+                    #pca_res = run_object(
+                    #    row=row, pca=pca, force_redo=False, fake=False,  K_obs=K_obs,
+                    #    vdisp_wt=True, dered_method=dered_method,
+                    #    dered_kwargs=dered_kwargs)
+                    #pca_res.write_results()
 
                     pca_res_f = run_object(
-                        row=row, pca=pca, force_redo=True, fake=True,
+                        row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
                         redo_fake=True, mockspec_ix=None, dered_method=dered_method,
                         dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
                         mockspec_fname='CSPs_0.fits', mocksfh_fname='SFHs_0.fits')
@@ -2966,4 +2974,4 @@ if __name__ == '__main__':
                 continue
             finally:
                 bar.update()
-    '''
+    #'''

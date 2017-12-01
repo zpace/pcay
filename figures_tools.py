@@ -22,6 +22,14 @@ cm = copy(plt.cm.viridis)
 cm.set_under(color='gray', alpha=0.5)
 cm.set_bad(alpha=1.)
 
+textboxprops = dict(facecolor='wheat', alpha=0.5)
+
+def decide_lims_pctls(a, pctls=[.5, 99.5], bds=[None, None]):
+    pctls_vals = np.percentile(a, pctls)
+    bds = [b if b is not None else v for b, v in zip(bds, pctls_vals)]
+
+    return bds
+
 def linear_offset_coordinates(wcs, center):
     '''
     return a locally linear offset coordinate system

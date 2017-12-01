@@ -35,8 +35,7 @@ def noisify_cov(cov, mapshape):
         cov=cov.cov, size=mapshape)
     cov_noise = np.moveaxis(cov_noise, [0, 1, 2], [1, 2, 0])
     #cov_noise = cov_noise[i0:i0 + nl, :, :]
-    rms = np.sqrt(np.mean(cov_noise, axis=0))
-    print(cov_noise.shape, rms.shape)
+    rms = 50. * np.sqrt(np.mean(cov_noise**2., axis=0))
     return cov_noise, rms
 
 def compute_snrcube(flux, ivar, filtersize_l=15, return_rms_map=False):
@@ -75,10 +74,19 @@ class FakeData(object):
 
         self.model_ix = model_ix
 
+        flux_obs = drp_base['FLUX'].data
+        ivar_obs = drp_base['IVAR'].data
+        lam_obs = drp_base['WAVE'].data
+        specres_obs = drp_base['SPECRES'].data
+
+        cubeshape = drp_base['FLUX'].data.shape
+        nl_obs, *mapshape = cubeshape
+        mapshape = tuple(mapshape)
+
         '''STEP 1'''
         # find SNR of each pixel in cube (used to scale noise later)
-        drp_snr, spax_rms = compute_snrcube(
-            flux=drp_base['FLUX'].data, ivar=drp_base['IVAR'].data,
+        snrcube_obs, rmsmap_obs = compute_snrcube(
+            flux=flux_obs, ivar=ivar_obs,
             filtersize_l=15, return_rms_map=True)
 
         '''STEP 2'''
@@ -101,34 +109,15 @@ class FakeData(object):
 
         '''STEP 4'''
         # specres of observed cube at model wavelengths
-        specres_obs = interp1d(
-            x=drp_base['WAVE'].data, y=drp_base['SPECRES'].data,
-            bounds_error=False, fill_value='extrapolate')(lam_model_z)
-        # convert specres of observations into dlnl
-        dlnl_obs = 1. / specres_obs
-
-        # dlogl of a pixel in model
-        dloglcube_model = ut.determine_dloglcube(np.log10(lam_model_z))
-        # convert dlogl of pixel in model to dlnl
-        dlnlcube_model = dloglcube_model * np.log(10.)
-        # number of pixels is dlnl of obs div by dlnl of model
-        specres_pix = dlnl_obs[:, None, None] / dlnlcube_model
-
-        # create placeholder for instrumental-blurred model
-        spec_model_instblur = np.empty_like()
-
-        # populate pixel-by-pixel (should take < 15 sec)
-        for ind in np.ndindex(mapshape):
-            spec_model_instblur[:, ind[0], ind[1]] = ut.gaussian_filter(
-                spec=spec_model_mwred[:, ind[0], ind[1]],
-                sig=specres_pix[:, ind[0], ind[1]])
+        spec_model_instblur = ut.blur_cube_to_psf(
+            l_ref=drp_base['WAVE'].data, specres_ref=drp_base['SPECRES'].data,
+            l_eval=lam_model_z, spec_unblurred=spec_model_mwred)
 
         ivar_model_instblur = ivar_model_mwred
 
         '''STEP 5'''
         # create placeholder arrays for ivar and flux
-        spec_model_rect = np.zeros(cubeshape)
-        ivar_model_rect = np.zeros(cubeshape)
+        final_fluxcube = np.empty(cubeshape)
 
         # wavelength grid for final cube
         l_grid = drp_base['WAVE'].data
@@ -139,27 +128,19 @@ class FakeData(object):
                 xp=lam_model_z[:, ind[0], ind[1]],
                 fp=spec_model_instblur[:, ind[0], ind[1]],
                 x=l_grid)
-            final_ivarcube[:, ind[0], ind[1]] = np.interp(
-                xp=lam_model_z[:, ind[0], ind[1]],
-                fp=ivar_model_instblur[:, ind[0], ind[1]],
-                x=l_grid)
 
         '''STEP 6'''
         if noisify_method == 'cov':
-            # assume cosmological redshift
-            # key onto **final** value in model wavelengths
-            ifinal = np.argmin(np.abs(l_model[-1] * (1. + z_cosm) - Kspec_obs.l))
-            i0 = ifinal - nl
             noise, noise_rms = noisify_cov(
                 Kspec_obs, mapshape=mapshape)
         elif noisify_method == 'ivar':
-            noise = np.random.randn(*cubeshape) / drp_snr
+            noise = np.random.randn(*cubeshape) / snrcube_obs
             noise_rms = np.sqrt(np.mean(noise**2., axis=0))
 
         # scale noise
-        noise_rmsscaled = noise * (spax_rms / noise_rms)[None, :, :]
+        noise_rmsscaled = noise * (rmsmap_obs / noise_rms)[None, :, :]
         # add noise
-        final_fluxcube += noise_rmsscaled
+        final_fluxcube *= (1. + noise_rmsscaled)
 
         '''STEP 7'''
         # normalize everything to have the same observed-frame r-band flux
@@ -171,14 +152,14 @@ class FakeData(object):
             lam=drp_base['WAVE'].data,
             flam=final_fluxcube * u_flam).ABmags['sdss2010-r']
         # flux ratio map
-        r = 10.**(-0.4 * (m_r_drp - m_r_mzc))
-        # occasionally this produces inf or nan for some reason,
-        # so just take care of that quickly
-        r[np.log10(r) > 4.] = 4.
-        r[np.log10(r) < -4] = -4.
+        r = 10.**(-0.4 * (rband_drp - rband_model))
 
         final_fluxcube *= r[None, ...]
-        final_ivarcube *= (noise_rmsscaled * r)**2.
+        # initialize the ivar cube according to the SNR cube
+        # of base observations
+        # this is because while we think we know the actual spectral covariance,
+        # that is not necessarily reflected in the quoted ivars!!!
+        final_ivarcube = snrcube_obs**2. / final_fluxcube
 
         '''STEP 8'''
         # mask where the native datacube has no signal
@@ -186,15 +167,17 @@ class FakeData(object):
         nosignal = (rimg == 0.)[None, ...]
         nosignal_cube = np.broadcast_to(nosignal, final_fluxcube.shape)
         final_fluxcube[nosignal_cube] = 0.
-        final_ivarobs[final_fluxcube == 0.] = 0.
+        final_ivarcube[final_fluxcube == 0.] = 0.
 
         # mask where there's bad velocity info
         badvel = m.mask_from_maskbits(
             dap_base['STELLAR_VEL_MASK'].data, [30])[None, ...]
+        final_ivarcube[np.tile(badvel, (nl_obs, 1, 1))] = 0.
 
-        # logical_or.reduce doesn't work (different size arrays?)
-        bad = np.logical_or(~np.isfinite(final_fluxcube), badvel)
-        fakecube[bad] = 0.
+        # replace infinite flux elements with median-filtered
+        flux_is_inf = ~np.isfinite(final_fluxcube)
+        final_fluxcube[flux_is_inf] = medfilt(
+            np.nan_to_num(final_fluxcube), [11, 1, 1])[flux_is_inf]
 
         self.dap_base = dap_base
         self.drp_base = drp_base
@@ -240,6 +223,7 @@ class FakeData(object):
             i = np.random.choice(len(models_meta))
 
         model_spec = models_specs[i, :]
+        model_spec /= np.median(model_spec)
         model_meta = models_meta[i]
 
         # load data

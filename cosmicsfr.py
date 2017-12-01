@@ -57,5 +57,5 @@ def make_cosmic_sfr(CSP_dir):
     savefig(fig, 'CosmicSFR.png', CSP_dir, close=True)
 
 if __name__ == '__main__':
-    CSP_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171025-2/'
+    CSP_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
     make_cosmic_sfr(CSP_dir)

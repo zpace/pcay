@@ -274,6 +274,14 @@ class FSPS_SFHBuilder(object):
         for k in ks:
             del tab[k]
 
+        tab.add_column(t.Column(data=[self.frac_mform_dt(age=.02)],
+                                name='mf_20Myr'))
+        tab.add_column(t.Column(data=[self.frac_mform_dt(age=.1)],
+                                name='mf_100Myr'))
+        tab.add_column(t.Column(data=[self.frac_mform_dt(age=.2)],
+                                name='mf_200Myr'))
+        tab.add_column(t.Column(data=[self.frac_mform_dt(age=.5)],
+                                name='mf_500Myr'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=1)],
                                 name='mf_1Gyr'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))

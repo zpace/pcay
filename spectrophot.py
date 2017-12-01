@@ -215,3 +215,22 @@ color_ml_conv = '''
 
 C_ML_conv_t = astropy.io.ascii.read(color_ml_conv, guess=True, quotechar="'")
 C_ML_conv_t.add_index('C')
+
+class PowerLaw(object):
+    def __init__(self, x0, y0, n):
+        self.x0, self.y0, self.n = x0, y0, n
+    def __call__(self, x):
+        return self.y0 * (x / self.x0)**-self.n
+
+def reddener(c1, c2):
+    lam = np.linspace(3800., 10500., 10000)
+    flam = np.ones_like(lam)
+
+    atten = PowerLaw(5500., 1. / np.e, -0.7)
+
+    s2p_nat = Spec2Phot(lam=lam * u.AA, flam=flam * u.Unit('erg s-1 cm-2 AA-1'))
+    c0_nat, c1_nat = s2p_nat.color(*c1), s2p_nat.color(*c2)
+    s2p_att = Spec2Phot(lam=lam * u.AA, flam=flam * u.Unit('erg s-1 cm-2 AA-1') * \
+                        atten(lam))
+    c0_att, c1_att = s2p_att.color(*c1), s2p_att.color(*c2)
+    return c0_att - c0_nat, c1_att - c1_nat

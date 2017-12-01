@@ -70,5 +70,5 @@ def make_burst_dutycycle_fig(CSP_dir):
     savefig(fig, ''.join((basename, '.png')), CSP_dir, close=True)
 
 if __name__ == '__main__':
-    CSP_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171025-2/'
+    CSP_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
     make_burst_dutycycle_fig(CSP_dir)

@@ -1,5 +1,7 @@
 import numpy as np
 
+eps = np.finfo(float).eps
+
 def SVD_downproject(M, F, rcond=1e-10):
     # do lstsq down-projection using SVD
 
