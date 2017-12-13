@@ -30,13 +30,13 @@ from spec_tools import air2vac, vac2air
 if mangarc.voronoi_loc not in sys.path:
     sys.path.append(mangarc.voronoi_loc)
 
-from voronoi_2d_binning import voronoi_2d_binning
+import voronoi_2d_binning as voronoi2d
 
 import utils as ut
 
 from contextlib import redirect_stdout
 
-mpl_v = 'MPL-5'
+mpl_v = 'MPL-6'
 eps = np.finfo(float).eps
 
 # =====
@@ -141,9 +141,7 @@ class Cov_Obs(object):
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=n)
 
     @classmethod
-    def from_MaNGA_reobs(cls, dlogl=1.0e-4, MPL_v=mpl_v, n=None,
-                         norm_unity=True, zeronorm=True, smooth=False,
-                         cov_f='np', cov_f_kwargs=dict(assume_centered=True)):
+    def from_MaNGA_reobs(cls, dlogl=1.0e-4, MPL_v=mpl_v, n=None):
         '''
         returns a covariance object made from reobserved MaNGA IFU LOGCUBEs
         '''
@@ -169,25 +167,14 @@ class Cov_Obs(object):
         nl = len(lam)
 
         # process multiply-observed datacubes, up to limit set
-        diffs, w, good = zip(
-            *[Cov_Obs.process_MaNGA_mult(
-                  grp, MPL_v, nl, norm_unity=norm_unity, smooth=smooth)
-              for grp in groups])
+        diffs, diffs_ivars = map(
+            np.row_stack, zip(*[difference_reobs(
+                                   grp, 'MPL-6', nspec=nl, SN_thresh=3.,
+                                   f_mask_thresh=.01, voronoi=50)
+                               for grp in groups]))
 
-        # stack all the differences
-        diffs = np.row_stack([p for (p, g) in zip(diffs, good) if g])
-        w = np.row_stack([p for (p, g) in zip(w, good) if g]) + eps
-
-        if zeronorm:
-            diffs -= np.median(diffs, axis=1, keepdims=True)
-
-        N = w.shape[0]
-
-        if cov_f == 'np':
-            cov = diffs.T.dot(diffs) * np.linalg.inv(w.T @ w)
-        else:
-            cov_obj = getattr(sklearn.covariance, cov_f)(**cov_f_kwargs)
-            cov_obj.fit(diffs)
+        cov = calc_cov_einsum(diffs)
+        N = diffs.shape[0]
 
         return cls(cov, lllim=lllim, dlogl=dlogl, nobj=N)
 
@@ -238,29 +225,6 @@ class Cov_Obs(object):
             ax.set_xlim(llims)
             ax.set_ylim(llims)
 
-        # twinned subplot for sky and transmission
-        '''
-        ax_ = ax.twinx()
-        #ax_.set_ylim([-.05, 1.05])
-        ax_.tick_params(axis='both', bottom=False, top=False, left=False, right=True,
-                        labelbottom=False, labeltop=False, labelleft=False,
-                        labelright=True, labelsize=5)
-
-        # sky emission spectrum (from A. Jones)
-        sky_em_t = t.Table.read(
-            '/usr/data/minhas2/zpace/sky/skyline_wave.dat', format='ascii')
-        superl = 10.**np.arange(np.log10(l.min()), np.log10(l.max()), 1.0e-6)
-        sky_em_flam = ut.multigaussflux(
-            POSs=sky_em_t['wave_fit'], WIDs=sky_em_t['sig'], FLUXs=sky_em_t['flux'],
-            x=superl)
-        ax_.plot(superl, sky_em_flam / sky_em_flam.max(), color='k', linewidth=.25)
-
-        # telluric absorption (from A. Jones)
-        tell_tr = fits.open('/usr/data/minhas2/zpace/sky/trans.fits')
-        ax_.plot(air2vac(tell_tr['wave'].data * u.AA).value,
-                 tell_tr['trans'].data, color='g', linewidth=.25)
-        '''
-
         vmax = np.abs(self.cov).max()**0.3
         extend = 'neither'
         if vmax > max_disp:
@@ -282,7 +246,7 @@ class Cov_Obs(object):
         cb.ax.tick_params(labelsize=6)
         plt.tight_layout()
 
-        plt.savefig('cov_obs_{}.png'.format(kind), dpi=200)
+        fig.savefig('cov_obs_{}.png'.format(kind), dpi=200)
 
     # =====
     # properties
@@ -300,35 +264,6 @@ class Cov_Obs(object):
     # =====
     # staticmethods
     # =====
-
-    @staticmethod
-    def process_MaNGA_mult(tab, MPL_v, nspec=4563, norm_unity=False, smooth=False,
-                           voronoi_snr=50.):
-        '''
-        check for presence of datacubes for a single multiply-observed
-            MaNGA object, and (if the data exists) process the observations
-            into an array of residuals
-
-        Note: this assumes that all data is present at the correct location.
-            Missing data (such that zero or one observations are available)
-            will result in an empty array (with correct dimensions)
-            being returned
-
-        Returns:
-         - diffs: differences between pairs of spectra of
-             nominally same location (presumed normed to zero)
-         - wt: weights on diffs
-         - good: indicates whether resids_normed is good
-        '''
-
-        print(tab['plateifu'])
-
-        (diffs, ), w, RIMGs, bincounts, coadd = process_MaNGA_mult(
-            tab, MPL_v, nspec, SN_thresh=5., f_mask_thresh=.05,
-            voronoi=voronoi_snr, operations=np.subtract, quiet=True, plot=False,
-            norm_unity=norm_unity, smooth=smooth)
-
-        return diffs, w, True
 
     @staticmethod
     def process_BOSS_mult(tab, dlogl=1.0e-4):
@@ -463,7 +398,7 @@ def load_MaNGA_mult(tab, MPL_v, nspec, maskbits=[0, 1, 2, 3, 10]):
 
     return fluxs, ivars, masks, RIMGs, mapshape
 
-def _filter_spaxels_(fluxs, ivars, masks, RIMGs, mapshape,
+def filter_spaxels_(fluxs, ivars, masks, RIMGs, mapshape,
                      SN_thresh=3., f_mask_thresh=.05, return_all=False):
     '''
     take composed array of fluxs, ivars, and masks, and return
@@ -486,7 +421,7 @@ def _filter_spaxels_(fluxs, ivars, masks, RIMGs, mapshape,
 
     # select spaxels with enough signal
     fluxs, ivars, masks, RIMGs, XX, YY = ut.apply_mask(
-        A=(fluxs, ivars, masks, RIMGs, XX, YY), mask=goodspax,
+        A=(fluxs, ivars, masks, RIMGs, XX, YY), good=goodspax,
         axis=(1, 1, 1, 1, 0, 0))
 
     if return_all:
@@ -499,93 +434,94 @@ def apply_op_(op, fluxs, n_reobs):
     res = np.row_stack([op(fluxs[i1, ...], fluxs[i2, ...]) for (i1, i2) in pairs])
     return res
 
-def process_MaNGA_mult(tab, MPL_v, nspec=4563, SN_thresh=3., f_mask_thresh=.05,
-                       voronoi=50., operations=np.subtract, norm_unity=True,
-                       kernelsize=101, smooth=False, **kwargs):
+def difference_reobs(tab, MPL_v, nspec=4563, SN_thresh=3.,
+                       f_mask_thresh=.05, voronoi=50):
     '''
-    check for presence of datacubes for a single multiply-observed
-        MaNGA object, and (if the data exists) process the observations
-        into an array of residuals
-
-    Note: this assumes that all data is present at the correct location.
-        Missing data (such that zero or one observations are available)
-        will result in an empty array (with correct dimensions)
-        being returned
-
-    Returns:
-     - diffs: differences between pairs of spectra of
-         nominally same location (presumed normed to zero)
-     - wt: weights on diffs
+    construct pairs of resobservations:
+    1. load all cubes for a MaNGA-ID, confirm same shape
+    2. choose spaxels to use
+    3. replace bad values with median of neighbors
+    4. normalize each spectrum to weighted average flux of 1
+    5. voronoi-bin spectra to specified S/N: sum fluxes, invert sum of inverse-ivars
+    6. difference pairs of identical reobservations:
+        F = f1 - f0; I = 1 / (1 / i0 + 1 / i1)
+    7. reshape F, I like a list of spectra (npairs, nlam)
     '''
-
-    # make sure passed operations are valid
-    if callable(operations):
-        operations = [operations]
-    else:
-        allfuncs = all(list(map(callable, operations)))
-        assert allfuncs, 'All elements of operations must be callable'
 
     try:
         mults = load_MaNGA_mult(tab, MPL_v, nspec)
     except ut.LogcubeDimError:
         dummy = np.empty((0, nspec))
-        return (dummy, ) * len(operations), dummy, False, False, dummy
+        return dummy, dummy
     else:
         fluxs, ivars, masks, RIMGs, mapshape = mults
 
-    fluxs, ivars, masks, RIMGs, mapshape, (XX, YY) = _filter_spaxels_(
-        fluxs, ivars, masks, RIMGs, mapshape, return_all=True)
-    #print(fluxs.shape)
+    # return only good spaxels
+    fluxs, ivars, masks, RIMGs, mapshape, (XX, YY) = filter_spaxels_(
+        fluxs, ivars, masks, RIMGs, mapshape, return_all=True,
+        f_mask_thresh=f_mask_thresh, SN_thresh=SN_thresh)
 
-    if not smooth:
-        goodpix = ((~masks) * (fluxs * np.sqrt(ivars) > 2.))
-        kernelsize_ = [1, 1, kernelsize]
-        fluxs[~goodpix] = medfilt(fluxs, kernelsize_)[~goodpix]
-    else:
-        fluxs = medfilt(fluxs, [1, 1, smooth])
-
+    # bad pixels get replaced by width-101
+    # rolling median of their spectral neighbors
+    goodpix = ((~masks) * (fluxs * np.sqrt(ivars) >= SN_thresh))
+    roll_med = medfilt(fluxs, [1, 1, 101])
+    fluxs[~goodpix] = roll_med[~goodpix]
     n_reobs, n_spax, _ = fluxs.shape
 
-    # normalize spectra
-    if norm_unity:
-        a = np.average(fluxs, weights=ivars, axis=(0, 2))[None, :, None]
-        fluxs /= a
-        ivars *= a**2.
+    # normalize individual spectra
+    a = np.average(fluxs, weights=ivars, axis=2)[:, :, None]
+    fluxs /= a
+    ivars *= a**2.
 
+    # voronoi bin
     if voronoi > 0:
-        # now aggregate spectra in each observation by bin number
         binnum = voronoi_bin_multiple(
-            XX, YY, fluxs, ivars, SN=voronoi, **kwargs)
+            XX, YY, fluxs, ivars, targetSN=voronoi, quiet=True, plot=False)
         binfluxs = np.stack(
             [ut.bin_sum_agg(A=s, bins=binnum) for s in fluxs])
-        binweights = np.stack(
-            [ut.bin_sum_agg(A=s, bins=binnum) for s in ivars])
+        binivars = 1. / np.stack(
+            [ut.bin_sum_agg(A=(1./(s + 10. * eps)), bins=binnum) for s in ivars])
         bincounts, _ = np.histogram(
-            binnum, bins=np.linspace(-0.5, 0.5 + binnum.max(), binnum.max() + 1))
+            binnum, bins=np.linspace(-.5, .5 + binnum.max(),
+                                     binnum.max() + 1))
     else:
         binfluxs = fluxs
-        binweights = ivars
+        binivars = ivars
         bincounts = np.ones(fluxs.shape[1])
 
-    coadd = fluxs.sum(axis=1)
+    a_bin = np.average(binfluxs, weights=binivars, axis=2)[:, :, None]
+    binfluxs /= a_bin
+    binivars *= a_bin**2.
 
-    results = tuple(apply_op_(op, binfluxs, n_reobs) for op in operations)
-    def weight_agg_f(ivar1, ivar2):
-        ivar = ivar1 + ivar2
-        ivar[~np.isfinite(ivar)] = 10. * eps
-        return ivar
-    binweights = apply_op_(weight_agg_f, binweights, n_reobs)
+    # find differences
+    diffs = apply_op_(np.subtract, binfluxs, n_reobs)
 
-    return results, binweights, RIMGs, bincounts, coadd
+    # function aggregates ivars
+    def ivar_agg(ivar1, ivar2):
+        var1, var2 = 1. / ivar1, 1. / ivar2
+        varsum = var1 + var2
+        ivar_agg = 1. / varsum
+        ivar_agg[~np.isfinite(ivar_agg)] = 0.
+        return ivar_agg
 
+    # find ivars of differences
+    diffs_ivars = apply_op_(ivar_agg, binivars, n_reobs)
 
-def voronoi_bin_multiple(XX, YY, fluxs, ivars, SN, quiet=False, **kwargs):
-    # voronoi kwarg gives desired SN
+    return diffs, diffs_ivars
+
+def voronoi_bin_multiple(XX, YY, fluxs, ivars, targetSN, quiet=False, **kwargs):
+    '''
+    apply Cappellari's voronoi binning method, `voronoi` gives desired SN
+    '''
+    # choose lower-S/N galaxy to use as basis for binning
+    sn_i = np.argmin(np.median(fluxs * np.sqrt(ivars), axis=(1, 2)))
+
     # use median flux & ivar to define signal & noise
-    S = np.median(fluxs, axis=(0, 2))
-    IV = np.median(ivars, axis=(0, 2))
-    N = 1. / np.sqrt(IV)
-    N[IV <= 1.0e-4] = 100. * S[IV <= 1.0e-4]
+    S = np.median(fluxs[sn_i, ...], axis=-1)
+    IV = ivars[sn_i, ...]
+    N_ = 1. / np.sqrt(IV)
+    N_[IV <= 1.0e-9] = 100. * fluxs[sn_i][IV <= 1.0e-9]
+    N = np.median(N_, axis=-1)
 
     if quiet:
         f = io.StringIO()
@@ -593,8 +529,8 @@ def voronoi_bin_multiple(XX, YY, fluxs, ivars, SN, quiet=False, **kwargs):
         f = sys.stdout
 
     with redirect_stdout(f):
-        voronoi_res = voronoi_2d_binning(
-            x=XX, y=YY, signal=S, noise=N, targetSN=SN, **kwargs)
+        voronoi_res = voronoi2d.voronoi_2d_binning(
+            x=XX, y=YY, signal=S, noise=N, targetSN=targetSN, **kwargs)
 
     binnum, *_, XBAR, YBAR, SN_final, npix_final, scale = voronoi_res
 
@@ -642,6 +578,23 @@ def wcov(diffs, ws):
     cov = wdiffs.T.dot(wdiffs) / (2. * ws.T.dot(ws))
     return cov
 
+def calc_cov_wtd_ctrd(diffs, ivars=None):
+    if ivars is None:
+        ivars = np.ones_like(diffs)
+    wtd_diff = diffs * ivars
+    cov = (wtd_diff.T @ wtd_diff) / (2. * ivars.T @ ivars - 1.)
+    return cov
+
+def calc_cov_einsum(diffs, ivars=None):
+    N, nl = diffs.shape
+    cov = (2. * N)**-1. * np.einsum('na,nb->ab', diffs, diffs)
+    return cov
+
+def display_cov(cov, dv):
+    plt.imshow(np.sign(cov) * np.abs(cov)**.3, cmap='coolwarm', vmin=-dv, vmax=dv)
+    plt.gca().set_aspect('equal')
+    plt.colorbar()
+    plt.show()
 
 if __name__ == '__main__':
     '''
@@ -655,8 +608,7 @@ if __name__ == '__main__':
     '''
     # =====
     #'''
-    Cov_manga = Cov_Obs.from_MaNGA_reobs(
-        n=2, norm_unity=True, zeronorm=False, smooth=101, cov_f='np')
-    Cov_manga.write_fits('manga_Kspec_wtd.fits')
-    #Cov_manga.make_im(kind='manga', max_disp=0.4)
+    Cov_manga = Cov_Obs.from_MaNGA_reobs()
+    Cov_manga.make_im(kind='manga', max_disp=0.4)
+    Cov_manga.write_fits('manga_Kspec_new.fits')
     #'''
