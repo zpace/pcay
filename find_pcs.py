@@ -51,7 +51,7 @@ from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
 import utils as ut
 import indices
 from fakedata import FakeData
-from partition import CovCalcPartitioner
+from partition import CovCalcPartitioner, CovWindows
 from linalg import *
 
 # add manga RC location to path, and import config
@@ -543,7 +543,7 @@ class StellarPop_PCA(object):
         k_ivar = np.einsum('li,ijk,mi->lmjk',
                            E, np.nan_to_num(1. / ivar_cube), E)
 
-        return (kpc00[..., None, None] * (50. / snr_map)**2.) + k_ivar
+        return (kpc00[..., None, None] / a**2.) + k_ivar
 
     def build_PC_cov_ivaronly(self, z_map, K_obs_, a_map, ivar_cube,
                               snr_map):
@@ -600,6 +600,54 @@ class StellarPop_PCA(object):
                 K_PC[..., ind[0], ind[1]] = k_pc_gen(ind[0], ind[1])
 
         K_PC += (E @ self.cov_th @ E.T)[..., None, None]
+
+        return K_PC
+
+    def build_PC_cov_precomp(self, z_map, K_obs_, a_map, ivar_cube,
+                             snr_map):
+        '''
+        precomputed PC cov
+
+        0. setup
+        1. precompute PC projections of instrumental covariance
+            (this is done beforehand within Cov object)
+        2. iterate through spatial indices, select appropriate index
+            of precomputed covs
+        3. add K_ivar & K_th
+        '''
+
+        '''STEP 0'''
+
+        E = self.PCs
+        q, l = E.shape
+        mapshape = z_map.shape
+
+        # build an array to hold covariances
+        K_PC = 100. * np.ones((q, q) + mapshape)
+
+        cov_logl = K_obs_.logl
+
+        # compute starting indices for covariance matrix
+        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
+        # bring ivar cube to same SNR as data
+
+        '''STEP 1'''
+        cov_windows = K_obs_.covwindows
+
+        '''STEP 2'''
+        # initialize indices of PC cov
+        QI, QJ = np.meshgrid(range(q), range(q), indexing='ij')
+        K_PC = cov_windows.all_K_PCs[
+            i0_map[None, None, :, :],
+            QI[:, :, None, None], QJ[:, :, None, None]]
+        # scale by a**-2
+        K_PC *= a_map**-2.
+
+        '''STEP 3'''
+        K_PC_ivar = np.einsum('li,ijk,mi->lmjk',
+                              E, np.nan_to_num(1. / ivar_cube), E)
+        K_PC_th = (E @ self.cov_th @ E.T)[..., None, None]
+        K_PC = K_PC + K_PC_ivar + K_PC_th
 
         return K_PC
 
@@ -2708,7 +2756,7 @@ def setup_pca(base_dir, base_fname, fname=None,
     else:
         run_pca = False
 
-    kspec_fname = 'manga_Kspec_norm_smooth101.fits'
+    kspec_fname = 'manga_Kspec_new.fits'
 
     if run_pca:
         K_obs = cov_obs.Cov_Obs.from_fits(kspec_fname)
@@ -2733,10 +2781,11 @@ def setup_pca(base_dir, base_fname, fname=None,
     else:
         pca.run_pca_models(q)
 
-    pca.make_PCs_fig()
-    pca.make_PC_param_regr_fig()
-    pca.make_params_vs_PCs_fig()
-    pca.make_PC_param_importance_fig()
+    if run_pca:
+        pca.make_PCs_fig()
+        pca.make_PC_param_regr_fig()
+        pca.make_params_vs_PCs_fig()
+        pca.make_PC_param_importance_fig()
 
     return pca, K_obs
 
@@ -2894,11 +2943,11 @@ if __name__ == '__main__':
     warn_behav = 'ignore'
     dered_method = 'nearest'
     dered_kwargs = {'nper': 10}
-    pc_cov_method = 'medix'
+    pc_cov_method = 'full_iter'
 
     CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
 
-    mpl_v = 'MPL-5'
+    mpl_v = 'MPL-6'
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
     drpall = drpall[drpall['nsa_z'] != -9999]
@@ -2912,6 +2961,8 @@ if __name__ == '__main__':
         redo=False, pkl=True, q=10, fre_target=.005, nfiles=None,
         pca_kwargs=pca_kwargs)
 
+    K_obs.precompute_Kpcs(pca.PCs)
+
     pca.write_pcs_fits()
 
     #'''
@@ -2920,11 +2971,11 @@ if __name__ == '__main__':
     with catch_warnings():
         simplefilter(warn_behav)
 
-        #pca_res = run_object(
-        #    row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
-        #    dered_method=dered_method, dered_kwargs=dered_kwargs,
-        #    pc_cov_method=pc_cov_method)
-        #pca_res.write_results(pc_info=True)
+        pca_res = run_object(
+            row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
+            dered_method=dered_method, dered_kwargs=dered_kwargs,
+            pc_cov_method=pc_cov_method, K_obs=K_obs)
+        pca_res.write_results(pc_info=True)
 
         pca_res_f = run_object(
             row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
@@ -2935,7 +2986,7 @@ if __name__ == '__main__':
         pca_res_f.write_results()
     #'''
 
-    #'''
+    '''
     #drpall = drpall[drpall['ifudesignsize'] > 0.]
     #drpall = drpall[drpall['ifudesignsize'] == 127]
     #drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.4]
@@ -2954,11 +3005,11 @@ if __name__ == '__main__':
                 with catch_warnings():
                     simplefilter(warn_behav)
 
-                    #pca_res = run_object(
-                    #    row=row, pca=pca, force_redo=False, fake=False,  K_obs=K_obs,
-                    #    vdisp_wt=True, dered_method=dered_method,
-                    #    dered_kwargs=dered_kwargs)
-                    #pca_res.write_results()
+                    pca_res = run_object(
+                        row=row, pca=pca, force_redo=False, fake=False,  K_obs=K_obs,
+                        vdisp_wt=True, dered_method=dered_method,
+                        dered_kwargs=dered_kwargs)
+                    pca_res.write_results()
 
                     pca_res_f = run_object(
                         row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
@@ -2974,4 +3025,4 @@ if __name__ == '__main__':
                 continue
             finally:
                 bar.update()
-    #'''
+    '''

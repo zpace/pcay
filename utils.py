@@ -271,7 +271,7 @@ class KPCGen(object):
 
     def __call__(self, i, j):
         i0_ = self.i0_map[i, j]
-        kspec = self.sqfromsq.take(i0_) / self.a_map[i, j]**2.
+        kspec = self.sqfromsq.take(i0_) * self.a_map[i, j]**-2.
 
         # add to diagonal term from actual variance, floored at .1%
         var = np.nan_to_num(1. / self.ivar_scaled[..., i, j])
@@ -963,9 +963,9 @@ def reshape_cube2rss(cubes):
     rss = np.stack([cube.reshape((naxis1, -1)).T for cube in cubes])
     return rss
 
-def apply_mask(A, mask, axis=0):
+def apply_mask(A, good, axis=0):
     '''
-    apply spaxel mask along axis 1
+    apply spaxel selection along axis
     '''
 
     if type(axis) is np.ndarray:
@@ -974,7 +974,7 @@ def apply_mask(A, mask, axis=0):
     if type(axis) is int:
         axis = (axis, ) * len(A)
 
-    A_new = (np.compress(a=A_, condition=mask, axis=ax) for A_, ax in zip(A, axis))
+    A_new = (np.compress(a=A_, condition=good, axis=ax) for A_, ax in zip(A, axis))
 
     return A_new
 
@@ -986,6 +986,17 @@ def bin_sum_agg(A, bins):
     mask[bins, np.arange(len(bins))] = 1
 
     return mask.dot(A)
+
+def random_cov_matrix(ndim):
+    k0 = np.random.randn(ndim, ndim)
+    K = k0 @ k0.T
+    return K
+
+def random_orthogonal_basis(shape):
+    nsamp, ndim = shape
+    K = random_cov_matrix(ndim)
+    evals, evecs = np.linalg.eig(K)
+    return evecs[:nsamp, :]
 
 class LogcubeDimError(Exception):
     def __init__(self, *args, **kwargs):

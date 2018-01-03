@@ -122,7 +122,7 @@ class CovCalcPartitioner(object):
         self.lgst_chunksize = (4, 4)
         self.nchunksperaxis = (self.mapshape[0] // 2, self.mapshape[1] // 2)
 
-        #self.lgst_chunksize, self.nchunksperaxis = self._how_to_chunkify_maps()
+        self.lgst_chunksize, self.nchunksperaxis = self._how_to_chunkify_maps()
         self.blockgen = blockgen(ivar_scaled, (1, ) + self.nchunksperaxis)
 
         self.sqfsq = ut.SqFromSqCacher(large_array=kspec_obs, n=self.nl)
@@ -178,3 +178,32 @@ class CovCalcPartitioner(object):
 
         return K_PC
 
+def make_diagctrd_windows(x, n):
+    '''
+    extract square matrix of shape `(n, n)` centered around diagonal of `x`
+    '''
+    from numpy.lib.stride_tricks import as_strided
+    if x.ndim != 2 or x.shape[0] != x.shape[1] or x.shape[0] < n:
+        raise ValueError("Invalid input")
+    w = as_strided(x, shape=(x.shape[0] - n + 1, n, n),
+                   strides=(x.strides[0]+x.strides[1], x.strides[0], x.strides[1]))
+    return w
+
+def single_cov_multidot(K, E):
+    return np.linalg.multi_dot([E, K, E.T])
+
+class CovWindows(object):
+    '''
+    class for precomputing all projections of K_inst onto PCs
+    '''
+    def __init__(self, K_inst, E):
+        q, nl = E.shape
+
+        _kwindows = make_diagctrd_windows(K_inst, nl)
+        '''
+        mathematically `self.all_K_PCs = E @ K_inst_windows @ E.T` is the way to do it
+            but the memory allocation is bad
+        '''
+        cov_multidot_vec = np.vectorize(
+            single_cov_multidot, excluded='E', signature='(l,l),(q,l)->(q,q)')
+        self.all_K_PCs = cov_multidot_vec(_kwindows, E)
