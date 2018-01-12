@@ -33,6 +33,7 @@ if mangarc.voronoi_loc not in sys.path:
 import voronoi_2d_binning as voronoi2d
 
 import utils as ut
+from partition import CovWindows
 
 from contextlib import redirect_stdout
 
@@ -52,6 +53,7 @@ class Cov_Obs(object):
 
     def __init__(self, cov, lllim, dlogl, nobj):
         self.cov = cov
+        self.cov_zerodiag = cov - np.diag(np.diag(cov))
         self.nspec = len(cov)
         self.lllim = lllim
         self.loglllim = np.log10(self.lllim)
@@ -189,6 +191,19 @@ class Cov_Obs(object):
         return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
 
     @classmethod
+    def from_tremonti(cls, fname):
+        '''
+        Christy's covariance calculations
+        '''
+        cov_super = fits.getdata(fname, ext=1)
+        wave = cov_super['WAVE']
+        cov = cov_super['COV_MATRIX']
+        nobj = 0
+        dlogl = ut.determine_dlogl(np.log10(wave))
+        lllim = wave[0]
+        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+
+    @classmethod
     def from_YMC_BOSS(cls, fname, logl0=3.5524001):
         hdulist = fits.open(fname)
         cov = hdulist[1].data
@@ -201,6 +216,12 @@ class Cov_Obs(object):
     # =====
     # methods
     # =====
+
+    def precompute_Kpcs(self, E):
+        '''
+        precompute PC covs, based on given eigenvectors
+        '''
+        self.covwindows = CovWindows(self.cov, E)
 
     def write_fits(self, fname='cov.fits'):
         hdu_ = fits.PrimaryHDU()
@@ -439,7 +460,7 @@ def difference_reobs(tab, MPL_v, nspec=4563, SN_thresh=3.,
     '''
     construct pairs of resobservations:
     1. load all cubes for a MaNGA-ID, confirm same shape
-    2. choose spaxels to use
+    2. choose spaxels to use (exlude low median S/N and spectra with lots of masks)
     3. replace bad values with median of neighbors
     4. normalize each spectrum to weighted average flux of 1
     5. voronoi-bin spectra to specified S/N: sum fluxes, invert sum of inverse-ivars
