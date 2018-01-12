@@ -8,6 +8,8 @@ from specutils import extinction
 from speclite import redshift as slrs
 from speclite import accumulate as slacc
 
+from dered_drizzle import drizzle_flux
+
 from scipy.ndimage.filters import gaussian_filter1d as gf
 from scipy.interpolate import interp1d
 from scipy.spatial.distance import pdist, squareform
@@ -491,19 +493,12 @@ class Regridder(object):
 
     def drizzle(self, **kwargs):
         '''
-        drizzle flux between pixels
+        drizzle flux between pixels (wraps something similar to Carnall 2017)
         '''
 
-        loglgrid = self.loglgrid
-        loglrest = self.loglrest
-        frest = self.frest
-        ivarfrest = self.ivarfrest
-        dlogl = self.dlogl
-
-
-
-        dl_rest = (10.**(loglrest + dlogl / 2)) - (10.**(loglrest - dlogl / 2))
-        dl_grid = (10.**(loglrest + dlogl / 2)) - (10.**(loglrest - dlogl / 2))
+        flux_regr, ivar_regr = drizzle_flux(
+            grid_ctr=self.loglgrid, rest_ctr=self.loglrest, wave_lin=False,
+            flux_cube=self.frest, ivar_cube=self.frest)
 
         return flux_regr, ivar_regr
 
