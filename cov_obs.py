@@ -15,14 +15,7 @@ from itertools import takewhile, combinations as comb
 
 from glob import glob
 
-# add manga RC location to path, and import config
-if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
-    sys.path.append(os.environ['MANGA_CONFIG_LOC'])
-
-import mangarc
-
-if mangarc.tools_loc not in sys.path:
-    sys.path.append(mangarc.tools_loc)
+from importer import *
 
 import manga_tools as m
 from spec_tools import air2vac, vac2air
@@ -196,8 +189,8 @@ class Cov_Obs(object):
         Christy's covariance calculations
         '''
         cov_super = fits.getdata(fname, ext=1)
-        wave = cov_super['WAVE']
-        cov = cov_super['COV_MATRIX']
+        wave = cov_super['WAVE'][0]
+        cov = cov_super['COV_MATRIX'][0]
         nobj = 0
         dlogl = ut.determine_dlogl(np.log10(wave))
         lllim = wave[0]

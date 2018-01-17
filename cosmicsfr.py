@@ -3,9 +3,7 @@ import matplotlib.pyplot as plt
 
 import os, sys, glob
 
-# add manga RC location to path, and import config
-if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
-    sys.path.append(os.environ['MANGA_CONFIG_LOC'])
+from importer import *
 
 from astropy.cosmology import WMAP9, z_at_value
 from astropy import units as u, constants as c

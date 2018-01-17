@@ -26,6 +26,7 @@ from traceback import print_exception
 import multiprocessing as mpc
 import ctypes
 from functools import lru_cache
+import pickle
 
 # scipy
 from scipy.interpolate import interp1d
@@ -53,15 +54,10 @@ import indices
 from fakedata import FakeData
 from partition import CovCalcPartitioner, CovWindows
 from linalg import *
+from param_estimate import ParamInterpMap
+from rectify import MaNGA_deredshift
 
-# add manga RC location to path, and import config
-if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
-    sys.path.append(os.environ['MANGA_CONFIG_LOC'])
-
-import mangarc
-
-if mangarc.tools_loc not in sys.path:
-    sys.path.append(mangarc.tools_loc)
+from importer import *
 
 # personal
 import manga_tools as m
@@ -705,17 +701,8 @@ class StellarPop_PCA(object):
         if add is None:
             add = np.zeros(cubeshape)
 
-        inds = np.ndindex(*cubeshape)
-
-        A = np.empty((len(P),) + cubeshape)
-
-        for ind in inds:
-            q = Q
-            w = W[:, ind[0], ind[1]]
-            i_ = np.argsort(q, axis=0)
-            q, w = q[i_], w[i_]
-            A[:, ind[0], ind[1]] = np.interp(
-                P, 100. * w.cumsum() / w.sum(), q)
+        pctl_interp = ParamInterpMap(v=Q, w=W)
+        A = pctl_interp(P)
 
         return (A + add[None, ...]) * factor[None, ...]
 
@@ -1069,264 +1056,6 @@ class PCProjectionWarning(UserWarning):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-
-class MaNGA_deredshift(object):
-    '''
-    class to deredshift reduced MaNGA data based on velocity info from DAP
-
-    preserves cube information, in general
-
-    also builds in a check on velocity coverage, and computes a mask
-    '''
-
-    spaxel_side = 0.5 * u.arcsec
-
-    def __init__(self, drp_hdulist, dap_hdulist, drpall_row,
-                 max_vel_unc=500. * u.Unit('km/s'), drp_dlogl=None,
-                 MPL_v='MPL-5'):
-        self.drp_hdulist = drp_hdulist
-        self.dap_hdulist = dap_hdulist
-        self.drpall_row = drpall_row
-        self.plateifu = self.drp_hdulist[0].header['PLATEIFU']
-
-        self.vel = dap_hdulist['STELLAR_VEL'].data * u.Unit('km/s')
-        self.vel_ivar = dap_hdulist['STELLAR_VEL_IVAR'].data * u.Unit(
-            'km-2s2')
-
-        self.z = drpall_row['nsa_z']
-
-        # mask all the spaxels that have high stellar velocity uncertainty
-        self.vel_ivar_mask = (1. / np.sqrt(self.vel_ivar)) > max_vel_unc
-        self.vel_mask = m.mask_from_maskbits(
-            self.dap_hdulist['STELLAR_VEL_MASK'].data, [30])
-
-        self.drp_l = drp_hdulist['WAVE'].data
-        self.drp_logl = np.log10(self.drp_l)
-        if drp_dlogl is None:
-            drp_dlogl = spec_tools.determine_dlogl(self.drp_logl)
-        self.drp_dlogl = drp_dlogl
-
-        flux_hdu, ivar_hdu, l_hdu = (drp_hdulist['FLUX'], drp_hdulist['IVAR'],
-                                     drp_hdulist['WAVE'])
-
-        self.flux = flux_hdu.data
-        self.ivar = ivar_hdu.data
-
-        self.units = {'l': u.AA, 'flux': u.Unit('1e-17 erg s-1 cm-2 AA-1')}
-
-        self.S2P = Spec2Phot(lam=(self.drp_l * self.units['l']),
-                             flam=(self.flux * self.units['flux']))
-
-        self.DONOTUSE = m.mask_from_maskbits(drp_hdulist['MASK'].data, [10])
-
-        self.ivar *= ~self.DONOTUSE
-
-    @classmethod
-    def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC', row=None,
-                      **kwargs):
-        '''
-        load a MaNGA galaxy from a plateifu specification
-        '''
-
-        plate, ifu = str(plate), str(ifu)
-
-        if row is None:
-            drpall = m.load_drpall(MPL_v, index='plateifu')
-            row = drpall.loc['{}-{}'.format(plate, ifu)]
-
-        drp_hdulist = m.load_drp_logcube(plate, ifu, MPL_v)
-        dap_hdulist = m.load_dap_maps(plate, ifu, MPL_v, kind)
-        return cls(drp_hdulist, dap_hdulist, row, **kwargs)
-
-    @classmethod
-    def from_fakedata(cls, plate, ifu, MPL_v, basedir='fakedata', row=None,
-                      kind='SPX-GAU-MILESHC', **kwargs):
-        '''
-        load fake data based on a particular already-observed galaxy
-        '''
-
-        plate, ifu = str(plate), str(ifu)
-
-        if row is None:
-            drpall = m.load_drpall(MPL_v, index='plateifu')
-            row = drpall.loc['{}-{}'.format(plate, ifu)]
-
-        drp_hdulist = fits.open(
-            os.path.join(basedir, '{}-{}_drp.fits'.format(plate, ifu)))
-        dap_hdulist = fits.open(
-            os.path.join(basedir, '{}-{}_dap.fits'.format(plate, ifu)))
-
-        return cls(drp_hdulist, dap_hdulist, row, **kwargs)
-
-    def correct_and_match(self, template_logl, template_dlogl=None,
-                          method='supersample', dered_kwargs={}):
-        '''
-        gets datacube ready for PCA analysis:
-            - take out galactic extinction
-            - compute per-spaxel redshifts
-            - deredshift observed spectra
-            - raise alarms where templates don't cover enough l range
-            - return subarrays of flam, ivar
-
-        (this does not perform any fancy interpolation, just "shifting")
-        (nor are emission line features masked--that must be done in post-)
-        '''
-        if template_dlogl is None:
-            template_dlogl = spec_tools.determine_dlogl(template_logl)
-
-        if template_dlogl != self.drp_dlogl:
-            raise csp.TemplateCoverageError(
-                'template and input spectra must have same dlogl: ' +
-                'template\'s is {}; input spectra\'s is {}'.format(
-                    template_dlogl, self.drp_dlogl))
-
-        # correct for MW extinction
-        r_v = 3.1
-        EBV = self.drp_hdulist[0].header['EBVGAL']
-        f_mwcorr, ivar_mwcorr = ut.extinction_correct(
-            l=self.drp_l * u.AA, f=self.flux,
-            ivar=self.ivar, r_v=r_v, EBV=EBV)
-
-        # prepare to de-redshift
-        # total redshift of each spaxel
-        z_map = (1. + self.z) * (1. + (self.vel / c.c).to('').value) - 1.
-        z_map[self.vel_mask] = self.z
-        self.z_map = z_map
-
-        # shift into restframe
-        l_rest, f_rest, ivar_rest = ut.redshift(
-            l=self.drp_l, f=f_mwcorr, ivar=ivar_mwcorr, z_in=z_map, z_out=0.)
-        # this maintains constant dlogl
-
-        # and make photometric object to reflect rest-frame spectroscopy
-        ctr = [i // 2 for i in z_map.shape]
-        # approximate rest wavelength of whole cube as rest wavelength
-        # of central spaxel
-        l_rest_ctr = l_rest[:, ctr[0], ctr[1]]
-        self.S2P_rest = Spec2Phot(lam=(l_rest_ctr * self.units['l']),
-                                  flam=(f_rest * self.units['flux']))
-
-        self.regrid = ut.Regridder(
-            loglgrid=template_logl, loglrest=np.log10(l_rest),
-            frest=f_rest, ivarfrest=ivar_rest, dlogl=template_dlogl)
-
-        # cal appropriate regridder method
-        self.flux_regr, self.ivar_regr = getattr(
-            self.regrid, method)(**dered_kwargs)
-
-        self.spax_mask = np.logical_or.reduce((
-            self.vel_mask, self.vel_ivar_mask))
-
-        return self.flux_regr, self.ivar_regr, self.spax_mask
-
-    def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
-                           half_dv=150. * u.Unit('km/s')):
-
-        from elines import (balmer_low, balmer_high, helium,
-                            bright_metal, faint_metal)
-
-        if template_dlogl is None:
-            template_dlogl = spec_tools.determine_dlogl(template_logl)
-
-        EW = self.eline_EW(ix=ix_eline)
-        # thresholds are set very aggressively for debugging, but should be
-        # revisited in the future
-        # proposed values... balmer_low: 0, balmer_high: 2, helium: 10
-        #                    brightmetal: 0, faintmetal: 10, paschen: 10
-        add_balmer_low = (EW >= 0. * u.AA)
-        add_balmer_high = (EW >= 2. * u.AA)
-        add_helium = (EW >= 10. * u.AA)
-        add_brightmetal = (EW >= 0. * u.AA)
-        add_faintmetal = (EW >= 10. * u.AA)
-
-        temlogl = template_logl
-        teml = 10.**temlogl
-
-        full_mask = np.zeros((len(temlogl),) + EW.shape, dtype=bool)
-
-        for (add_, d) in zip([add_balmer_low, add_balmer_high, add_helium,
-                              add_brightmetal, add_faintmetal],
-                             [balmer_low, balmer_high,
-                              helium, bright_metal, faint_metal]):
-
-            l_el = spec_tools.air2vac(np.array(list(d.values())), u.AA).value
-            logl_el = np.log10(l_el)
-
-            # compute mask edges
-            hdz = (half_dv / c.c).to('').value
-
-            # use speclite's redshift function
-            rules = [dict(name='l', exponent=+1, array_in=l_el)]
-            mask_ledges = ut.slrs(rules=rules, z_in=0., z_out=-hdz)['l']
-            mask_uedges = ut.slrs(rules=rules, z_in=0., z_out=hdz)['l']
-
-            # is a given wavelength bin within half_dv of a line center?
-            mask = np.row_stack(
-                [(lo < teml) * (teml < up)
-                 for lo, up in zip(mask_ledges, mask_uedges)])
-            mask = np.any(mask, axis=0)  # OR along axis 0
-
-            full_mask += (mask[:, np.newaxis, np.newaxis] *
-                          add_[np.newaxis, ...])
-
-        full_mask = full_mask > 0.
-
-        return full_mask
-
-    def eline_EW(self, ix):
-        return self.dap_hdulist['EMLINE_SEW'].data[ix] * u.Unit('AA')
-
-    def coadd(self, tem_l, good=None):
-        '''
-        return coadded spectrum and ivar
-
-        params:
-         - good: map of good spaxels
-        '''
-
-        if good is None:
-            good = np.ones_like(self.flux_regr[0, ...])
-
-        ivar = self.ivar_regr * good[None, ...]
-
-        flux, ivar = ut.coadd(f=self.flux_regr, ivar=ivar)
-        lam, flux, ivar = (tem_l[:, None, None], flux[:, None, None],
-                           ivar[:, None, None])
-
-        return lam, flux, ivar
-
-    # =====
-    # properties
-    # =====
-
-    @property
-    def SB_map(self):
-        # RIMG gives nMgy/pix
-        return self.drp_hdulist['RIMG'].data * \
-            1.0e-9 * m.Mgy / self.spaxel_side**2.
-
-    @property
-    def Reff(self):
-        r_ang = self.dap_hdulist['SPX_ELLCOO'].data[0, ...]
-        Re_ang = self.drpall_row['nsa_elpetro_th50_r']
-        return r_ang / Re_ang
-
-    # =====
-    # staticmethods
-    # =====
-
-    @staticmethod
-    def a_map(f, logl, dlogl):
-        lllims = 10.**(logl - 0.5 * dlogl)
-        lulims = 10.**(logl + 0.5 * dlogl)
-        dl = (lulims - lllims)[:, np.newaxis, np.newaxis]
-        return np.mean(f * dl, axis=0)
-
-
-cmap = mplcm.get_cmap('cubehelix')
-cmap.set_bad('gray')
-cmap.set_under('k')
-cmap.set_over('w')
 
 class HistFailedWarning(UserWarning):
     def __init__(self, *args, **kwargs):
@@ -2750,27 +2479,29 @@ class PCA_Result(object):
 def setup_pca(base_dir, base_fname, fname=None,
               redo=True, pkl=True, q=7, nfiles=5, fre_target=.005,
               pca_kwargs={}):
-    import pickle
+
     if (fname is None) or (not os.path.isfile(fname)) or (redo):
         run_pca = True
     else:
         run_pca = False
 
-    kspec_fname = 'manga_Kspec_new.fits'
+    kspec_fname = 'tremonti_cov/manga_covar_matrix.fit'
 
     if run_pca:
-        K_obs = cov_obs.Cov_Obs.from_fits(kspec_fname)
+        K_obs = cov_obs.Cov_Obs.from_tremonti(kspec_fname)
         #K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
         #    'cov_obs_YMC_BOSS.fits')
         pca = StellarPop_PCA.from_FSPS(
             K_obs=K_obs, base_dir=base_dir,
             nfiles=nfiles, **pca_kwargs)
         if pkl:
-            pickle.dump(pca, open(fname, 'wb'))
+            with open(fname, 'wb') as pk_file:
+                pickle.dump(pca, pk_file)
 
     else:
-        K_obs = cov_obs.Cov_Obs.from_fits(kspec_fname)
-        pca = pickle.load(open(fname, 'rb'))
+        K_obs = cov_obs.Cov_Obs.from_tremonti(kspec_fname)
+        with open(fname, 'rb') as pk_file:
+            pca = pickle.load(pk_file)
 
     if q == 'auto':
         q_opt = pca.xval_fromfile(
@@ -2819,12 +2550,10 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
 
     plate, ifu = plateifu.split('-')
 
-    if pc_cov_method == 'full_iter':
-        noisify_method = 'cov'
-    elif pc_cov_method == 'medix':
-        noisify_method = 'cov'
-    elif pc_cov_method == 'ivar_only':
+    if pc_cov_method == 'ivar_only':
         noisify_method = 'ivar'
+    else:
+        noisify_method = 'cov'
 
     if fake:
         if redo_fake:
@@ -2938,12 +2667,12 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 5
+    howmany = 10
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'nearest'
     dered_kwargs = {'nper': 10}
-    pc_cov_method = 'full_iter'
+    pc_cov_method = 'precomp'
 
     CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
 
@@ -2965,7 +2694,7 @@ if __name__ == '__main__':
 
     pca.write_pcs_fits()
 
-    #'''
+    '''
     row = drpall.loc['8464-1901']
 
     with catch_warnings():
@@ -2973,8 +2702,8 @@ if __name__ == '__main__':
 
         pca_res = run_object(
             row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
-            dered_method=dered_method, dered_kwargs=dered_kwargs,
-            pc_cov_method=pc_cov_method, K_obs=K_obs)
+            dered_method='drizzle', dered_kwargs=dered_kwargs,
+            pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v)
         pca_res.write_results(pc_info=True)
 
         pca_res_f = run_object(
@@ -2984,18 +2713,22 @@ if __name__ == '__main__':
             pc_cov_method=pc_cov_method,
             mockspec_fname='TestSpecs-5.9.fits', mocksfh_fname='TestSFH-5.9.fits')
         pca_res_f.write_results()
-    #'''
+    '''
 
     '''
-    #drpall = drpall[drpall['ifudesignsize'] > 0.]
-    #drpall = drpall[drpall['ifudesignsize'] == 127]
-    #drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.4]
+    drpall = drpall[drpall['ifudesignsize'] > 0.]
+    drpall = drpall[drpall['ifudesignsize'] == 127]
+    drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.4]
 
-    mwolf = t.Table.read('mwolf/gmrt_targets.csv')
-    drpall = drpall[[r['plateifu'] in mwolf['plateifu'] for r in drpall]]
+    #mwolf = t.Table.read('mwolf/gmrt_targets.csv')
+    #drpall = drpall[[r['plateifu'] in mwolf['plateifu'] for r in drpall]]
+
+    # select DiskMass galaxies
+    #drpall =  drpall[np.where(m.mask_from_maskbits(drpall['mngtarg3'].data, [16]))]
 
     drpall = m.shuffle_table(drpall)
     drpall = drpall[:howmany]
+
 
     with ProgressBar(len(drpall)) as bar:
         for i, row in enumerate(drpall):
@@ -3015,7 +2748,7 @@ if __name__ == '__main__':
                         row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
                         redo_fake=True, mockspec_ix=None, dered_method=dered_method,
                         dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
-                        mockspec_fname='CSPs_0.fits', mocksfh_fname='SFHs_0.fits')
+                        mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
                     pca_res_f.write_results()
 
             except Exception:

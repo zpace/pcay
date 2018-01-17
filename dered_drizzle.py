@@ -1,26 +1,17 @@
 import numpy as np
 from numpy.lib.stride_tricks import as_strided
 
-from scipy.optimize import newton as newton_rf
-
 from astropy.io import fits
+from astropy import units as u, constants as c
 from speclite import redshift as slrs
 
 import os, sys
 
 import utils as ut
 
-# add manga RC location to path, and import config
-if os.environ['MANGA_CONFIG_LOC'] not in sys.path:
-    sys.path.append(os.environ['MANGA_CONFIG_LOC'])
-
-import mangarc
-
-if mangarc.tools_loc not in sys.path:
-    sys.path.append(mangarc.tools_loc)
+from importer import *
 
 import manga_tools as m
-from find_pcs import MaNGA_deredshift
 
 def get_cube_lamgrid(plate, ifu, mpl_v='MPL-6'):
     hdulist = m.load_drp_logcube(plate, ifu, mpl_v)
@@ -86,7 +77,8 @@ def gen_tau(l, loc=5000., w=2., tau0=1.):
 
 def load_real_restcubes(plate, ifu, MPL_v):
     dered = MaNGA_deredshift.from_plateifu(plate, ifu, MPL_v)
-    l_rest, f_rest, ivar_rest = dered.restcube()
+    l_rest, f_rest, ivar_rest = dered.transform_to_restframe(
+            l=dered.drp_l * u.AA, f=dered.flux, ivar=dered.ivar)
     return l_rest, f_rest, ivar_rest
 
 def redshift_fullcube(l, f, ivar, z_in, z_out):
@@ -123,18 +115,6 @@ def restwithinrect(rect_lhs, rect_rhs, rest_lhs, rest_rhs):
     within_lhs = rect_lhs >= rest_lhs.min()
     within_rhs = rect_rhs <= rest_rhs.max()
     return np.logical_and(within_lhs, within_rhs)
-
-def pair_wtd_avg(arr1, arr2, widf1, widf2, var1, var2):
-    '''
-    average a pair of equal-sized arrays, each with a width-fraction and
-        a separate weight
-
-    args:
-        arrs, wids, var (same-length iterables)
-
-    '''
-    W1, W2 = widf1 * var1, widf2 * var2
-    W1, W2 = W1 / (W1 + W2), W2 / (W1 + W2)
 
 def get_logl_bin_edges(logl, dlogl):
     ledges, redges = logl - 0.5 * dlogl, logl + 0.5 * dlogl
@@ -241,31 +221,3 @@ def drizzle_flux(grid_ctr, rest_ctr, wave_lin, flux_cube, ivar_cube):
     ivar_wtd = 1. / var_wtd
 
     return flux_wtd, ivar_wtd
-
-if __name__ == '__main__':
-    plate, ifu, mpl_v = 8083, 12704, 'MPL-6'
-    NI, NJ = 27, 27
-    mapshape = (NI, NJ)
-
-    dlogl = 1.0e-4
-    dlogel = dlogl * np.exp(10.)
-
-    cube_lamgrid = get_cube_lamgrid(plate, ifu, mpl_v)
-    cube_loglamgrid = np.log10(cube_lamgrid)
-    cube_loglam_ledges, cube_loglam_redges = get_logl_bin_edges(
-        cube_loglamgrid, dlogl)
-
-    evec_lamgrid = get_evec_lamgrid()
-    evec_loglamgrid = np.log10(evec_lamgrid)
-    evec_loglam_ledges, evec_loglam_redges = get_logl_bin_edges(
-        evec_loglamgrid, dlogl)
-
-    # base-e (!) and base-10 loglam spacing
-    dlogel = ut.determine_dlogl(np.log(evec_lamgrid))
-    dlogl = ut.determine_dlogl(np.log10(evec_lamgrid))
-
-    l_rest, f_rest, ivar_rest = load_real_restcubes(plate, ifu, mpl_v)
-
-    flux_driz, ivar_driz = drizzle_flux(
-        grid_ctr=evec_lamgrid, rest_ctr=l_rest, wave_lin=True,
-        flux_cube=f_rest, ivar_cube=ivar_rest)

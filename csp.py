@@ -20,8 +20,6 @@ from astropy.io import fits
 
 import fsps
 
-import multiprocessing as mpc
-
 from spectrophot import lumspec2lsun, Spec2Phot
 import utils as ut
 
