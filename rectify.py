@@ -9,6 +9,7 @@ from spectrophot import Spec2Phot
 import regrid
 
 import manga_tools as m
+from manga_elines import get_emline_qty
 import spec_tools
 
 class MaNGA_deredshift(object):
@@ -110,7 +111,7 @@ class MaNGA_deredshift(object):
         return l_rest, f_rest, ivar_rest
 
     def correct_and_match(self, template_logl, template_dlogl=None,
-                          method='supersample', dered_kwargs={}):
+                          method='drizzle', dered_kwargs={}):
         '''
         gets datacube ready for PCA analysis:
             - take out galactic extinction
@@ -165,56 +166,49 @@ class MaNGA_deredshift(object):
         return flux_regr, ivar_regr, spax_mask
 
     def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
-                           half_dv=150. * u.Unit('km/s')):
+                           half_dv=300. * u.Unit('km/s')):
 
         from elines import (balmer_low, balmer_high, helium,
                             bright_metal, faint_metal)
+        from itertools import chain
+        el_l_air = [balmer_low, balmer_high, helium, bright_metal, faint_metal]
+
+        # find mask width for all spaxels
+        mask_velwidth = determine_eline_mask_dv(
+            self.dap_hdulist, minimum_value=half_dv.value, n_times_sigma=2.5)
 
         if template_dlogl is None:
             template_dlogl = spec_tools.determine_dlogl(template_logl)
 
         EW = self.eline_EW(ix=ix_eline)
-        # thresholds are set very aggressively for debugging, but should be
-        # revisited in the future
-        # proposed values... balmer_low: 0, balmer_high: 2, helium: 10
-        #                    brightmetal: 0, faintmetal: 10, paschen: 10
+
         add_balmer_low = (EW >= 0. * u.AA)
         add_balmer_high = (EW >= 2. * u.AA)
         add_helium = (EW >= 10. * u.AA)
         add_brightmetal = (EW >= 0. * u.AA)
         add_faintmetal = (EW >= 10. * u.AA)
+        linelistflags = [add_balmer_low, add_balmer_high, add_helium,
+                         add_brightmetal, add_faintmetal]
+        # full list of mask flags: one corresponds to each line in each eline dict
+        useflags = list(chain(*map(lambda a: [a[0]] * len(a[1]),
+                                   zip(linelistflags, el_l_air))))
 
         temlogl = template_logl
         teml = 10.**temlogl
+        temlogel = np.log(teml)
 
-        full_mask = np.zeros((len(temlogl),) + EW.shape, dtype=bool)
+        #full_mask = np.zeros((len(temlogl),) + EW.shape, dtype=bool)
 
-        for (add_, d) in zip([add_balmer_low, add_balmer_high, add_helium,
-                              add_brightmetal, add_faintmetal],
-                             [balmer_low, balmer_high,
-                              helium, bright_metal, faint_metal]):
+        el_lel_vac = np.concatenate(list(map(
+            lambda d: np.log(spec_tools.air2vac(np.array(list(d.values())),
+                                                u.AA).value), el_l_air)))
 
-            l_el = spec_tools.air2vac(np.array(list(d.values())), u.AA).value
-            logl_el = np.log10(l_el)
-
-            # compute mask edges
-            hdz = (half_dv / c.c).to('').value
-
-            # use speclite's redshift function
-            rules = [dict(name='l', exponent=+1, array_in=l_el)]
-            mask_ledges = ut.slrs(rules=rules, z_in=0., z_out=-hdz)['l']
-            mask_uedges = ut.slrs(rules=rules, z_in=0., z_out=hdz)['l']
-
-            # is a given wavelength bin within half_dv of a line center?
-            mask = np.row_stack(
-                [(lo < teml) * (teml < up)
-                 for lo, up in zip(mask_ledges, mask_uedges)])
-            mask = np.any(mask, axis=0)  # OR along axis 0
-
-            full_mask += (mask[:, np.newaxis, np.newaxis] *
-                          add_[np.newaxis, ...])
-
-        full_mask = full_mask > 0.
+        # iterate through eline types
+        full_mask = np.logical_or.reduce(
+            [masked_around_line(
+                 line_logel=lel, dv_map=mask_velwidth, obs_logel=temlogel) * \
+                     flag[None, :, :]
+            for flag, lel in zip(useflags, el_lel_vac)])
 
         return full_mask
 
@@ -274,3 +268,27 @@ class MaNGA_deredshift(object):
         lulims = 10.**(logl + 0.5 * dlogl)
         dl = (lulims - lllims)[:, np.newaxis, np.newaxis]
         return np.mean(f * dl, axis=0)
+
+
+def determine_eline_mask_dv(dap_hdulist, minimum_value=300., n_times_sigma=2.5):
+    '''
+    determine the velocity mask width for MaNGA cube
+    '''
+    sigma = get_emline_qty(dap_hdulist, qty='GSIGMA', key='Ha-6564',
+                           sn_th=3., maskbits=range(32))
+    # where (sigma < minimum_value) or mask is True, use minimum_value
+    dv = (n_times_sigma * sigma.data).clip(min=minimum_value)
+    return dv * (u.km / u.s)
+
+
+def masked_around_line(line_logel, dv_map, obs_logel):
+    '''
+    make cube mask for a single line
+    '''
+    dlogel_map = (dv_map / c.c).decompose().value
+    logel_mask_l = line_logel - dlogel_map[None, :, :]
+    logel_mask_u = line_logel + dlogel_map[None, :, :]
+    ismasked = np.logical_and(
+        (obs_logel[:, None, None] >= logel_mask_l),
+        (obs_logel[:, None, None] <= logel_mask_u))
+    return ismasked

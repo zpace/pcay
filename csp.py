@@ -340,7 +340,7 @@ class FSPS_SFHBuilder(object):
 
         self.sfh_changeflag = True
 
-    def _d1_gen(self, mean=.5, std=.8, a_=-.3, b_=1.):
+    def _d1_gen(self, mean=.5, std=1., a_=-2., b_=1.):
         if 'd1' in self.override:
             return self.override['d1']
 
@@ -535,9 +535,9 @@ class FSPS_SFHBuilder(object):
         if 'mu' in self.override:
             mu = self.override['mu']
         else:
-            mu_mu = 0.4
+            mu_mu = 0.3
             # std_mu = self.RS.uniform(.1, 1)
-            std_mu = 0.3
+            std_mu = 0.4
             # 68th percentile range means that stdev is in range .1 - 1
             lclip_mu, uclip_mu = 0., 1.
             a_mu = (lclip_mu - mu_mu) / std_mu
@@ -1247,12 +1247,12 @@ if __name__ == '__main__':
     name_ix0 = 0
     name_ixf = name_ix0 + nfiles
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
     if not os.path.isdir(CSPs_dir):
         os.makedirs(CSPs_dir)
 
     RS = np.random.RandomState()
-    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=10, NBB=4,
+    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=2, NBB=0.25,
                           pct_notrans=0.5, tform_key='loglinmix', trans_mode=0.75)
     sfh.dump_tuners(loc=CSPs_dir)
 

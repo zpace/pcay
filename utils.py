@@ -231,10 +231,9 @@ class KPCGen(object):
     compute some spaxel's PC cov matrix
     '''
 
-    def __init__(self, kspec_obs, i0_map, E, ivar_scaled, a_map):
+    def __init__(self, kspec_obs, i0_map, E, ivar_scaled):
         self.kspec_obs = kspec_obs
         self.i0_map = i0_map
-        self.a_map = a_map
         self.E = E
         self.q, self.nl = E.shape
         self.ivar_scaled = ivar_scaled
@@ -243,12 +242,7 @@ class KPCGen(object):
 
     def __call__(self, i, j):
         i0_ = self.i0_map[i, j]
-        kspec = self.sqfromsq.take(i0_) * self.a_map[i, j]**-2.
-
-        # add to diagonal term from actual variance, floored at .1%
-        var = np.nan_to_num(1. / self.ivar_scaled[..., i, j])
-
-        np.einsum('ii->i', kspec)[:] += var
+        kspec = self.sqfromsq.take(i0_)
 
         return (self.E @ (kspec) @ self.E.T)
 
@@ -479,7 +473,7 @@ def extinction_correct(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
     f_att = f * f_itr
 
     if ivar is not None:
-        ivar_att = ivar * f_itr**2.
+        ivar_att = ivar / f_itr**2.
         return f_att, ivar_att
     else:
         return f
@@ -575,7 +569,8 @@ def random_orthogonal_basis(shape):
     nsamp, ndim = shape
     K = random_cov_matrix(ndim)
     evals, evecs = np.linalg.eig(K)
-    return evecs[:nsamp, :]
+    order = np.argsort(evals)[::-1][:nsamp]
+    return evecs[:, order].T
 
 class LogcubeDimError(Exception):
     def __init__(self, *args, **kwargs):

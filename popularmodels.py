@@ -138,7 +138,7 @@ class Comparator(object):
         template usage vs parameter value
         '''
         if allparams:
-            paramlist = self.test_metadata.colnames
+            paramlist = set(self.test_metadata.colnames) & set(pca.metadata.colnames)
             paramlist = [n for n in paramlist
                          if self.test_metadata[n].shape == (len(self.test_metadata), )]
             paramlist = sorted(paramlist)
@@ -162,7 +162,7 @@ class Comparator(object):
         figures_tools.savefig(fig, fname='wtsvsparams.png', fdir=self.workdir)
 
 if __name__ == '__main__':
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
     all_metadata_fnames = glob.glob(os.path.join(CSPs_dir, 'CSPs_*.fits'))
     trn_metadata_fnames = [f for f in all_metadata_fnames
                            if (('validation' not in f) and ('test' not in f))]
@@ -175,7 +175,7 @@ if __name__ == '__main__':
     mocks_results_fnames = glob.glob('results/*/*_res.fits')
     nsub = fits.getval(trn_metadata_fnames[0], ext=0, keyword='NSUBPER')
 
-    mpl_v = 'MPL-5'
+    mpl_v = 'MPL-6'
     drpall = m.load_drpall(mpl_v, index='plateifu')
     drpall = drpall[drpall['nsa_z'] != -9999]
     lsf = ut.MaNGA_LSF.from_drpall(drpall=drpall, n=2)
@@ -193,5 +193,6 @@ if __name__ == '__main__':
                       nsub=nsub)
     comp.make_weightfig('tau_V', 'mu', xbins=10, ybins=10)
     comp.make_weightfig('Dn4000', 'Hdelta_A', xbins=50, ybins=50)
+    comp.make_weightfig('tf', 'd1', xbins=10, ybins=10)
     comp.make_weighthist()
     comp.make_wtvsparamval()

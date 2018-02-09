@@ -153,6 +153,9 @@ def find_left_fraction(grid0_ctr, rest_ctr, dlogl):
 
     return f
 
+def covar_offdiag(f_r_or_l):
+    return f_r_or_l * (1. - f_r_or_l)
+
 def drizzle_flux(grid_ctr, rest_ctr, wave_lin, flux_cube, ivar_cube):
     '''
     drizzle flux-densities and errors from one large cube into a smaller one.
@@ -217,6 +220,10 @@ def drizzle_flux(grid_ctr, rest_ctr, wave_lin, flux_cube, ivar_cube):
     #     uniform and identical. For the sake of being explicit, w is kept.
     flux_wtd = (fracs * w * flux_c).sum(axis=0) / (fracs * w).sum(axis=0)
     var_wtd = (fracs**2. * w**2. / ivar_c).sum(axis=0) / ((fracs * w).sum(axis=0))**2.
+
+    # covariance between adjacent spectral locations in final grid
+    # is not accounted for: so increment var by a factor of ~2
+    var_wtd *= 2.
 
     ivar_wtd = 1. / var_wtd
 

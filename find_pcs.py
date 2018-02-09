@@ -54,7 +54,7 @@ import indices
 from fakedata import FakeData
 from partition import CovCalcPartitioner, CovWindows
 from linalg import *
-from param_estimate import ParamInterpMap
+from param_estimate import *
 from rectify import MaNGA_deredshift
 
 from importer import *
@@ -130,18 +130,27 @@ class StellarPop_PCA(object):
         self.nsubpersfh = nsubpersfh
         self.nsfhperfile = nsfhperfile
 
+        self.important_params = ['MLi', 'Dn4000', 'Hdelta_A',
+                                 'MWA', 'sigma', 'logzsol',
+                                 'tau_V', 'mu', 'tau_V mu',
+                                 'Mg_b', 'Ca_HK', 'mf_1Gyr']
+
+        self.importantplus_params = self.important_params + \
+                                    ['mf_200Myr', 'tf', 'd1', 'tt', 'MLV']
+
         # observational covariance matrix
         if K_obs.__class__ != cov_obs.Cov_Obs:
             raise TypeError('incorrect observational covariance matrix class!')
 
-        if K_obs.dlogl != self.dlogl:
+        if not np.isclose(K_obs.dlogl, self.dlogl, rtol=1.0e-3):
             raise PCAError('non-matching log-lambda spacing ({}, {})'.format(
                            K_obs.dlogl, self.dlogl))
 
     @classmethod
     def from_FSPS(cls, K_obs, lsf, base_dir, nfiles=None,
                   log_params=['MWA', 'MLr', 'MLi', 'MLz', 'MLV', 'Fstar'],
-                  vel_params={}, dlogl=1.0e-4, z0_=.04, **kwargs):
+                  vel_params={}, dlogl=1.0e-4, z0_=.04,
+                  preload_llims=[3000. * u.AA, 10000. * u.AA], **kwargs):
         '''
         Read in FSPS outputs (dicts & metadata + spectra) from some directory
         '''
@@ -170,6 +179,11 @@ class StellarPop_PCA(object):
         spec = np.row_stack(list(map(
             lambda fn: fits.getdata(fn, 'flam'), csp_fnames)))
 
+        in_lrange = (l >= preload_llims[0]) * (l <= preload_llims[1])
+        spec = spec[:, in_lrange]
+        l = l[in_lrange]
+        logl = logl[in_lrange]
+
         meta['Dn4000'] = indices.StellarIndex('Dn4000')(
             l=l.value, flam=spec.T, axis=0).flatten()
         meta['Hdelta_A'] = indices.StellarIndex('Hdelta_A')(
@@ -181,10 +195,16 @@ class StellarPop_PCA(object):
         meta['Na_D'] = indices.StellarIndex('Na_D')(
             l=l.value, flam=spec.T, axis=0).flatten()
         meta['tau_V mu'] = meta['tau_V'] * meta['mu']
-        meta = meta['sigma', 'logzsol', 'tau_V', 'mu',
-                    'tau_V mu', 'theta', 'MWA', 'MLV', 'MLi',
-                    'Dn4000', 'Hdelta_A', 'Mg_b',
-                    'Ca_HK', 'Na_D', 'mf_1Gyr']
+
+        #meta = meta['sigma', 'logzsol', 'tau_V', 'mu',
+        #            'tau_V mu', 'theta', 'MWA', 'MLV', 'MLi',
+        #            'Dn4000', 'Hdelta_A', 'Mg_b',
+        #            'Ca_HK', 'Na_D', 'mf_1Gyr']
+        for k in meta.colnames:
+            if len(meta[k].shape) > 1:
+                del meta[k]
+
+        del meta['mstar']
 
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
@@ -196,13 +216,26 @@ class StellarPop_PCA(object):
         meta['tau_V'].meta['TeX'] = r'$\tau_V$'
         meta['mu'].meta['TeX'] = r'$\mu$'
         meta['tau_V mu'].meta['TeX'] = r'$\tau_V ~ \mu$'
-        #meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
+        meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
         meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
-        #meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
+        meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
         meta['MLV'].meta['TeX'] = r'$\Upsilon^*_V$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
+        meta['mf_20Myr'].meta['TeX'] = r'$f_m^{\textrm{20~Myr}}$'
+        meta['mf_100Myr'].meta['TeX'] = r'$f_m^{\textrm{100~Myr}}$'
+        meta['mf_200Myr'].meta['TeX'] = r'$f_m^{\textrm{200~Myr}}$'
+        meta['mf_500Myr'].meta['TeX'] = r'$f_m^{\textrm{500~Myr}}$'
         meta['mf_1Gyr'].meta['TeX'] = r'$f_m^{\textrm{1~Gyr}}$'
+        meta['gamma'].meta['TeX'] = r'$\gamma$'
         meta['theta'].meta['TeX'] = r'$\Theta$'
+        meta['d1'].meta['TeX'] = r'$\tau_{\rm SFH}$'
+        meta['tf'].meta['TeX'] = r'$t_{\rm form}$'
+        meta['tt'].meta['TeX'] = r'$t_{\rm trans}$'
+        meta['nburst'].meta['TeX'] = r'$N_{\rm burst}$'
+        meta['Cgr'].meta['TeX'] = r'$C_{gr}$'
+        meta['Cri'].meta['TeX'] = r'$C_{ri}$'
+        meta['Cgr_z015'].meta['TeX'] = r'$C^{.15}_{gr}$'
+        meta['Cri_z015'].meta['TeX'] = r'$C^{.15}_{ri}$'
 
         for n in meta.colnames:
             if n in log_params:
@@ -210,27 +243,6 @@ class StellarPop_PCA(object):
                 meta[n].meta['scale'] = 'log'
                 if 'ML' in n:
                     meta[n].meta['unc_incr'] = .008
-
-        '''
-        # M/L thresholds
-        ML_ths = [-10 if meta[n].meta.get('scale', 'linear') == 'log' else 0.
-                  for n in ['MLV', 'MLi]]
-
-        # MWA bounds
-        if meta['MWA'].meta.get('scale', 'linear') == 'log':
-            MWA_bds = [-10, 2] # log Gyr
-        else:
-            MWA_bds = [0, 14] # Gyr
-
-        models_good = np.all(np.row_stack(
-            [(np.array(meta['MLr']) > ML_ths[0]),
-             (np.array(meta['MLi']) > ML_ths[1]),
-             (np.array(meta['MLz']) > ML_ths[2]),
-             (np.array(meta['MWA']) > MWA_bds[0]),
-             (np.array(meta['MWA']) < MWA_bds[1])]), axis=0)
-
-        print('not good models:', np.argwhere(~models_good))
-        '''
 
         dicts = list(chain.from_iterable(
             [pickle_loader(f) for (i, f) in enumerate(d_names)]))
@@ -392,23 +404,21 @@ class StellarPop_PCA(object):
 
         # manage masks
         if mask_spax is not None:
-            ivar *= (~mask_spax).astype(float)
+            ivar = ivar * (~mask_spax).astype(float)
         if mask_spec is not None:
-            ivar *= (~mask_spec[:, np.newaxis, np.newaxis]).astype(float)
+            ivar = ivar * (~mask_spec[:, None, None]).astype(float)
         if mask_cube is not None:
-            ivar *= (~mask_cube).astype(float)
-
-        # account for everywhere-zero ivar
-        ivar[ivar == 0.] = eps
+            ivar = ivar * (~mask_cube).astype(float)
 
         # run through same scaling normalization as training data
         O_norm, a = self.scaler(f)
-        ivar_wt = ivar * a**2.
+        ivar_sc = ivar * a**2.
         O_sub = O_norm - self.M[:, None, None]
 
-        A = robust_project_onto_PCs(e=self.PCs, f=O_sub, w=ivar_wt)
+        A = robust_project_onto_PCs(e=self.PCs, f=O_sub, w=ivar_sc + eps,
+                                    return_Minv=True)
 
-        return A, self.M, a, O_sub, O_norm
+        return A, self.M, a, O_sub, O_norm, ivar_sc
 
     def write_pcs_fits(self):
         '''
@@ -511,8 +521,6 @@ class StellarPop_PCA(object):
         K_PC = covcalc.calc_allchunks()
         # set places with bad SNRs to high variance
         np.moveaxis(K_PC, (0, 1, 2, 3), (2, 3, 0, 1))[snr_map < 1] = 10.
-        # add theoretical component
-        K_PC += (E @ self.cov_th @ E.T)[..., None, None]
 
         return K_PC
 
@@ -535,11 +543,7 @@ class StellarPop_PCA(object):
         # fiducial covariance given starting index
         kpc00 = E @ K_obs_.cov[i00:i00 + nl, i00:i00 + nl] @ E.T
 
-        # propagate ivars into a separate cube
-        k_ivar = np.einsum('li,ijk,mi->lmjk',
-                           E, np.nan_to_num(1. / ivar_cube), E)
-
-        return (kpc00[..., None, None] / a**2.) + k_ivar
+        return (kpc00[..., None, None])
 
     def build_PC_cov_ivaronly(self, z_map, K_obs_, a_map, ivar_cube,
                               snr_map):
@@ -549,7 +553,7 @@ class StellarPop_PCA(object):
         '''
         E = self.PCs
         k_ivar = np.einsum('li,ijk,mi->lmjk',
-                           E, np.nan_to_num(1. / ivar_cube), E)
+                           E, 1. / ivar_cube.clip(1., 1.0e4), E)
 
         return k_ivar
 
@@ -585,8 +589,7 @@ class StellarPop_PCA(object):
         inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
 
         k_pc_gen = ut.KPCGen(
-            kspec_obs=K_obs_.cov, i0_map=i0_map, E=E, ivar_scaled=ivar_cube,
-            a_map=a_map)
+            kspec_obs=K_obs_.cov, i0_map=i0_map, E=E, ivar_scaled=ivar_cube)
 
         for ind in inds:
             # handle bad (SNR < 1) spaxels
@@ -594,8 +597,6 @@ class StellarPop_PCA(object):
                 pass
             else:
                 K_PC[..., ind[0], ind[1]] = k_pc_gen(ind[0], ind[1])
-
-        K_PC += (E @ self.cov_th @ E.T)[..., None, None]
 
         return K_PC
 
@@ -636,14 +637,6 @@ class StellarPop_PCA(object):
         K_PC = cov_windows.all_K_PCs[
             i0_map[None, None, :, :],
             QI[:, :, None, None], QJ[:, :, None, None]]
-        # scale by a**-2
-        K_PC *= a_map**-2.
-
-        '''STEP 3'''
-        K_PC_ivar = np.einsum('li,ijk,mi->lmjk',
-                              E, np.nan_to_num(1. / ivar_cube), E)
-        K_PC_th = (E @ self.cov_th @ E.T)[..., None, None]
-        K_PC = K_PC + K_PC_ivar + K_PC_th
 
         return K_PC
 
@@ -677,7 +670,7 @@ class StellarPop_PCA(object):
 
     def param_pct_map(self, qty, W, P, factor=None, add=None):
         '''
-        This is iteration based, which is not awesome.
+        This is no longer iteration based, which is awesome.
 
         params:
          - qty: string, specifying which quantity you want (qty must be
@@ -989,7 +982,7 @@ class StellarPop_PCA(object):
         for i, (sty, k) in enumerate(zip(cyc_prop,
                                          self.metadata.colnames)):
             # plot each param's dependence on each PC
-            TeX = self.metadata[k].meta['TeX']
+            TeX = self.metadata[k].meta.get('TeX', k)
             pc_num = np.linspace(1, q, q)
             fpc = F_PC_a[i, :]
             ax.plot(pc_num, fpc, label=TeX, markersize=2,
@@ -1088,24 +1081,23 @@ class PCA_Result(object):
         self.E = pca.PCs
 
         self.O, self.ivar, mask_spax = dered.correct_and_match(
-            template_logl=pca.logl, template_dlogl=self.pca.dlogl,
+            template_logl=pca.logl, template_dlogl=pca.dlogl,
             method=dered_method, dered_kwargs=dered_kwargs)
         self.mask_cube = dered.compute_eline_mask(
             template_logl=pca.logl, template_dlogl=self.pca.dlogl,
-            half_dv=200. * u.km / u.s)
+            half_dv=500. * u.km / u.s)
 
         self.mask_cube = np.logical_or(self.mask_cube, self.ivar == 0.)
 
         self.SNR_med = np.median(self.O * np.sqrt(self.ivar) + eps,
                                  axis=0)
 
-        self.A, self.M, self.a_map, self.O_sub, self.O_norm = pca.project_cube(
-            f=self.O, ivar=self.ivar, mask_spax=mask_spax,
-            mask_cube=self.mask_cube)
+        self.A, self.M, self.a_map, self.O_sub, self.O_norm, self.ivar_norm = \
+            pca.project_cube(f=self.O, ivar=self.ivar, mask_spax=mask_spax,
+                             mask_cube=self.mask_cube)
 
         # original spectrum
         self.O = np.ma.array(self.O, mask=self.mask_cube)
-        self.ivar = np.ma.array(self.ivar * self.a_map**2., mask=self.mask_cube)
         self.O_norm = np.ma.array(self.O_norm, mask=self.mask_cube)
 
         # how to reconstruct datacube from PC weights cube
@@ -1116,16 +1108,17 @@ class PCA_Result(object):
 
         pc_cov_f = getattr(pca, '_'.join(('build_PC_cov', pc_cov_method)))
         self.pc_cov_f = pc_cov_f
-        self.K_PC = pc_cov_f(z_map=dered.z_map, K_obs_=self.K_obs,
-            a_map=self.a_map, ivar_cube=self.ivar,
-            snr_map=self.SNR_med)
+        K_PC_spectrophot = pc_cov_f(
+            z_map=dered.z_map, K_obs_=self.K_obs, a_map=self.a_map,
+            ivar_cube=self.ivar_norm, snr_map=self.SNR_med)
 
         # increase covariance to account for systematics in model library
         cov_sys = cov_sys_incr * np.diag(np.ones_like(self.pca.l))
-        self.K_PC += (self.E @ cov_sys @ self.E.T)[..., None, None]
+        K_PC_sys = (self.E @ cov_sys @ self.E.T)[..., None, None]
+        self.K_PC = K_PC_spectrophot + K_PC_sys
 
         try:
-            self.P_PC = P_from_K_pinv(self.K_PC)
+            self.P_PC = broadcasted_pinvert(self.K_PC)
         except np.linalg.LinAlgError:
             self.P_PC = P_from_K(self.K_PC)
 
@@ -1422,7 +1415,7 @@ class PCA_Result(object):
         mask_cube = np.any(self.mask_cube * (~self.mask_map[None, ...]),
                            axis=(1, 2)).astype(bool)[..., None, None]
 
-        A, M, a_map, O_sub, O_norm = pca.project_cube(
+        A, M, a_map, O_sub, O_norm, ivar_sc = pca.project_cube(
             f=O, ivar=ivar, mask_spax=None,
             mask_cube=mask_cube)
 
@@ -1444,11 +1437,11 @@ class PCA_Result(object):
                              np.atleast_2d(a_map))
 
         K_PC = self.pc_cov_f(z_map=z_map, K_obs_=self.K_obs,
-            a_map=a_map, ivar_cube=ivar,
+            a_map=a_map, ivar_cube=ivar_sc,
             snr_map=SNR)
 
         try:
-            P_PC = P_from_K_pinv(K_PC)
+            P_PC = broadcasted_pinvert(K_PC)
         except np.linalg.LinAlgError:
             P_PC = P_from_K(K_PC)
 
@@ -1786,7 +1779,7 @@ class PCA_Result(object):
         fig_height = 15
         fig_width = 12
 
-        nparams = len(self.pca.metadata.colnames)
+        nparams = len(self.pca.important_params)
         ncols = 3
         nrows = nparams // ncols + (nparams % ncols != 0)
 
@@ -1810,19 +1803,14 @@ class PCA_Result(object):
         orig_, recon_, bestfit_, ivar_, resid_, resid_avg_, ix_ = \
             self.comp_plot(ax1=spec_ax, ax2=resid_ax, ix=ix)
 
-        TeX_labels = [get_col_metadata(self.pca.metadata[n], 'TeX', n)
-                      for n in self.pca.metadata.colnames]
-
         # image of galaxy in integrated light
         im_ax = fig.add_subplot(gs1[:-1, 0],
                                 projection=self.wcs_header_offset)
         lumim, lcb = self.lum_plot(im_ax, ix=ix_, band='r')
-        # self.map_add_loc(ix=ix_, ax=im_ax, color='gray', linewidth=1.,
-        #                  linestyle=':')
 
         # loop through parameters of interest, and make a weighted
         # histogram for each parameter
-        enum_ = enumerate(zip(gs2, self.pca.metadata.colnames))
+        enum_ = enumerate(zip(gs2, self.pca.important_params))
         for i, (gs_, q) in enum_:
             ax = fig.add_subplot(gs_)
             is_ML = matcher(q, 'ML')
@@ -2410,7 +2398,7 @@ class PCA_Result(object):
 
         return P50, l_unc, u_unc, scale
 
-    def write_results(self, qtys='all', pc_info=False):
+    def write_results(self, qtys='important+', pc_info=False):
 
         # initialize FITS hdulist
         # PrimaryHDU is identical to DRP 0th HDU
@@ -2418,6 +2406,10 @@ class PCA_Result(object):
 
         if qtys == 'all':
             qtys = self.pca.metadata.colnames
+        if qtys == 'important':
+            qtys = self.pca.important_params
+        if qtys == 'important+':
+            qtys = self.pca.importantplus_params
 
         for qty in qtys:
             # retrieve results
@@ -2478,7 +2470,7 @@ class PCA_Result(object):
 
 def setup_pca(base_dir, base_fname, fname=None,
               redo=True, pkl=True, q=7, nfiles=5, fre_target=.005,
-              pca_kwargs={}):
+              pca_kwargs={}, makefigs=True):
 
     if (fname is None) or (not os.path.isfile(fname)) or (redo):
         run_pca = True
@@ -2512,7 +2504,7 @@ def setup_pca(base_dir, base_fname, fname=None,
     else:
         pca.run_pca_models(q)
 
-    if run_pca:
+    if run_pca and makefigs:
         pca.make_PCs_fig()
         pca.make_PC_param_regr_fig()
         pca.make_params_vs_PCs_fig()
@@ -2667,14 +2659,14 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 10
+    howmany = 1
     cosmo = WMAP9
     warn_behav = 'ignore'
-    dered_method = 'nearest'
+    dered_method = 'drizzle'
     dered_kwargs = {'nper': 10}
-    pc_cov_method = 'precomp'
+    pc_cov_method = 'full_iter'
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
 
     mpl_v = 'MPL-6'
 
@@ -2688,13 +2680,13 @@ if __name__ == '__main__':
     pca, K_obs = setup_pca(
         fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
         redo=False, pkl=True, q=10, fre_target=.005, nfiles=None,
-        pca_kwargs=pca_kwargs)
+        pca_kwargs=pca_kwargs, makefigs=False)
 
     K_obs.precompute_Kpcs(pca.PCs)
 
     pca.write_pcs_fits()
 
-    '''
+    #'''
     row = drpall.loc['8464-1901']
 
     with catch_warnings():
@@ -2702,22 +2694,22 @@ if __name__ == '__main__':
 
         pca_res = run_object(
             row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
-            dered_method='drizzle', dered_kwargs=dered_kwargs,
+            dered_method=dered_method, dered_kwargs=dered_kwargs,
             pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v)
         pca_res.write_results(pc_info=True)
 
-        pca_res_f = run_object(
-            row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
-            redo_fake=True, mockspec_ix=0, dered_method=dered_method,
-            dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
-            pc_cov_method=pc_cov_method,
-            mockspec_fname='TestSpecs-5.9.fits', mocksfh_fname='TestSFH-5.9.fits')
-        pca_res_f.write_results()
-    '''
+        #pca_res_f = run_object(
+        #    row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
+        #    redo_fake=True, mockspec_ix=0, dered_method=dered_method,
+        #    dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
+        #    pc_cov_method=pc_cov_method,
+        #    mockspec_fname='TestSpecs-5.9.fits', mocksfh_fname='TestSFH-5.9.fits')
+        #pca_res_f.write_results()
+    #'''
 
-    '''
+    #'''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
-    drpall = drpall[drpall['ifudesignsize'] == 127]
+    #drpall = drpall[drpall['ifudesignsize'] == 127]
     drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.4]
 
     #mwolf = t.Table.read('mwolf/gmrt_targets.csv')
@@ -2726,12 +2718,9 @@ if __name__ == '__main__':
     # select DiskMass galaxies
     #drpall =  drpall[np.where(m.mask_from_maskbits(drpall['mngtarg3'].data, [16]))]
 
-    drpall = m.shuffle_table(drpall)
-    drpall = drpall[:howmany]
 
-
-    with ProgressBar(len(drpall)) as bar:
-        for i, row in enumerate(drpall):
+    with ProgressBar(howmany) as bar:
+        for i, row in enumerate(m.shuffle_table(drpall)[:howmany]):
             plateifu = row['plateifu']
 
             try:
@@ -2739,17 +2728,19 @@ if __name__ == '__main__':
                     simplefilter(warn_behav)
 
                     pca_res = run_object(
-                        row=row, pca=pca, force_redo=False, fake=False,  K_obs=K_obs,
-                        vdisp_wt=True, dered_method=dered_method,
-                        dered_kwargs=dered_kwargs)
+                        row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=False,
+                        dered_method=dered_method, dered_kwargs=dered_kwargs,
+                        pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v)
                     pca_res.write_results()
 
-                    pca_res_f = run_object(
-                        row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
-                        redo_fake=True, mockspec_ix=None, dered_method=dered_method,
-                        dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
-                        mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
-                    pca_res_f.write_results()
+                    #pca_res_f = run_object(
+                    #    row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=False,
+                    #    dered_method=dered_method, dered_kwargs=dered_kwargs,
+                    #    pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v,
+                    #    CSPs_dir=CSPs_dir, redo_fake=True, mockspec_ix=None,
+                    #    mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
+
+                    #pca_res_f.write_results()
 
             except Exception:
                 exc_info = sys.exc_info()
@@ -2758,4 +2749,4 @@ if __name__ == '__main__':
                 continue
             finally:
                 bar.update()
-    '''
+    #'''

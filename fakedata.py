@@ -20,8 +20,6 @@ from importer import *
 import manga_tools as m
 
 def noisify_cov(cov, mapshape):
-    assert cov is not None, 'covariance object not passed'
-
     cov_noise = np.random.multivariate_normal(
         mean=np.zeros_like(np.diag(cov.cov)),
         cov=cov.cov, size=mapshape)
@@ -50,7 +48,7 @@ class FakeData(object):
     '''
     def __init__(self, lam_model, spec_model, meta_model,
                  row, drp_base, dap_base, plateifu_base, model_ix,
-                 noisify_method='cov', Kspec_obs=None):
+                 Kspec_obs=None):
         '''
         create mocks of DRP LOGCUBE and DAP MAPS
 
@@ -120,19 +118,17 @@ class FakeData(object):
                 xp=lam_model_z[:, ind[0], ind[1]],
                 fp=spec_model_instblur[:, ind[0], ind[1]],
                 x=l_grid)
+        # normalize each spectrum to mean 1
+        final_fluxcube /= np.mean(final_fluxcube, axis=0, keepdims=True)
 
         '''STEP 6'''
-        if noisify_method == 'cov':
-            noise, noise_rms = noisify_cov(
-                Kspec_obs, mapshape=mapshape)
-        elif noisify_method == 'ivar':
-            noise = np.random.randn(*cubeshape) / snrcube_obs
-            noise_rms = np.sqrt(np.mean(noise**2., axis=0))
+        # spectrophotometric noise
+        cov_noise = noisify_cov(Kspec_obs, mapshape=mapshape)
+        # random noise: signal * (gauss / snr)
+        random_noise = np.random.randn(*cubeshape) / snrcube_obs
+        fluxscaled_random_noise = random_noise * final_fluxcube
 
-        # scale noise
-        noise_rmsscaled = noise * (rmsmap_obs / noise_rms)[None, :, :]
-        # add noise
-        final_fluxcube *= (1. + noise_rmsscaled)
+        final_fluxcube += (cov_noise + fluxscaled_random_noise)
 
         '''STEP 7'''
         # normalize everything to have the same observed-frame r-band flux

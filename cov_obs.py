@@ -8,6 +8,7 @@ from astropy import units as u, table as t  # , constants as c
 from astropy.io import fits
 
 from scipy.signal import medfilt
+from scipy.linalg import pinv2
 import sklearn.covariance
 
 import os, sys, io
@@ -52,6 +53,8 @@ class Cov_Obs(object):
         self.loglllim = np.log10(self.lllim)
         self.dlogl = dlogl
         self.nobj = nobj
+
+        self.precision, self.cov_rank = pinv2(self.cov, return_rank=True, rcond=1.0e-3)
 
     # =====
     # classmethods
@@ -184,7 +187,7 @@ class Cov_Obs(object):
         return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
 
     @classmethod
-    def from_tremonti(cls, fname):
+    def from_tremonti(cls, fname, *args, **kwargs):
         '''
         Christy's covariance calculations
         '''
@@ -194,7 +197,7 @@ class Cov_Obs(object):
         nobj = 0
         dlogl = ut.determine_dlogl(np.log10(wave))
         lllim = wave[0]
-        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj)
+        return cls(cov=cov, lllim=lllim, dlogl=dlogl, nobj=nobj, *args, **kwargs)
 
     @classmethod
     def from_YMC_BOSS(cls, fname, logl0=3.5524001):
@@ -335,6 +338,16 @@ class Cov_Obs(object):
         ws[ws == 0.] = eps
 
         return logl_full, diffs, ws
+
+
+class ShrunkenCov(Cov_Obs):
+    '''
+    shrunken covariance matrix
+    '''
+    def __init__(self, cov, lllim, dlogl, nobj, shrinkage=0.):
+        shrunken_cov = sklearn.covariance.shrunk_covariance(
+            emp_cov=cov, shrinkage=shrinkage)
+        super().__init__(shrunken_cov, lllim, dlogl, nobj)
 
 
 def find_mult_obs(tab, groupby_key, filter_funcs=[], minlen=2, n=None,
