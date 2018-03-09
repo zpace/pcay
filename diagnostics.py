@@ -185,9 +185,9 @@ if __name__ == '__main__':
     warn_behav = 'ignore'
     dered_method = 'supersample_vec'
     dered_kwargs = {'nper': 5}
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20171114-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
 
-    mpl_v = 'MPL-5'
+    mpl_v = 'MPL-6'
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
     drpall = drpall[drpall['nsa_z'] != -9999]

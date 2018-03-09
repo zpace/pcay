@@ -139,7 +139,7 @@ class StellarPop_PCA(object):
                                     ['mf_200Myr', 'tf', 'd1', 'tt', 'MLV']
 
         # observational covariance matrix
-        if K_obs.__class__ != cov_obs.Cov_Obs:
+        if not isinstance(K_obs, cov_obs.Cov_Obs):
             raise TypeError('incorrect observational covariance matrix class!')
 
         if not np.isclose(K_obs.dlogl, self.dlogl, rtol=1.0e-3):
@@ -263,7 +263,6 @@ class StellarPop_PCA(object):
                                      axis=-1, kind='linear')
 
         spec_lores /= spec_lores.max(axis=1)[..., None]
-        spec_lores = spec_lores.astype(np.float32)
 
         for k in meta.colnames:
             meta[k] = meta[k].astype(np.float32)
@@ -362,7 +361,10 @@ class StellarPop_PCA(object):
         idx = np.argsort(evals)[::-1]
         # and select first `q`
         evals, evecs = evals[idx], evecs[:,idx]
-        self.PCs = evecs[:, :q].T
+        self.evals_ = evals
+        self.evals = evals[:q]
+        self.PCs_ = evecs.T
+        self.PCs = self.PCs_[:q]
         self.PCs /= np.sign(self.PCs.sum(axis=1, keepdims=True))
         # carry out the transformation on the data using eigenvectors
         self.trn_PC_wts = np.dot(self.S, self.PCs.T)
@@ -378,7 +380,7 @@ class StellarPop_PCA(object):
         self.cov_th = np.cov(self.trn_resid, rowvar=False)
 
     def project_cube(self, f, ivar, mask_spax=None, mask_spec=None,
-                     mask_cube=None):
+                     mask_cube=None, ivar_as_weights=True):
         '''
         project real spectra onto principal components, given a
             flux array & inverse-variance array, plus optional
@@ -415,8 +417,12 @@ class StellarPop_PCA(object):
         ivar_sc = ivar * a**2.
         O_sub = O_norm - self.M[:, None, None]
 
-        A = robust_project_onto_PCs(e=self.PCs, f=O_sub, w=ivar_sc + eps,
-                                    return_Minv=True)
+        if ivar_as_weights:
+            w = ivar_sc + eps
+        else:
+            w = None
+
+        A = robust_project_onto_PCs(e=self.PCs, f=O_sub, w=w)
 
         return A, self.M, a, O_sub, O_norm, ivar_sc
 
@@ -496,149 +502,6 @@ class StellarPop_PCA(object):
         i0_map = np.argmin(np.abs(ll_d), axis=0)
 
         return i0_map
-
-    def build_PC_cov_partitioned(self, z_map, K_obs_, a_map, ivar_cube,
-                                 snr_map):
-        '''
-        build covariance matrix using partitioned linear-algebraic method
-        '''
-
-        E = self.PCs
-        q, l = E.shape
-        mapshape = z_map.shape
-
-        # build an array to hold covariances
-        K_PC = 100. * np.ones((q, q) + mapshape)
-
-        # compute starting indices for covariance matrix
-        cov_logl = K_obs_.logl
-        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
-
-        covcalc = CovCalcPartitioner(
-            kspec_obs=K_obs_.cov, a_map=a_map, i0_map=i0_map,
-            E=E, ivar_scaled=ivar_cube)
-
-        K_PC = covcalc.calc_allchunks()
-        # set places with bad SNRs to high variance
-        np.moveaxis(K_PC, (0, 1, 2, 3), (2, 3, 0, 1))[snr_map < 1] = 10.
-
-        return K_PC
-
-    def build_PC_cov_medix(self, z_map, K_obs_, a_map, ivar_cube,
-                           snr_map):
-        '''
-        build covariance matrix assuming same starting index throughout cube
-        '''
-
-        E = self.PCs
-        q, nl = E.shape
-        mapshape = z_map.shape
-
-        # compute starting indices for covariance matrix
-        cov_logl = K_obs_.logl
-        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
-
-        # fiducial starting index
-        i00 = np.round(np.median(i0_map), 0).astype(int)
-        # fiducial covariance given starting index
-        kpc00 = E @ K_obs_.cov[i00:i00 + nl, i00:i00 + nl] @ E.T
-
-        return (kpc00[..., None, None])
-
-    def build_PC_cov_ivaronly(self, z_map, K_obs_, a_map, ivar_cube,
-                              snr_map):
-        '''
-        build PC covariance matrix assuming only main-diagonal
-            contribution from ivar
-        '''
-        E = self.PCs
-        k_ivar = np.einsum('li,ijk,mi->lmjk',
-                           E, 1. / ivar_cube.clip(1., 1.0e4), E)
-
-        return k_ivar
-
-    def build_PC_cov_full_iter(self, z_map, K_obs_, a_map, ivar_cube,
-                               snr_map):
-        '''
-        for each spaxel, build a PC covariance matrix, and return in array
-            of shape (q, q, n, n)
-
-        NOTE: this technique computes each spaxel's covariance matrix
-            separately, not all at once! Simultaneous computation requires
-            too much memory!
-
-        params:
-         - z_map: spaxel redshift map (get this from an dered instance)
-         - obs_logl: log-lambda vector (1D) of datacube
-         - K_obs_: observational spectral covariance object
-        '''
-
-        E = self.PCs
-        q, l = E.shape
-        mapshape = z_map.shape
-
-        # build an array to hold covariances
-        K_PC = 100. * np.ones((q, q) + mapshape)
-
-        cov_logl = K_obs_.logl
-
-        # compute starting indices for covariance matrix
-        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
-        # bring ivar cube to same SNR as data
-
-        inds = np.ndindex(mapshape)  # iterator over spatial dims of cube
-
-        k_pc_gen = ut.KPCGen(
-            kspec_obs=K_obs_.cov, i0_map=i0_map, E=E, ivar_scaled=ivar_cube)
-
-        for ind in inds:
-            # handle bad (SNR < 1) spaxels
-            if snr_map[ind[0], ind[1]] < .1:
-                pass
-            else:
-                K_PC[..., ind[0], ind[1]] = k_pc_gen(ind[0], ind[1])
-
-        return K_PC
-
-    def build_PC_cov_precomp(self, z_map, K_obs_, a_map, ivar_cube,
-                             snr_map):
-        '''
-        precomputed PC cov
-
-        0. setup
-        1. precompute PC projections of instrumental covariance
-            (this is done beforehand within Cov object)
-        2. iterate through spatial indices, select appropriate index
-            of precomputed covs
-        3. add K_ivar & K_th
-        '''
-
-        '''STEP 0'''
-
-        E = self.PCs
-        q, l = E.shape
-        mapshape = z_map.shape
-
-        # build an array to hold covariances
-        K_PC = 100. * np.ones((q, q) + mapshape)
-
-        cov_logl = K_obs_.logl
-
-        # compute starting indices for covariance matrix
-        i0_map = self._compute_i0_map(cov_logl=cov_logl, z_map=z_map)
-        # bring ivar cube to same SNR as data
-
-        '''STEP 1'''
-        cov_windows = K_obs_.covwindows
-
-        '''STEP 2'''
-        # initialize indices of PC cov
-        QI, QJ = np.meshgrid(range(q), range(q), indexing='ij')
-        K_PC = cov_windows.all_K_PCs[
-            i0_map[None, None, :, :],
-            QI[:, :, None, None], QJ[:, :, None, None]]
-
-        return K_PC
 
     def compute_model_weights(self, P, A):
         '''
@@ -1054,6 +917,33 @@ class HistFailedWarning(UserWarning):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+def select_cubesequence_from_start(a, i0, nl):
+    '''
+    select sequence along axis of cube with different starting indices
+    '''
+    mapshape = a.shape[-2:]
+    # construct map indexing arrays
+    II, JJ = np.meshgrid(*map(range, mapshape), indexing='ij')
+    II, JJ = II[None, ...], JJ[None, ...]
+    # all axis-0 indices for left-contributors
+    LL_all = np.arange(nl, dtype=int)[:, None, None] + i0[None, :, :]
+
+    LL_all_split = np.array_split(LL_all, 100, axis=0)
+
+    # contributor arrays: we extract all at once because advanced indexing
+    # copies data, and this means we only have to do it once per flux or ivar
+    a_all = np.concatenate([a[LL_sect, II, JJ] for LL_sect in LL_all_split], axis=0)
+
+    return a_all
+
+def conservative_maskprop(a, i0, nl):
+    '''
+    propagate masks in most conservative fashion: masked pixels,
+        and their neighbors, are all masked
+    '''
+    mask = np.logical_or.reduce(
+        [select_cubesequence_from_start(a, i0 + m, nl) for m in [-1, 0, 1]])
+    return mask
 
 class PCA_Result(object):
 
@@ -1063,7 +953,7 @@ class PCA_Result(object):
 
     def __init__(self, pca, dered, K_obs, z, cosmo, figdir='.',
                  truth=None, truth_sfh=None, dered_method='nearest',
-                 dered_kwargs={}, vdisp_wt=False, pc_cov_method='full_iter',
+                 dered_kwargs={}, pc_cov_method='full_iter',
                  cov_sys_incr=4.0e-4):
         self.objname = dered.drp_hdulist[0].header['plateifu']
         self.pca = pca
@@ -1079,51 +969,65 @@ class PCA_Result(object):
         self.__setup_figdir__()
 
         self.E = pca.PCs
+        self.l = 10.**self.pca.logl
+        self.M = self.pca.M
 
-        self.O, self.ivar, mask_spax = dered.correct_and_match(
+        self.O, self.ivar, self.mask_spax = dered.correct_and_match(
             template_logl=pca.logl, template_dlogl=pca.dlogl,
             method=dered_method, dered_kwargs=dered_kwargs)
-        self.mask_cube = dered.compute_eline_mask(
-            template_logl=pca.logl, template_dlogl=self.pca.dlogl,
-            half_dv=500. * u.km / u.s)
 
-        self.mask_cube = np.logical_or(self.mask_cube, self.ivar == 0.)
+        # compute starting index of obs cov for each spaxel
+        self.i0_map = self.pca._compute_i0_map(self.K_obs.logl, self.dered.z_map)
+
+        self.drppixmask = conservative_maskprop(
+            m.mask_from_maskbits(dered.drp_hdulist['MASK'].data, [0, 3, 10]),
+            self.i0_map, len(pca.l))
+        self.eline_mask = dered.compute_eline_mask(
+            template_logl=pca.logl, template_dlogl=self.pca.dlogl,
+            half_dv=300. * u.km / u.s)
+
+        self.nl, *self.map_shape = self.O.shape
+        self.map_shape = tuple(self.map_shape)
+        self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
 
         self.SNR_med = np.median(self.O * np.sqrt(self.ivar) + eps,
                                  axis=0)
+        # no data
+        self.nodata = (dered.drp_hdulist['RIMG'].data == 0.)
 
-        self.A, self.M, self.a_map, self.O_sub, self.O_norm, self.ivar_norm = \
-            pca.project_cube(f=self.O, ivar=self.ivar, mask_spax=mask_spax,
-                             mask_cube=self.mask_cube)
+        # guess bad data not caught in drp pixel mask
+        self.guessbaddata = ut.find_bad_data(self.O, self.ivar, wid=51)
+
+        # combine masks
+        self.mask_cube = np.logical_or(
+            np.logical_or.reduce((
+                self.drppixmask, self.guessbaddata, self.eline_mask)),
+            np.logical_or(self.nodata, self.mask_spax)[None, ...])
+
+        # normalize data
+        self.O_norm, self.a_map = self.pca.scaler(self.O)
+        self.ivar_norm = self.ivar * self.a_map**2.
+
+        # subtract mean spectrum
+        self.S = (self.O / self.a_map) - self.M[:, None, None]
+        # censor masked values with weighted mean of nearby values
+        self.S_cens = ut.replace_bad_data_with_wtdmean(
+            self.S, self.ivar_norm, self.mask_cube, wid=101)
 
         # original spectrum
         self.O = np.ma.array(self.O, mask=self.mask_cube)
         self.O_norm = np.ma.array(self.O_norm, mask=self.mask_cube)
 
-        # how to reconstruct datacube from PC weights cube
-        self.O_recon = np.ma.array(pca.reconstruct_normed(self.A),
-                                   mask=self.mask_cube)
+    def solve(self, vdisp_wt=False):
+        '''
+        packages together logic that solves for PC weights
+        '''
 
-        self.resid = (self.O_norm - self.O_recon) / self.O_norm
-
-        pc_cov_f = getattr(pca, '_'.join(('build_PC_cov', pc_cov_method)))
-        self.pc_cov_f = pc_cov_f
-        K_PC_spectrophot = pc_cov_f(
-            z_map=dered.z_map, K_obs_=self.K_obs, a_map=self.a_map,
-            ivar_cube=self.ivar_norm, snr_map=self.SNR_med)
-
-        # increase covariance to account for systematics in model library
-        cov_sys = cov_sys_incr * np.diag(np.ones_like(self.pca.l))
-        K_PC_sys = (self.E @ cov_sys @ self.E.T)[..., None, None]
-        self.K_PC = K_PC_spectrophot + K_PC_sys
-
-        try:
-            self.P_PC = broadcasted_pinvert(self.K_PC)
-        except np.linalg.LinAlgError:
-            self.P_PC = P_from_K(self.K_PC)
-
-        self.map_shape = self.O.shape[-2:]
-        self.ifu_ctr_ix = [s // 2 for s in self.map_shape]
+        # solve for PC coefficients and covariances
+        self.A, self.P_PC, self.fit_success = self.solve_cube()
+        self.fit_success = self.fit_success.astype(float)
+        self.P_PC = np.moveaxis(self.P_PC, [0, 1, 2, 3], [2, 3, 0, 1]).astype(float)
+        self.A = np.moveaxis(self.A, -1, 0).astype(float)
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
 
@@ -1149,18 +1053,36 @@ class PCA_Result(object):
         else:
             pass
 
-        # no data
-        self.nodata = (dered.drp_hdulist['RIMG'].data == 0.)
-
         self.mask_map = np.logical_or.reduce(
-            (mask_spax, self.nodata))
+            (self.mask_spax, self.nodata))
 
         # spaxel is bad if < 25 models have weights 1/100 max, and no other problems
         self.badPDF = np.logical_and.reduce(
             ((self.sample_diag(f=.01) < 10), ~self.mask_map))
         self.goodPDF = ~self.badPDF
 
-        self.l = 10.**self.pca.logl
+    def solve_cube(self):
+        solver = PCAProjectionSolver(
+            e=self.E, K_inst_cacher=self.K_obs, K_th=self.pca.cov_th)
+
+        solve_all = np.vectorize(
+            solver.solve_single, signature='(l),(l),(l),(),(),()->(q),(q,q),()',
+            otypes=[np.ndarray, np.ndarray, bool])
+
+        var_norm = 1. / self.ivar_norm
+        A, P_PC, success = solve_all(
+            np.moveaxis(self.S_cens, 0, -1), np.moveaxis(var_norm, 0, -1),
+            np.moveaxis(self.mask_cube, 0, -1), self.a_map, self.i0_map, self.nodata)
+        return A, P_PC, success
+
+    def reconstruct(self):
+        '''
+        spectral reconstruction logic
+        '''
+        self.O_recon = np.ma.array(pca.reconstruct_normed(self.A),
+                                   mask=self.mask_cube)
+
+        self.resid = (self.O_norm - self.O_recon) / self.O_norm
 
     def fluxdens(self, band='i'):
         '''
@@ -1227,24 +1149,29 @@ class PCA_Result(object):
         if ix is None:
             ix = self.ifu_ctr_ix
 
+        allzeroweights = (self.w[:, ix[0], ix[1]].max() == 0.)
+
         # best fitting spectrum
-        bestfit = self.pca.normed_trn[np.argmax(self.w[:, ix[0], ix[1]]), :]
-        bestfit_ = ax1.plot(self.l, bestfit, drawstyle='steps-mid',
-                            c='c', label='Best Trn.', linewidth=0.5, zorder=0)
+        if not allzeroweights:
+            bestfit = self.pca.normed_trn[np.argmax(self.w[:, ix[0], ix[1]]), :]
+            bestfit_ = ax1.plot(self.l, bestfit, drawstyle='steps-mid',
+                            c='c', label='Best Model', linewidth=0.5, zorder=0)
+        else:
+            bestfit_ = None
 
         # original & reconstructed
         O_norm = self.O_norm[:, ix[0], ix[1]]
         O_recon = self.O_recon[:, ix[0], ix[1]]
-        ivar = self.ivar[:, ix[0], ix[1]]
+        ivar = self.ivar_norm[:, ix[0], ix[1]]
 
         Onm = np.ma.median(O_norm)
         Orm = np.ma.median(O_recon)
         ivm = np.ma.median(ivar)
 
         orig_ = ax1.plot(self.l, O_norm, drawstyle='steps-mid',
-                         c='b', label='Obs.', linewidth=0.5, zorder=1)
+                         c='b', label='Obs.', linewidth=0.25, zorder=1)
         recon_ = ax1.plot(self.l, O_recon, drawstyle='steps-mid',
-                          c='g', label='PCA Fit', linewidth=0.5, zorder=2)
+                          c='g', label='PCA Fit', linewidth=0.25, zorder=2)
         ax1.axhline(y=0., xmin=self.l.min(), xmax=self.l.max(),
                     c='k', linestyle=':')
 
@@ -1259,9 +1186,10 @@ class PCA_Result(object):
         fit_resid_ = ax2.plot(
             self.l.data, resid, drawstyle='steps-mid', c='green',
             linewidth=0.5, alpha=.5)
-        model_resid = ax2.plot(
-            self.l.data, bestfit - O_norm, drawstyle='steps-mid', c='cyan',
-            linewidth=0.5, alpha=.5)
+        if not allzeroweights:
+            model_resid = ax2.plot(
+                self.l.data, bestfit - O_norm, drawstyle='steps-mid', c='cyan',
+                linewidth=0.5, alpha=.5)
         conf_band_ = ax2.fill_between(
             x=self.l.data, y1=-std_err, y2=std_err,
             linestyle='--', color='salmon', linewidth=0.25, zorder=0)
@@ -1279,7 +1207,7 @@ class PCA_Result(object):
 
         ax2.xaxis.set_major_locator(self.lamticks)
         ax2.set_xlabel(r'$\lambda$ [$\textrm{\AA}$]')
-        ax2.set_ylim([-.75, .75])
+        ax2.set_ylim([-3. * std_err.mean(), 3. * std_err.mean()])
         ax2.set_ylabel('Resid.')
 
         return orig_, recon_, bestfit_, ivar_, fit_resid_, conf_band_, ix
@@ -1409,55 +1337,53 @@ class PCA_Result(object):
         '''
 
         _, O, ivar = self.dered.coadd(tem_l=self.pca.l, good=~self.mask_map)
+        O_cens_cube = (self.S_cens + self.M[:, None, None]) * self.a_map
+        var_cube = 1. / self.ivar_norm
+
+        O_sum = O_cens_cube.sum(axis=(1, 2), keepdims=True)
+        var_sum = var_cube.sum(axis=(1, 2), keepdims=True)
 
         # in the spaxels that were used to coadd, OR-function
         # of mask, over cube
-        mask_cube = np.any(self.mask_cube * (~self.mask_map[None, ...]),
-                           axis=(1, 2)).astype(bool)[..., None, None]
+        mask = (np.mean(self.mask_cube * (~self.mask_map[None, ...]),
+                axis=(1, 2)) > 0.1)[..., None, None]
 
-        A, M, a_map, O_sub, O_norm, ivar_sc = pca.project_cube(
-            f=O, ivar=ivar, mask_spax=None,
-            mask_cube=mask_cube)
+        # normalize data
+        O_norm, a = self.pca.scaler(O_sum)
+        a = a.mean()
+        var_norm = var_sum / a**2.
 
-        # original spectrum
-        O = np.ma.array(O, mask=mask_cube)
-        ivar = np.ma.array(ivar, mask=mask_cube)
-        O_norm = np.ma.array(O_norm, mask=mask_cube)
+        # subtract mean spectrum
+        S = O_norm - self.M[:, None, None]
 
-        # how to reconstruct datacube from PC weights cube
-        O_recon = np.ma.array(pca.reconstruct_normed(A),
-                              mask=mask_cube)
+        solver = PCAProjectionSolver(
+            e=self.E, K_inst_cacher=self.K_obs, K_th=self.pca.cov_th)
+        solve_all = np.vectorize(
+            solver.solve_single, signature='(l),(l),(l),(),(),()->(q),(q,q),()',
+            otypes=[np.ndarray, np.ndarray, bool])
 
-        resid = np.abs((O_norm - O_recon) / O_norm)
+        i0 = np.round(np.average(
+                      self.i0_map, weights=self.a_map, axis=(0, 1)), 0).astype(int)
 
-        # redshift is flux-averaged
-        z_map = np.average(self.dered.z_map, weights=self.O.sum(axis=0))
-        SNR = np.nanmedian(O.data * np.sqrt(ivar.data))
-        z_map, SNR, a_map = (np.atleast_2d(z_map), np.atleast_2d(SNR),
-                             np.atleast_2d(a_map))
+        A, P_PC, success = solver.solve_single(
+            S.squeeze(), var_norm.squeeze(),
+            mask.squeeze(), a, i0, False)
 
-        K_PC = self.pc_cov_f(z_map=z_map, K_obs_=self.K_obs,
-            a_map=a_map, ivar_cube=ivar_sc,
-            snr_map=SNR)
-
-        try:
-            P_PC = broadcasted_pinvert(K_PC)
-        except np.linalg.LinAlgError:
-            P_PC = P_from_K(K_PC)
-
-        w = pca.compute_model_weights(P=P_PC, A=A)
+        w = pca.compute_model_weights(P=P_PC[..., None, None], A=A[..., None, None])
 
         lum = np.ma.masked_invalid(self.lum(band=band))
 
         # this SHOULD and DOES call the method in PCA rather than
         # in self, since we aren't using self.w
         P50, *_, scale = self.pca.param_cred_intvl(
-            qty='ML{}'.format(band), factor=lum.sum(), W=w)
+            qty='ML{}'.format(band), factor=lum.sum(keepdims=True), W=w)
 
         if scale == 'log':
-            return 10.**P50.sum()
+            ret = (10.**P50).sum()
+        else:
+            ret = P50.sum()
 
-        return P50
+        return ret
 
     def Mstar_surf(self, band='r'):
         spaxel_psize = (self.dered.spaxel_side * self.dist).to(
@@ -2478,11 +2404,10 @@ def setup_pca(base_dir, base_fname, fname=None,
         run_pca = False
 
     kspec_fname = 'tremonti_cov/manga_covar_matrix.fit'
+    # shrink covariance matrix based on
+    K_obs = cov_obs.ShrunkenCov.from_tremonti(kspec_fname, shrinkage=.005)
 
     if run_pca:
-        K_obs = cov_obs.Cov_Obs.from_tremonti(kspec_fname)
-        #K_obs = cov_obs.Cov_Obs.from_YMC_BOSS(
-        #    'cov_obs_YMC_BOSS.fits')
         pca = StellarPop_PCA.from_FSPS(
             K_obs=K_obs, base_dir=base_dir,
             nfiles=nfiles, **pca_kwargs)
@@ -2491,7 +2416,6 @@ def setup_pca(base_dir, base_fname, fname=None,
                 pickle.dump(pca, pk_file)
 
     else:
-        K_obs = cov_obs.Cov_Obs.from_tremonti(kspec_fname)
         with open(fname, 'rb') as pk_file:
             pca = pickle.load(pk_file)
 
@@ -2529,6 +2453,56 @@ def get_col_metadata(col, k, notfound=''):
 
     return res
 
+def setup_fake(row, pca, K_obs, dered_method='nearest', dered_kwargs={},
+               mockspec_ix=None, CSPs_dir='.', mockspec_fname='CSPs_test.fits',
+               mocksfh_fname='SFHs_test.fits', pc_cov_method='full_iter', mpl_v='MPL-5'):
+
+    plateifu = row['plateifu']
+    plate, ifu = plateifu.split('-')
+
+    mockspec_fullpath = os.path.join(CSPs_dir, mockspec_fname)
+    mocksfh_fullpath = os.path.join(CSPs_dir, mocksfh_fname)
+
+    nsubpersfh = fits.getval(mocksfh_fullpath, ext=0, keyword='NSUBPER')
+    nsfhperfile = fits.getval(mocksfh_fullpath, ext=0, keyword='NSFHPER')
+    nspecperfile = nsubpersfh * nsfhperfile
+
+    if mockspec_ix is None:
+        if nspecperfile == 1:
+            mockspec_ix = 0
+        else:
+            mockspec_ix = np.random.randint(0, nspecperfile - 1)
+
+    # get SFH data from table
+    mock_metadata, subsample_entry_ix = csp.retrieve_meta_table(
+        filelist=[mockspec_fullpath], i=mockspec_ix,
+        nsfhperfile=nsfhperfile, nsubpersfh=nsubpersfh)
+    mock_metadata.keep_columns(csp.req_param_keys)
+    mock_metadata_row = mock_metadata[mockspec_ix]
+
+    _, mockspec_row, mocksfh_ix, _ = csp.find_sfh_ixs(
+        i=mockspec_ix, nsfhperfile=nsfhperfile, nsubpersfh=nsubpersfh)
+
+    _, truth_sfh, _ = csp.retrieve_SFHs(
+        [mocksfh_fullpath], i=0, massnorm='mstar')
+    truth_sfh = truth_sfh[mocksfh_ix, :]
+
+    data = FakeData.from_FSPS(
+        fname=mockspec_fullpath, i=mockspec_ix,
+        plateifu_base=plateifu, pca=pca, row=row,
+        K_obs=K_obs, mpl_v=mpl_v)
+
+    data.write()
+
+    dered = MaNGA_deredshift.from_fakedata(
+        plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
+        basedir='fakedata', row=row)
+    truth_fname = os.path.join(
+        'fakedata', '{}_truth.tab'.format(plateifu))
+    truth = t.Table.read(truth_fname, format='ascii')[0]
+
+    return dered, data, truth, truth_sfh
+
 def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
                dered_method='nearest', dered_kwargs={}, mockspec_ix=None, z_new=None,
                CSPs_dir='.', mockspec_fname='CSPs_test.fits',
@@ -2538,72 +2512,22 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     plateifu = row['plateifu']
 
     if (not force_redo) and (os.path.isdir(plateifu)):
+        pass
         return
 
     plate, ifu = plateifu.split('-')
 
-    if pc_cov_method == 'ivar_only':
-        noisify_method = 'ivar'
-    else:
-        noisify_method = 'cov'
-
     if fake:
-        if redo_fake:
-            # allow for custom new redshift
-            if not z_new:
-                plateifu_base = plateifu
-            else:
-                z_orig, zdist_orig = row['nsa_z'], row['nsa_zdist']
-                row['nsa_z'] = row['nsa_zdist'] = z_new
-                plateifu_base = '-'.join((plateifu, 'z{}'.format(z_new)))
+        dered, data, truth, truth_sfh = setup_fake(
+            row, pca, K_obs, dered_method=dered_method, dered_kwargs=dered_kwargs,
+            mockspec_ix=mockspec_ix, CSPs_dir=CSPs_dir, mockspec_fname=mockspec_fname,
+            mocksfh_fname=mocksfh_fname, mpl_v=mpl_v)
+        figdir = os.path.join('fakedata', 'results', plateifu)
 
-            mockspec_fullpath = os.path.join(CSPs_dir, mockspec_fname)
-            mocksfh_fullpath = os.path.join(CSPs_dir, mocksfh_fname)
-
-            nsubpersfh = fits.getval(mocksfh_fullpath, ext=0, keyword='NSUBPER')
-            nsfhperfile = fits.getval(mocksfh_fullpath, ext=0, keyword='NSFHPER')
-            nspecperfile = nsubpersfh * nsfhperfile
-
-            if mockspec_ix is None:
-                if nspecperfile == 1:
-                    mockspec_ix = 0
-                else:
-                    mockspec_ix = np.random.randint(0, nspecperfile - 1)
-
-            # get SFH data from table
-            mock_metadata, subsample_entry_ix = csp.retrieve_meta_table(
-                filelist=[mockspec_fullpath], i=mockspec_ix,
-                nsfhperfile=nsfhperfile, nsubpersfh=nsubpersfh)
-            mock_metadata.keep_columns(csp.req_param_keys)
-            mock_metadata_row = mock_metadata[mockspec_ix]
-
-            _, mockspec_row, mocksfh_ix, _ = csp.find_sfh_ixs(
-                i=mockspec_ix, nsfhperfile=nsfhperfile, nsubpersfh=nsubpersfh)
-
-            _, truth_sfh, _ = csp.retrieve_SFHs(
-                [mocksfh_fullpath], i=0, massnorm='mstar')
-            truth_sfh = truth_sfh[mocksfh_ix, :]
-
-            data = FakeData.from_FSPS(
-                fname=mockspec_fullpath, i=mockspec_ix,
-                plateifu_base=plateifu_base, pca=pca, row=row,
-                K_obs=K_obs)
-
-            data.write()
-
-        dered = MaNGA_deredshift.from_fakedata(
-            plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
-            basedir='fakedata', row=row)
-        figdir = os.path.join('fakedata', 'results', plateifu_base)
-        truth_fname = os.path.join(
-            'fakedata', '{}_truth.tab'.format(plateifu_base))
-        truth = t.Table.read(truth_fname, format='ascii')[0]
     else:
-        plateifu_base = plateifu
         dered = MaNGA_deredshift.from_plateifu(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row)
-        figdir = os.path.join('results', plateifu_base)
-        mock_metadata_row = None
+        figdir = os.path.join('results', plateifu)
         truth_sfh = None
         truth = None
 
@@ -2611,10 +2535,10 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
 
     pca_res = PCA_Result(
         pca=pca, dered=dered, K_obs=K_obs, z=z_dist,
-        cosmo=cosmo, figdir=figdir,
-        truth=truth, truth_sfh=truth_sfh, vdisp_wt=vdisp_wt,
-        dered_method=dered_method, dered_kwargs=dered_kwargs,
-        pc_cov_method=pc_cov_method)
+        cosmo=cosmo, figdir=figdir, truth=truth, truth_sfh=truth_sfh,
+        dered_method=dered_method, dered_kwargs=dered_kwargs, pc_cov_method=pc_cov_method)
+    pca_res.solve(vdisp_wt=vdisp_wt)
+    pca_res.reconstruct()
 
     if makefigs:
         pca_res.make_full_QA_fig(kde=(False, False))
@@ -2623,7 +2547,7 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
 
         pca_res.make_sample_diag_fig()
         #pca_res.make_top_sfhs_fig()
-        pca_res.make_all_sfhs_fig(massnorm='mstar', mass_abs=True)
+        #pca_res.make_all_sfhs_fig(massnorm='mstar', mass_abs=True)
 
         #pca_res.make_qty_fig(qty_str='MLr')
         pca_res.make_qty_fig(qty_str='MLi')
@@ -2659,12 +2583,12 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 1
+    howmany = 100
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'drizzle'
     dered_kwargs = {'nper': 10}
-    pc_cov_method = 'full_iter'
+    pc_cov_method = 'precomp'
 
     CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
 
@@ -2679,15 +2603,16 @@ if __name__ == '__main__':
     pca_pkl_fname = os.path.join(CSPs_dir, 'pca.pkl')
     pca, K_obs = setup_pca(
         fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
-        redo=False, pkl=True, q=10, fre_target=.005, nfiles=None,
+        redo=False, pkl=True, q=8, fre_target=.005, nfiles=None,
         pca_kwargs=pca_kwargs, makefigs=False)
 
     K_obs.precompute_Kpcs(pca.PCs)
+    K_obs._init_windows(len(pca.l))
 
     pca.write_pcs_fits()
 
-    #'''
-    row = drpall.loc['8464-1901']
+    '''
+    row = drpall.loc['8982-1902']
 
     with catch_warnings():
         simplefilter(warn_behav)
@@ -2695,21 +2620,21 @@ if __name__ == '__main__':
         pca_res = run_object(
             row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
             dered_method=dered_method, dered_kwargs=dered_kwargs,
-            pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v)
+            pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v, makefigs=True)
         pca_res.write_results(pc_info=True)
 
-        #pca_res_f = run_object(
-        #    row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
-        #    redo_fake=True, mockspec_ix=0, dered_method=dered_method,
-        #    dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
-        #    pc_cov_method=pc_cov_method,
-        #    mockspec_fname='TestSpecs-5.9.fits', mocksfh_fname='TestSFH-5.9.fits')
-        #pca_res_f.write_results()
-    #'''
+        pca_res_f = run_object(
+            row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
+            redo_fake=True, mockspec_ix=0, dered_method=dered_method,
+            dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
+            pc_cov_method=pc_cov_method, mpl_v=mpl_v,
+            mockspec_fname='TestSpecs-5.9.fits', mocksfh_fname='TestSFH-5.9.fits')
+        pca_res_f.write_results()
+    '''
 
-    #'''
+    '''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
-    #drpall = drpall[drpall['ifudesignsize'] == 127]
+    drpall = drpall[drpall['ifudesignsize'] != 127]
     drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.4]
 
     #mwolf = t.Table.read('mwolf/gmrt_targets.csv')
@@ -2728,19 +2653,18 @@ if __name__ == '__main__':
                     simplefilter(warn_behav)
 
                     pca_res = run_object(
-                        row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=False,
+                        row=row, pca=pca, force_redo=True, fake=False, vdisp_wt=False,
                         dered_method=dered_method, dered_kwargs=dered_kwargs,
                         pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v)
                     pca_res.write_results()
 
-                    #pca_res_f = run_object(
-                    #    row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=False,
-                    #    dered_method=dered_method, dered_kwargs=dered_kwargs,
-                    #    pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v,
-                    #    CSPs_dir=CSPs_dir, redo_fake=True, mockspec_ix=None,
-                    #    mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
-
-                    #pca_res_f.write_results()
+                    pca_res_f = run_object(
+                        row=row, pca=pca, force_redo=True, fake=True, vdisp_wt=False,
+                        dered_method=dered_method, dered_kwargs=dered_kwargs,
+                        pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v,
+                        CSPs_dir=CSPs_dir, redo_fake=True, mockspec_ix=None,
+                        mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
+                    pca_res_f.write_results()
 
             except Exception:
                 exc_info = sys.exc_info()
@@ -2749,4 +2673,4 @@ if __name__ == '__main__':
                 continue
             finally:
                 bar.update()
-    #'''
+    '''

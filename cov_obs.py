@@ -9,6 +9,7 @@ from astropy.io import fits
 
 from scipy.signal import medfilt
 from scipy.linalg import pinv2
+import linalg
 import sklearn.covariance
 
 import os, sys, io
@@ -30,6 +31,7 @@ import utils as ut
 from partition import CovWindows
 
 from contextlib import redirect_stdout
+from functools import lru_cache
 
 mpl_v = 'MPL-6'
 eps = np.finfo(float).eps
@@ -46,8 +48,7 @@ class Cov_Obs(object):
     '''
 
     def __init__(self, cov, lllim, dlogl, nobj):
-        self.cov = cov
-        self.cov_zerodiag = cov - np.diag(np.diag(cov))
+        self.cov = cov # enforce_posdef(cov)
         self.nspec = len(cov)
         self.lllim = lllim
         self.loglllim = np.log10(self.lllim)
@@ -160,7 +161,9 @@ class Cov_Obs(object):
                                filter_funcs=[onesize_], minlen=2, n=n)
 
         # figure out lam low lim and nlam
-        lam = m.load_drp_logcube('8083', '12704', MPL_v)['WAVE'].data
+        drp_ = m.load_drp_logcube('8083', '12704', MPL_v)
+        lam = drp_['WAVE'].data
+        drp_.close()
         lllim = lam.min()
         nl = len(lam)
 
@@ -213,11 +216,23 @@ class Cov_Obs(object):
     # methods
     # =====
 
+    def _init_windows(self, w):
+        self.windows = diag_windows(self.cov, w)
+
+    @lru_cache(maxsize=256)
+    def take(self, i0):
+        return self.windows[i0]
+
     def precompute_Kpcs(self, E):
         '''
-        precompute PC covs, based on given eigenvectors
+        precompute PC covs, based on given eigenvectors (projection matrix)
         '''
-        self.covwindows = CovWindows(self.cov, E)
+
+        ETE = E.T @ E
+        inv_ETE = linalg.spla_chol_invert(
+            ETE + np.diag(np.diag(ETE)), np.eye(*ETE.shape))
+        H = inv_ETE @ E.T
+        self.covwindows = CovWindows(self.cov, H.T)
 
     def write_fits(self, fname='cov.fits'):
         hdu_ = fits.PrimaryHDU()
@@ -349,6 +364,30 @@ class ShrunkenCov(Cov_Obs):
             emp_cov=cov, shrinkage=shrinkage)
         super().__init__(shrunken_cov, lllim, dlogl, nobj)
 
+def enforce_posdef(a, replace_val=1.0e-6):
+    '''
+    enforce positive-definiteness: calculate the nearest
+        (in frobenius-norm sense) positive-definite matrix to
+        supplied (symmetric) matrix `a`
+    '''
+    # eigen-decompose `a`
+    evals, evecs = np.linalg.eig(a)
+
+    # set all eigenvalues <= 0 to floating-point epsilon
+    evals[evals <= 0] = replace_val
+
+    # recompose approximation of original matrix
+    a_new = evecs @ np.diag(evals) @ np.linalg.inv(evecs)
+
+    return a_new
+
+def diag_windows(x, n):
+    from numpy.lib.stride_tricks import as_strided
+    if x.ndim != 2 or x.shape[0] != x.shape[1] or x.shape[0] < n:
+        raise ValueError("Invalid input")
+    w = as_strided(x, shape=(x.shape[0] - n + 1, n, n),
+                   strides=(x.strides[0]+x.strides[1], x.strides[0], x.strides[1]))
+    return w
 
 def find_mult_obs(tab, groupby_key, filter_funcs=[], minlen=2, n=None,
                   keep_cols='all'):

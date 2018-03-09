@@ -171,7 +171,7 @@ def drizzle_flux(grid_ctr, rest_ctr, wave_lin, flux_cube, ivar_cube):
         - f_cube: 3d cube of flux-density
         - ivar_cube: 3d cube of flux-density inverse-variance
     '''
-    ivar0 = 1.0e-8
+    ivar0 = 1.
 
     # transform
     if wave_lin:
@@ -204,7 +204,7 @@ def drizzle_flux(grid_ctr, rest_ctr, wave_lin, flux_cube, ivar_cube):
     # contributor arrays: we extract all at once because advanced indexing
     # copies data, and this means we only have to do it once per flux or ivar
     flux_all = np.concatenate([flux_cube[LL_sect, II, JJ]
-                               for LL_sect in LL_all_split], axis=0) + ivar0
+                               for LL_sect in LL_all_split], axis=0)
     ivar_all = np.concatenate([ivar_cube[LL_sect, II, JJ]
                                for LL_sect in LL_all_split], axis=0) + ivar0
 

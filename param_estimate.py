@@ -23,7 +23,7 @@ class ParamInterpMap(object):
         '''
         i_rhs = np.apply_along_axis(
             lambda arr: arr.searchsorted(pctl, side='right'),
-            axis=0, arr=self.cumpctl)
+            axis=0, arr=self.cumpctl).clip(0, self.cumpctl.shape[0] - 1)
 
         return i_rhs
 
@@ -71,7 +71,8 @@ class LargeNDInterpolator(object):
     def __init__(self, arr, axis_coords, interp_axis=0):
         '''
         - arr: array to be interpolated
-        - axis_coords: coordinate array, with same shape as arr
+        - axis_coords: coordinate array, with same shape as arr, that increments
+              along interp_axis
         - interp_axis: axis along which interpolation is carried out
         '''
 
@@ -86,7 +87,7 @@ class LargeNDInterpolator(object):
         '''
         ix_rhs = np.apply_along_axis(
             lambda arr: arr.searchsorted(coord, side='right'),
-            axis=self.interp_axis, arr=self.arr)
+            axis=self.interp_axis, arr=self.axis_coords)
         return ix_rhs
 
     def val_at_coord(self, coord):
@@ -97,11 +98,12 @@ class LargeNDInterpolator(object):
         # indices of rhs and lhs bounds
         i1 = self.find_coord_pos(coord)
         # if i1 is too large, reduce it to maximum allowable
-        outofbounds = (i1 >= arr.shape[interp_axis])
-        i1[outofbounds] = arr.shape[interp_axis] - 1
+        outofbounds = (i1 >= self.arr.shape[self.interp_axis])
+        i1[outofbounds] = self.arr.shape[self.interp_axis] - 1
         i0 = i1 - 1
 
         # values at lhs and rhs bounds
+        II, JJ = np.meshgrid(*map(np.arange, ))
         v1 = self.arr.take(indices=i1, axis=self.interp_axis, mode='clip')
         v0 = self.arr.take(indices=i0, axis=self.interp_axis, mode='clip')
 
@@ -114,7 +116,7 @@ class LargeNDInterpolator(object):
         return val
 
     def __call__(self, coords, signature=None):
-        res = np.vectorize(self.val_at_pctl, siganture=signature)(coords)
+        res = np.vectorize(self.val_at_coord, signature=signature)(coords)
         return res
 
 class ParamInterpMap2(LargeNDInterpolator):
@@ -123,16 +125,20 @@ class ParamInterpMap2(LargeNDInterpolator):
     '''
     def __init__(self, v, w, axis=0):
         # sort values of parameter
-        order = np.argsort(v, axis=axis)
+        order = np.argsort(v)
 
         # apply sort to values and then weights
-        self.v_o = v.take(order, axis=axis)
-        w_o = w.take(order, axis=axis) + eps
+        v_o = v.take(order)
+        w_o = w.take(order, axis=axis) + np.finfo(w.dtype).eps
+        # move interpolation axis to final position
+        w_o = np.moveaxis(w_o, axis, -1)
+        self.v_o_broadcast, _ = np.broadcast_arrays(v_o, w_o)
+        print(self.v_o_broadcast.shape)
 
         self.cumpctl = 100. * (np.cumsum(w_o, axis=axis) - w_o / 2) / \
             np.sum(w_o, axis=axis, keepdims=True)
 
-        super().__init__(arr=self.v_o, axis_coords=self.cumpctl, interp_axis=axis)
+        super().__init__(arr=self.v_o_broadcast, axis_coords=self.cumpctl, interp_axis=-1)
 
     def __call__(self, pctls=None, qtls=None):
         # parse quantile or percentile input
@@ -141,7 +147,7 @@ class ParamInterpMap2(LargeNDInterpolator):
         elif (pctls is not None) and (qtls is not None):
             raise ValueError('Both percentiles and quantiles specified')
         elif (qtls is not None):
-            pctls = 100. * qtls
+            pctls = 100. * np.array(qtls)
 
         signature = '()->(n,m)'
 
@@ -159,12 +165,12 @@ class SFHInterpAtTime(LargeNDInterpolator):
         order = np.argsort(sfrs, axis=axis)
         self.sfrs_o = sfrs.take(order, axis=axis)
         # apply same sorting to weights
-        w_o = w.take(order, axis=axis)
+        w_o = w.take(order, axis=axis) + np.finfo(w.dtype).eps
 
         self.cumpctl = 100. * (np.cumsum(w_o, axis=axis) - w_o / 2) / \
             np.sum(w_o, axis=axis, keepdims=True)
 
-        super().__init__(arr=self.sfr_o, axis_coords=self.cumpctl, interp_axis=axis)
+        super().__init__(arr=self.sfrs_o, axis_coords=self.cumpctl, interp_axis=axis)
 
     def __call__(self, pctls=None, qtls=None):
         # parse quantile or percentile input

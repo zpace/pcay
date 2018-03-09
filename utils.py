@@ -4,6 +4,7 @@ import pickle as pkl
 
 from astropy import units as u, constants as c, table as t
 from astropy.io import fits
+from astropy.stats import sigma_clip
 from specutils import extinction
 from speclite import redshift as slrs
 from speclite import accumulate as slacc
@@ -100,6 +101,97 @@ def multigaussflux(POSs, WIDs, FLUXs, x):
 
     return res
 
+def replace_bad_data_with_wtdmean(a, ivar, mask, wid=201):
+    '''
+    replace bad data with weighted mean of surrounding `wid` pixels
+    '''
+
+    assert type(wid) is int, 'window width must be integer'
+    if wid % 2 == 0:
+        wid += 1
+
+    spec_snr = np.abs(a) * np.sqrt(ivar)
+
+    pad = wid // 2
+    # pad `a` & `ivar` at the ends
+    pad_width = [[pad, pad], [0, 0], [0, 0]]
+    a_, ivar_ = (np.pad(a, pad_width=pad_width, mode='median',
+                        stat_length=pad_width),
+                 np.pad(ivar, pad_width=pad_width, mode='median',
+                        stat_length=pad_width))
+    mask_ = np.pad(mask, pad_width=pad_width, mode='edge')
+
+    # now set up rolling median filter
+    def rolling_window(a, wid):
+        shape = (wid, a.shape[0] - wid + 1) + a.shape[1:]
+        strides = (a.strides[0], ) + a.strides
+        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+
+    a_windows = rolling_window(a_, wid)
+    wt_windows = rolling_window(ivar_ * ~mask_, wid) + np.finfo(ivar.dtype).eps
+
+    a_new = 1. * a
+    a_new[mask] = 0.
+
+    fill_value = np.average(a_windows, weights=wt_windows, axis=0)
+
+    a_new[mask] = fill_value[mask]
+
+    return a_new
+
+def find_bad_data(a, ivar, wid=201, snr_mult_thresh=.1):
+    '''
+    find bad data in array `a`
+    '''
+
+    ivar_mult = snr_mult_thresh**2.  # if snr dec by f.o. 2, ivar dec by f.o. 4
+
+    assert type(wid) is int, 'window width must be integer'
+    if wid % 2 == 0:
+        wid += 1
+
+    spec_snr = np.abs(a) * np.sqrt(ivar)
+
+    pad = wid // 2
+    # pad `a` & `ivar` at the ends
+    pad_width = [[pad, pad], [0, 0], [0, 0]]
+    a_, ivar_ = (np.pad(a, pad_width=pad_width, mode='median',
+                        stat_length=pad_width),
+                 np.pad(ivar, pad_width=pad_width, mode='median',
+                        stat_length=pad_width))
+
+    # now set up rolling median filter
+    def rolling_window(a, wid):
+        shape = (wid, a.shape[0] - wid + 1) + a.shape[1:]
+        strides = (a.strides[0], ) + a.strides
+        return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
+
+    # find outlier pixels
+    med_a_ = np.median(rolling_window(a_, wid), axis=0)
+    a_wid_ = 0.5 * np.diff(
+        np.percentile(rolling_window(a_, wid), q=[16., 84.], axis=0), axis=0)
+    outside_nominal_range = (np.abs(a - med_a_) > 2. * a_wid_).squeeze()
+    med_ivar_ = np.median(rolling_window(ivar_, wid), axis=0)
+    med_snr_ = np.median(np.abs(rolling_window(a_ * np.sqrt(ivar_), wid)), axis=0)
+
+    low_snr = spec_snr < (snr_mult_thresh * med_snr_)
+    high_snr = spec_snr > (1. / snr_mult_thresh * med_snr_)
+
+    # replace anomalously low or high snr values with local median
+    baddata = np.logical_or.reduce((low_snr, high_snr, outside_nominal_range))
+
+    return baddata
+
+def combine_masks(shape, mask_spax=None, mask_spec=None, mask_cube=None):
+    isgood = np.ones(shape, dtype=bool)
+    if mask_spax is not None:
+        isgood *= (~mask_spax)
+    if mask_spec is not None:
+        isgood *= (~mask_spec[:, None, None])
+    if mask_cube is not None:
+        isgood *= (~mask_cube)
+
+    return ~isgood
 
 class MaNGA_LSF(object):
     '''

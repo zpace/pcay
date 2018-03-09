@@ -24,9 +24,7 @@ def noisify_cov(cov, mapshape):
         mean=np.zeros_like(np.diag(cov.cov)),
         cov=cov.cov, size=mapshape)
     cov_noise = np.moveaxis(cov_noise, [0, 1, 2], [1, 2, 0])
-    #cov_noise = cov_noise[i0:i0 + nl, :, :]
-    rms = 50. * np.sqrt(np.mean(cov_noise**2., axis=0))
-    return cov_noise, rms
+    return cov_noise
 
 def compute_snrcube(flux, ivar, filtersize_l=15, return_rms_map=False):
     '''
@@ -34,7 +32,7 @@ def compute_snrcube(flux, ivar, filtersize_l=15, return_rms_map=False):
         rms map of the cube
     '''
 
-    snrcube = medfilt(flux * np.sqrt(ivar), [filtersize_l, 1, 1])
+    snrcube = medfilt(flux * np.sqrt(ivar + 1), [filtersize_l, 1, 1])
     rms_map = 1. / np.mean(snrcube, axis=0)
 
     if return_rms_map:
@@ -125,7 +123,7 @@ class FakeData(object):
         # spectrophotometric noise
         cov_noise = noisify_cov(Kspec_obs, mapshape=mapshape)
         # random noise: signal * (gauss / snr)
-        random_noise = np.random.randn(*cubeshape) / snrcube_obs
+        random_noise = np.random.randn(*cubeshape) / (snrcube_obs + .01)
         fluxscaled_random_noise = random_noise * final_fluxcube
 
         final_fluxcube += (cov_noise + fluxscaled_random_noise)
@@ -186,8 +184,7 @@ class FakeData(object):
         models_lam = models_hdulist['lam'].data
 
         # restrict wavelength range to same as PCA
-        lmin, lmax = pca.l.value.min(), pca.l.value.max()
-        lmin, lmax = 3000., 10500.
+        lmin, lmax = pca.l.value.min() - 50., pca.l.value.max() + 50.
         goodlam = (models_lam >= lmin) * (models_lam <= lmax)
         models_lam, models_specs = models_lam[goodlam], models_specs[:, goodlam]
 
