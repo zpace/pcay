@@ -2374,6 +2374,11 @@ class PCA_Result(object):
         goodpdf_hdu.header['EXTNAME'] = 'GOODFRAC'
         hdulist.append(goodpdf_hdu)
 
+        # make extension with fit success
+        fit_success_hdu = fits.ImageHDU(self.success)
+        fit_success_hdu.header['EXTNAME'] = 'SUCCESS'
+        hdulist.append(fit_success_hdu)
+
         # make extension with best-fit model index
         bestmodel_hdu = fits.ImageHDU(np.argmax(self.w, axis=0))
         bestmodel_hdu.header['EXTNAME'] = 'MODELNUM'
@@ -2590,7 +2595,7 @@ if __name__ == '__main__':
     dered_kwargs = {'nper': 10}
     pc_cov_method = 'precomp'
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180307-1/'
 
     mpl_v = 'MPL-6'
 
