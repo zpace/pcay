@@ -184,22 +184,8 @@ class StellarPop_PCA(object):
         l = l[in_lrange]
         logl = logl[in_lrange]
 
-        meta['Dn4000'] = indices.StellarIndex('Dn4000')(
-            l=l.value, flam=spec.T, axis=0).flatten()
-        meta['Hdelta_A'] = indices.StellarIndex('Hdelta_A')(
-            l=l.value, flam=spec.T, axis=0).flatten()
-        meta['Mg_b'] = indices.StellarIndex('Mg_b')(
-            l=l.value, flam=spec.T, axis=0).flatten()
-        meta['Ca_HK'] = indices.StellarIndex('Ca_HK')(
-            l=l.value, flam=spec.T, axis=0).flatten()
-        meta['Na_D'] = indices.StellarIndex('Na_D')(
-            l=l.value, flam=spec.T, axis=0).flatten()
         meta['tau_V mu'] = meta['tau_V'] * meta['mu']
 
-        #meta = meta['sigma', 'logzsol', 'tau_V', 'mu',
-        #            'tau_V mu', 'theta', 'MWA', 'MLV', 'MLi',
-        #            'Dn4000', 'Hdelta_A', 'Mg_b',
-        #            'Ca_HK', 'Na_D', 'mf_1Gyr']
         for k in meta.colnames:
             if len(meta[k].shape) > 1:
                 del meta[k]

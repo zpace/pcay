@@ -21,6 +21,7 @@ from astropy.io import fits
 import fsps
 
 from spectrophot import lumspec2lsun, Spec2Phot
+import indices
 import utils as ut
 
 zsol_padova = .019
@@ -194,17 +195,18 @@ class FSPS_SFHBuilder(object):
 
         self.sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
 
-        spec = [self._run_fsps_newparams(
-                    tage=self.time0,
-                    d={'dust1': tau, 'dust2': tau * mu,
-                       'sigma_smooth': sigma})
-                for tau, mu, sigma in zip(
-                    self.FSPS_args['tau_V'], self.FSPS_args['mu'],
-                    self.FSPS_args['sigma'])]
+        spec, specinds = zip(
+            *[self._run_fsps_newparams(
+                  tage=self.time0,
+                  d={'dust1': tau, 'dust2': tau * mu, 'sigma_smooth': sigma})
+              for tau, mu, sigma in zip(
+                  self.FSPS_args['tau_V'], self.FSPS_args['mu'],
+                  self.FSPS_args['sigma'])])
 
         spec = np.row_stack(spec)
+        specinds = t.vstack(specinds)
 
-        return spec
+        return spec, specinds
 
     def _run_fsps_newparams(self, tage, d):
         for k in d:
@@ -212,9 +214,18 @@ class FSPS_SFHBuilder(object):
 
         _, spec = self.sp.get_spectrum(tage=tage, peraa=True)
 
+        # calculate spectral indices using velocity dispersion of zero
+        self.sp.params['sigma_smooth'] = 0.
+        lam, spec_zeroveldisp = self.sp.get_spectrum(tage=tage, peraa=True)
+
+        sis = ['Dn4000', 'Hdelta_A', 'Mg_b', 'Ca_HK', 'Na_D']
+        sis_tab = t.Table(
+            data=[t.Column([indices.StellarIndex(si)(lam, spec_zeroveldisp, axis=0)],
+                               name=si) for si in sis])
+
         self.sfh_changeflag = False
 
-        return spec
+        return spec, sis_tab
 
     def plot_sfh(self, ts=None, sfrs=None, save=False):
 
@@ -317,8 +328,8 @@ class FSPS_SFHBuilder(object):
             self.FSPS_args['tf'] = 10.**self.RS.uniform(
                 low=np.log10(earlyt), high=np.log10(latet))
         elif self.tform_key == 'loglinmix':
-            # 50-50 mix between log-uniform and lin-uniform
-            if np.random.rand() < .5:
+            # 25-75 mix between log-uniform and lin-uniform
+            if np.random.rand() < .25:
                 self.FSPS_args['tf'] = 10.**self.RS.uniform(
                     low=np.log10(earlyt), high=np.log10(latet))
             else:
@@ -340,7 +351,7 @@ class FSPS_SFHBuilder(object):
 
         self.sfh_changeflag = True
 
-    def _d1_gen(self, mean=.5, std=1., a_=-2., b_=1.):
+    def _d1_gen(self, mean=.5, std=.5, a_=-2., b_=1.):
         if 'd1' in self.override:
             return self.override['d1']
 
@@ -811,8 +822,8 @@ def make_csp(sfh, override=None):
         sfh.override = override
     sfh.gen_FSPS_args()
 
-    spec = sfh.run_fsps()
-    tab = sfh.to_table()
+    spec, spectral_indices = sfh.run_fsps()
+    tab = t.hstack([sfh.to_table(), spectral_indices])
 
     allsfrs = sfh.allsfrs
 
@@ -1247,15 +1258,14 @@ if __name__ == '__main__':
     name_ix0 = 0
     name_ixf = name_ix0 + nfiles
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180313-1/'
     if not os.path.isdir(CSPs_dir):
         os.makedirs(CSPs_dir)
 
     RS = np.random.RandomState()
-    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=2, NBB=0.25,
+    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=3, NBB=0.75,
                           pct_notrans=0.5, tform_key='loglinmix', trans_mode=0.75)
     sfh.dump_tuners(loc=CSPs_dir)
-
 
     print('Making spectral library...')
 
