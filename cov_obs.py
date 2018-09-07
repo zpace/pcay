@@ -245,10 +245,7 @@ class Cov_Obs(object):
 
     def make_im(self, kind, max_disp=0.4, llims=None):
         l = self.l
-        fig = plt.figure(figsize=(18, 17), dpi=400)
-        gs = GridSpec(1, 2, width_ratios=[36, 1])
-        ax = plt.subplot(gs[0])
-        cax_ = plt.subplot(gs[1])
+        fig, ax = plt.subplots(1, 1, figsize=(4, 5), dpi=400)
         ax.tick_params(axis='both', bottom=True, top=True, left=True, right=True,
                        labelbottom=True, labeltop=True, labelleft=True,
                        labelright=False, labelsize=6)
@@ -267,16 +264,12 @@ class Cov_Obs(object):
             np.sign(self.cov) * (np.abs(self.cov))**0.3,
             extent=[l.min(), l.max(), l.min(), l.max()], cmap='coolwarm',
             vmax=vmax, vmin=-vmax, interpolation='nearest', aspect='equal')
-        xticker = mticker.MaxNLocator(nbins=15, steps=[1, 5, 10], integer=True)
-        yticker = mticker.MaxNLocator(nbins=15, steps=[1, 5, 10], integer=True)
-        ax.xaxis.set_major_locator(xticker)
-        ax.yaxis.set_major_locator(yticker)
         ax.set_xlabel(r'$\lambda  ~ [{\rm \AA}]$', size=6)
         ax.set_ylabel(r'$\lambda ~ [{\rm \AA}]$', size=6)
-        cb = plt.colorbar(im, cax=cax_, extend=extend)
+        cb = plt.colorbar(im, ax=ax, extend=extend, orientation='horizontal')
         cb.set_label(r'$\textrm{sign}(K) ~ |K|^{0.3}$', size=6)
-        cb.ax.tick_params(labelsize=6)
-        plt.tight_layout()
+        cb.ax.tick_params(labelsize='xx-small')
+        fig.tight_layout()
 
         fig.savefig('cov_obs_{}.png'.format(kind), dpi=200)
 

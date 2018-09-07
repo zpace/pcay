@@ -33,6 +33,7 @@ from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from scipy.integrate import quad
 from scipy.ndimage.filters import gaussian_filter1d
+from scipy.stats import entropy
 
 # sklearn
 from sklearn.neighbors import KernelDensity
@@ -50,7 +51,6 @@ import radial
 from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
                          Spec2Phot, absmag_sun_band as Msun)
 import utils as ut
-import indices
 from fakedata import FakeData
 from partition import CovCalcPartitioner, CovWindows
 from linalg import *
@@ -73,7 +73,7 @@ class StellarPop_PCA(object):
     '''
 
     def __init__(self, l, trn_spectra, gen_dicts, metadata, K_obs, src,
-                 sfh_fnames, nsubpersfh, nsfhperfile,
+                 sfh_fnames, nsubpersfh, nsfhperfile, basedir,
                  dlogl=None, lllim=3700. * u.AA, lulim=7400. * u.AA):
         '''
         params:
@@ -90,6 +90,7 @@ class StellarPop_PCA(object):
              formation time, eftu, metallicity, tau_V, mu, sigma)
             this somewhat replicates data in `gen_dicts`, but that's ok
         '''
+        self.basedir = basedir
 
         l_good = np.ones_like(l, dtype=bool)
         if lllim is not None:
@@ -133,10 +134,10 @@ class StellarPop_PCA(object):
         self.important_params = ['MLi', 'Dn4000', 'Hdelta_A',
                                  'MWA', 'sigma', 'logzsol',
                                  'tau_V', 'mu', 'tau_V mu',
-                                 'Mg_b', 'Ca_HK', 'mf_1Gyr']
+                                 'Mg_b', 'Ca_HK', 'F_1G']
 
         self.importantplus_params = self.important_params + \
-                                    ['mf_200Myr', 'tf', 'd1', 'tt', 'MLV']
+                                    ['F_200M', 'tf', 'd1', 'tt', 'MLV']
 
         # observational covariance matrix
         if not isinstance(K_obs, cov_obs.Cov_Obs):
@@ -148,7 +149,10 @@ class StellarPop_PCA(object):
 
     @classmethod
     def from_FSPS(cls, K_obs, lsf, base_dir, nfiles=None,
-                  log_params=['MWA', 'MLr', 'MLi', 'MLz', 'MLV', 'Fstar'],
+                  log_params=['MWA', 'MLr', 'MLi', 'MLz', 'MLV',
+                              'F_20M', 'F_100M', 'F_200M', 'F_500M', 'F_1G'],
+                  inf_replace={zip(['F_20M', 'F_100M', 'F_200M', 'F_500M', 'F_1G'],
+                                   [-15., -15., -15., -15., -15.])},
                   vel_params={}, dlogl=1.0e-4, z0_=.04,
                   preload_llims=[3000. * u.AA, 10000. * u.AA], **kwargs):
         '''
@@ -195,23 +199,33 @@ class StellarPop_PCA(object):
         meta['MWA'].meta['TeX'] = r'MWA'
         meta['Dn4000'].meta['TeX'] = r'D$_{n}$4000'
         meta['Hdelta_A'].meta['TeX'] = r'H$\delta_A$'
+        meta['Hdelta_F'].meta['TeX'] = r'H$\delta_F$'
+        meta['Hgamma_A'].meta['TeX'] = r'H$\gamma_A$'
+        meta['Hgamma_F'].meta['TeX'] = r'H$\gamma_F$'
+        meta['H_beta'].meta['TeX'] = r'H$\beta$'
+        meta['Mg_1'].meta['TeX'] = r'Mg$_1$'
+        meta['Mg_2'].meta['TeX'] = r'Mg$_2$'
         meta['Mg_b'].meta['TeX'] = r'Mg$_b$'
         meta['Ca_HK'].meta['TeX'] = r'CaHK'
         meta['Na_D'].meta['TeX'] = r'Na$_D$'
+        meta['CN_1'].meta['TeX'] = r'CN$_1$'
+        meta['CN_2'].meta['TeX'] = r'CN$_2$'
+        meta['TiO_1'].meta['TeX'] = r'TiO$_1$'
+        meta['TiO_2'].meta['TeX'] = r'TiO$_2$'
         meta['logzsol'].meta['TeX'] = r'$\log{\frac{Z}{Z_{\odot}}}$'
         meta['tau_V'].meta['TeX'] = r'$\tau_V$'
         meta['mu'].meta['TeX'] = r'$\mu$'
         meta['tau_V mu'].meta['TeX'] = r'$\tau_V ~ \mu$'
-        meta['MLr'].meta['TeX'] = r'$\Upsilon^*_r$'
-        meta['MLi'].meta['TeX'] = r'$\Upsilon^*_i$'
-        meta['MLz'].meta['TeX'] = r'$\Upsilon^*_z$'
-        meta['MLV'].meta['TeX'] = r'$\Upsilon^*_V$'
+        meta['MLr'].meta['TeX'] = r'$\log \Upsilon^*_r$'
+        meta['MLi'].meta['TeX'] = r'$\log \Upsilon^*_i$'
+        meta['MLz'].meta['TeX'] = r'$\log \Upsilon^*_z$'
+        meta['MLV'].meta['TeX'] = r'$\log \Upsilon^*_V$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
-        meta['mf_20Myr'].meta['TeX'] = r'$f_m^{\textrm{20~Myr}}$'
-        meta['mf_100Myr'].meta['TeX'] = r'$f_m^{\textrm{100~Myr}}$'
-        meta['mf_200Myr'].meta['TeX'] = r'$f_m^{\textrm{200~Myr}}$'
-        meta['mf_500Myr'].meta['TeX'] = r'$f_m^{\textrm{500~Myr}}$'
-        meta['mf_1Gyr'].meta['TeX'] = r'$f_m^{\textrm{1~Gyr}}$'
+        meta['F_20M'].meta['TeX'] = r'$F_m^{\rm 20~Myr}$'
+        meta['F_100M'].meta['TeX'] = r'$F_m^{\rm 100~Myr}$'
+        meta['F_200M'].meta['TeX'] = r'$F_m^{\rm 200~Myr}$'
+        meta['F_500M'].meta['TeX'] = r'$F_m^{\rm 500~Myr}$'
+        meta['F_1G'].meta['TeX'] = r'$F_m^{\rm 1~Gyr}$'
         meta['gamma'].meta['TeX'] = r'$\gamma$'
         meta['theta'].meta['TeX'] = r'$\Theta$'
         meta['d1'].meta['TeX'] = r'$\tau_{\rm SFH}$'
@@ -222,11 +236,15 @@ class StellarPop_PCA(object):
         meta['Cri'].meta['TeX'] = r'$C_{ri}$'
         meta['Cgr_z015'].meta['TeX'] = r'$C^{.15}_{gr}$'
         meta['Cri_z015'].meta['TeX'] = r'$C^{.15}_{ri}$'
+        meta['sbss'].meta['TeX'] = r'$S_{\rm BSS}$'
+        meta['fbhb'].meta['TeX'] = r'$f_{\rm BHB}$'
 
         for n in meta.colnames:
             if n in log_params:
                 meta[n] = np.log10(meta[n])
                 meta[n].meta['scale'] = 'log'
+                if n in inf_replace.keys():
+                    meta[n][~np.isfinite(meta[n])] = inf_replace[n]
                 if 'ML' in n:
                     meta[n].meta['unc_incr'] = .008
 
@@ -256,7 +274,8 @@ class StellarPop_PCA(object):
         return cls(l=l_final * l.unit, trn_spectra=spec_lores,
                    gen_dicts=dicts, metadata=meta, sfh_fnames=sfh_fnames,
                    K_obs=K_obs, dlogl=None, src='FSPS',
-                   nsubpersfh=Nsubsample, nsfhperfile=Nsfhper, **kwargs)
+                   nsubpersfh=Nsubsample, nsfhperfile=Nsfhper, basedir=base_dir,
+                   **kwargs)
 
     # =====
     # methods
@@ -264,46 +283,45 @@ class StellarPop_PCA(object):
 
     def xval(self, specs, qmax=30):
         # reconstruction error
-        qs = np.arange(1, qmax + 1, 1)
+        qs = np.linspace(1, qmax, qmax, dtype=int)
         err = np.empty_like(qs, dtype=float)
 
-        trn = self.trn_spectra
-
         # normalize mean of each training spectrum to 1
-        a = np.mean(trn, axis=1, keepdims=True)
-        normed_trn = trn / a
+        specs_norm, a = self.scaler(specs, lam_axis=1)
+        S = specs_norm - self.M
 
-        # find the average spectrum and subtract it from each training spectrum
-        M = np.mean(normed_trn, axis=0, keepdims=True)
-        S = normed_trn - M
-
-        for i, q in enumerate(qs):
-            PCs, PVE = self.PCA(S, q)
-
-            # normalize mean again
-            a_ = np.median(specs, axis=1, keepdims=True)
-            specs_ = (specs / a_)
-
-            # PC amplitudes
-            A = (specs_ - M).dot(PCs.T)
+        def recon_rms(q):
+            A = quick_data_to_PC(S, self.evecs_[:q])
             # reconstructed spectra
-            R = a_ * (PCs.T.dot(A.T) + M.T).T
+            S_recon = np.dot(A, self.evecs_[:q])
+            resid = S_recon - S
 
             # fractional reconstruction error
-            e = np.mean(np.abs((specs - R) / specs))
+            e = np.sqrt(np.mean(resid**2.))
+            return e
 
-            err[i] = e
+        for i, q in enumerate(qs):
+            try:
+                err[i] = recon_rms(q)
+            except:
+                err[i] = 1.
+                continue
 
         return qs, err
 
-    def xval_fromfile(self, fname, qmax=50, target=.01):
+    def xval_fromfile(self, fname, lsf, z0, qmax=50, target=.01):
         hdulist = fits.open(fname)
 
         specs_full = hdulist['flam'].data
         l_full = hdulist['lam'].data
         logl_full = np.log10(l_full)
 
-        specs_interp = interp1d(x=logl_full, y=specs_full, kind='linear', axis=-1)
+        # convolve spectra with instrument LSF
+        dlogl_hires = ut.determine_dlogl(logl_full)
+        specs_lsf = lsf(y=specs_full, lam=(l_full) * (1. + z0),
+                        dlogl=dlogl_hires, z=z0)
+
+        specs_interp = interp1d(x=logl_full, y=specs_lsf, kind='linear', axis=-1)
         specs = specs_interp(self.logl)
 
         qs, err = self.xval(specs, qmax)
@@ -318,14 +336,17 @@ class StellarPop_PCA(object):
 
         ax.set_xlabel('Number of PCs')
         ax.set_ylabel('Frac. Recon. Err.')
-        plt.tight_layout()
+        fig.tight_layout()
 
         # return smallest q value for which target FRE is reached
-        q = np.min(qs[err < target])
+        try:
+            q = np.min(qs[err <= target])
+        except ValueError:
+            q = None
 
         hdulist.close()
 
-        fig.savefig('xval_test.png')
+        fig.savefig(os.path.join(self.basedir, 'xval_test.png'))
 
         return q
 
@@ -339,21 +360,8 @@ class StellarPop_PCA(object):
         self.M = np.median(self.normed_trn, axis=0)
         self.S = self.normed_trn - self.M
 
-        R = np.cov(self.S, rowvar=False)
-        # calculate evecs & evalse of covariance matrix
-        # (use 'eigh' rather than 'eig' since R is symmetric for performance
-        evals, evecs = np.linalg.eigh(R)
-        # sort eigenvalues and eigenvectors in decreasing order
-        idx = np.argsort(evals)[::-1]
-        # and select first `q`
-        evals, evecs = evals[idx], evecs[:,idx]
-        self.evals_ = evals
-        self.evals = evals[:q]
-        self.PCs_ = evecs.T
-        self.PCs = self.PCs_[:q]
-        self.PCs /= np.sign(self.PCs.sum(axis=1, keepdims=True))
-        # carry out the transformation on the data using eigenvectors
-        self.trn_PC_wts = np.dot(self.S, self.PCs.T)
+        self.evals_, self.evals, self.evecs_, self.PCs = run_pca(self.S, q)
+        self.trn_PC_wts = quick_data_to_PC(self.S, self.PCs)
 
         # reconstruct the best approximation for the spectra from PCs
         self.trn_recon = np.dot(self.trn_PC_wts, self.PCs)
@@ -361,7 +369,7 @@ class StellarPop_PCA(object):
         self.trn_resid = self.normed_trn - self.trn_recon
 
         # percent variance explained
-        self.PVE = (evals / evals.sum())[:q]
+        self.PVE = (self.evals_ / self.evals_.sum())[:q]
 
         self.cov_th = np.cov(self.trn_resid, rowvar=False)
 
@@ -512,8 +520,10 @@ class StellarPop_PCA(object):
         D = C[..., None, None] - A[None, ...]
         # D shape: [MODELNUM, PCNUM, XNUM, YNUM]
 
-        chi2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
-        w = np.exp(-0.5 * chi2)
+        dist2 = np.einsum('cixy,ijxy,cjxy->cxy', D, P, D)
+        det_K = 1. / np.linalg.det(np.moveaxis(P, [0, 1, 2, 3], [2, 3, 0, 1]))
+        c = 0.5 * (np.log(det_K) + self.PCs.shape[0] * np.log(2. * np.pi))
+        w = np.exp(-0.5 * dist2 - c)
 
         return w
 
@@ -626,7 +636,8 @@ class StellarPop_PCA(object):
         ax.set_xlabel(r'$\lambda~[\textrm{\AA}]$')
         plt.suptitle('Eigenspectra')
 
-        fig.savefig('PCs_{}.png'.format(self.src), dpi=300)
+        fig.savefig(os.path.join(self.basedir, 'PCs_{}.png'.format(self.src)),
+                    dpi=300)
 
     def make_params_vs_PCs_fig(self):
         '''
@@ -738,7 +749,8 @@ class StellarPop_PCA(object):
 
         fig.suptitle('PCs vs params')
 
-        plt.savefig('PCs_params_{}.png'.format(self.src), dpi=300)
+        plt.savefig(os.path.join(self.basedir, 'PCs_params_{}.png'.format(self.src)),
+                    dpi=300)
 
     def find_PC_param_coeffs(self):
         '''
@@ -807,7 +819,8 @@ class StellarPop_PCA(object):
 
         fig.suptitle(t=r'$Z + A \cdot X$ vs $\{P_i\}$')
 
-        fig.savefig('param_regr_{}.png'.format(self.src), dpi=300)
+        fig.savefig(os.path.join(self.basedir, 'param_regr_{}.png'.format(self.src)),
+                    dpi=300)
 
     def make_PC_param_importance_fig(self):
 
@@ -854,7 +867,30 @@ class StellarPop_PCA(object):
         ax.set_xlim([0, q + 1.5])
 
         plt.tight_layout()
-        plt.savefig('PC_param_importance_{}.png'.format(self.src), dpi=300)
+        plt.savefig(
+            os.path.join(
+                self.basedir, 'PC_param_importance_{}.png'.format(self.src)),
+            dpi=300)
+
+    def make_prior_fig(self):
+        nparams = len(self.metadata.colnames)
+        gs, fig = figures_tools.gen_gridspec_fig(N=nparams)
+
+        for i, n in enumerate(self.metadata.colnames):
+            # set up subplots
+            ax = fig.add_subplot(gs[i])
+            label = self.metadata[n].meta.get('TeX', n)
+            ax.hist(self.metadata[n].flatten(), bins=50, histtype='step',
+                    linewidth=0.5)
+            ax.tick_params(labelsize='xx-small')
+            ax.set_yticks([])
+            ax.set_xlabel(label, size='x-small')
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(
+                self.basedir, 'prior_allparams.png'))
+
 
     # =====
     # properties
@@ -1004,18 +1040,25 @@ class PCA_Result(object):
         self.O = np.ma.array(self.O, mask=self.mask_cube)
         self.O_norm = np.ma.array(self.O_norm, mask=self.mask_cube)
 
-    def solve(self, vdisp_wt=False):
+    def solve(self, vdisp_wt=False, cosmo_wt=True):
         '''
         packages together logic that solves for PC weights
         '''
 
         # solve for PC coefficients and covariances
         self.A, self.P_PC, self.fit_success = self.solve_cube()
-        self.fit_success = self.fit_success.astype(float)
         self.P_PC = np.moveaxis(self.P_PC, [0, 1, 2, 3], [2, 3, 0, 1]).astype(float)
         self.A = np.moveaxis(self.A, -1, 0).astype(float)
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
+
+        if cosmo_wt:
+            # disallow models that are at too high a redshift for their age
+            tf_earliest = self.cosmo.age(0.).value - self.cosmo.age(self.z).value
+            tsc = .1
+            self.w *= np.minimum(
+                1., np.exp(
+                    -(tf_earliest - self.pca.metadata['tf'][:, None, None]) / tsc))
 
         if vdisp_wt:
             vdisp_fill = 30.
@@ -1068,7 +1111,7 @@ class PCA_Result(object):
         self.O_recon = np.ma.array(pca.reconstruct_normed(self.A),
                                    mask=self.mask_cube)
 
-        self.resid = (self.O_norm - self.O_recon) / self.O_norm
+        self.resid = (self.O_recon - self.O_norm)
 
     def fluxdens(self, band='i'):
         '''
@@ -1123,6 +1166,7 @@ class PCA_Result(object):
         ax.set_title('{}-band luminosity'.format(band), size=8)
 
         self.__fix_im_axs__(ax, bad=False)
+        ax.grid(False)
 
         return im, cb
 
@@ -1152,6 +1196,7 @@ class PCA_Result(object):
 
         Onm = np.ma.median(O_norm)
         Orm = np.ma.median(O_recon)
+        Or95 = np.percentile(O_recon, 95)
         ivm = np.ma.median(ivar)
 
         orig_ = ax1.plot(self.l, O_norm, drawstyle='steps-mid',
@@ -1164,7 +1209,7 @@ class PCA_Result(object):
         # inverse-variance (weight) plot
         ivar_ = ax1.plot(
             self.l, ivar / ivm, drawstyle='steps-mid', c='m',
-            label='IVAR', linewidth=0.5, zorder=0)
+            label='IVAR', linewidth=0.5, zorder=0, visible=False)
 
         # residual plot
         resid = self.resid[:, ix[0], ix[1]]
@@ -1183,12 +1228,14 @@ class PCA_Result(object):
         ax1.tick_params(axis='y', which='major', labelsize=10,
                         labelbottom='off')
         ax2.tick_params(axis='both', which='major', labelsize=10)
+        # force sharing of x axis
+        ax1.get_shared_x_axes().join(ax1, ax2)
 
         ax1.xaxis.set_major_locator(self.lamticks)
         ax1.xaxis.set_ticklabels([])
         ax1.legend(loc='best', prop={'size': 6})
         ax1.set_ylabel(r'$F_{\lambda}$ (rel)')
-        ax1.set_ylim([-0.1 * Onm, 2.25 * Onm])
+        ax1.set_ylim([-0.05 * Or95, 1.1 * Or95])
         ax1.set_yticks(np.arange(0.0, ax1.get_ylim()[1], 0.5))
 
         ax2.xaxis.set_major_locator(self.lamticks)
@@ -1247,24 +1294,26 @@ class PCA_Result(object):
         elif logify:
             P50 = np.log10(P50)
             unc = np.log10((u_unc + l_unc) / 2.)
-            med_TeX = ''.join((r'$\log$', med_TeX))
+            #med_TeX = ''.join((r'$\log$', med_TeX))
         elif (scale == 'log'):
             unc = (u_unc + l_unc) / 2.
-            med_TeX = ''.join((r'$\log$', med_TeX))
+            #med_TeX = ''.join((r'$\log$', med_TeX))
         else:
             unc = (l_unc + u_unc) / 2.
 
+        mask = self.mask_map
+
         m = ax1.imshow(
-            np.ma.array(P50, mask=self.mask_map),
+            np.ma.array(P50, mask=mask),
             aspect='equal', norm=norm[0])
 
         s = ax2.imshow(
-            np.ma.array(unc, mask=self.mask_map),
+            np.ma.array(unc, mask=mask),
             aspect='equal', norm=norm[1])
 
         mcb = plt.colorbar(m, ax=ax1, pad=0.025)
-        mcb.set_label(med_TeX, size=8)
-        mcb.ax.tick_params(labelsize=8)
+        mcb.set_label(med_TeX, size='xx-small')
+        mcb.ax.tick_params(labelsize='xx-small')
 
         scb = plt.colorbar(s, ax=ax2, pad=0.025)
         scb.set_label(r'$\sigma$', size=8)
@@ -1519,8 +1568,6 @@ class PCA_Result(object):
         TeX = self.pca.metadata[qty].meta['TeX']
 
         scale = self.pca.metadata[qty].meta.get('scale')
-        if scale == 'log':
-            TeX = ''.join((r'$\log$', TeX))
 
         ax_ = ax.twinx()
 
@@ -1616,16 +1663,34 @@ class PCA_Result(object):
         if type(axs) is not list:
             axs = [axs]
 
+        # create a sky offset frame to overlay
+        offset_frame = coord.SkyOffsetFrame(
+            origin=coord.SkyCoord(*(self.wcs_header.wcs.crval * u.deg)))
+
         # over ax objects
         for ax in axs:
-            #ax.set_xlabel(r'$\alpha$')
-            #ax.set_ylabel(r'$\delta$')
+            # suppress native coordinate system ticks
+            for ci in range(2):
+                ax.coords[ci].set_ticks(number=5)
+                ax.coords[ci].set_ticks_visible(False)
+                ax.coords[ci].set_ticklabel_visible(False)
+                ax.coords[ci].grid(False)
 
-            ax.coords[0].set_ticks(spacing=5. * u.arcsec)
-            ax.coords[0].set_format_unit(u.arcsec)
+            # initialize overlay
+            offset_overlay = ax.get_coords_overlay(offset_frame)
+            offset_overlay.grid(True)
+            offset_overlay['lon'].set_coord_type('longitude', coord_wrap=180.)
+            ax.set_aspect('equal')
 
-            ax.coords[1].set_ticks(spacing=5. * u.arcsec)
-            ax.coords[1].set_format_unit(u.arcsec)
+            for ck, abbr, pos in zip(['lon', 'lat'], [r'\alpha', r'\delta'], ['b', 'l']):
+                offset_overlay[ck].set_axislabel(
+                    r'$\Delta {}~["]$'.format(abbr), size='x-small')
+                offset_overlay[ck].set_axislabel_position(pos)
+                offset_overlay[ck].set_ticks_position(pos)
+                offset_overlay[ck].set_ticklabel_position(pos)
+                offset_overlay[ck].set_format_unit(u.arcsec)
+                offset_overlay[ck].set_ticks(number=5)
+                offset_overlay[ck].set_major_formatter('s.s')
 
             if bad:
                 # figures_tools.annotate_badPDF(ax, self.goodPDF)
@@ -1646,6 +1711,7 @@ class PCA_Result(object):
         IIc, JJc = map(lambda x: 0.5 * (x[:-1, :-1] + x[1:, 1:]), (II, JJ))
 
         for ax in [ax1, ax2]:
+            # pcolor plots are masked where the data are GOOD
             # badpdf mask
             ax.pcolor(II, JJ,
                       np.ma.array(np.zeros_like(IIc), mask=~self.badPDF),
@@ -1654,6 +1720,10 @@ class PCA_Result(object):
             ax.pcolor(II, JJ,
                       np.ma.array(np.zeros_like(IIc), mask=~self.mask_map),
                       hatch='/'*8, alpha=0.)
+            # fit unsuccessful
+            ax.pcolor(II, JJ,
+                      np.ma.array(np.zeros_like(IIc), mask=self.fit_success),
+                      hatch='.' * 8, alpha=0.)
 
         return fig, gs, ax1, ax2
 
@@ -1673,7 +1743,7 @@ class PCA_Result(object):
             some image-frame indices ix
         '''
 
-        pix_coord = self.wcs_header_offset.all_pix2world(
+        pix_coord = ax.wcs.all_pix2world(
             np.atleast_2d(ix), origin=1)
 
         ax.axhline(pix_coord[1], **kwargs)
@@ -1717,7 +1787,7 @@ class PCA_Result(object):
 
         # image of galaxy in integrated light
         im_ax = fig.add_subplot(gs1[:-1, 0],
-                                projection=self.wcs_header_offset)
+                                projection=self.wcs_header)
         lumim, lcb = self.lum_plot(im_ax, ix=ix_, band='r')
 
         # loop through parameters of interest, and make a weighted
@@ -1766,7 +1836,8 @@ class PCA_Result(object):
             qty_tex = TeX_over
 
         if scale == 'log':
-            qty_tex = ''.join((r'$\log$', qty_tex))
+            pass
+            #qty_tex = ''.join((r'$\log$', qty_tex))
 
         # throw out spaxels at large Re
         # in future, should evaluate spectrum uncertainties directly
@@ -1939,6 +2010,14 @@ class PCA_Result(object):
         N = ((w / max_w) > f).sum(axis=0)
 
         return N
+
+    def kullback_leibler(self):
+        '''
+        compute the spaxel-wise Kullback-Leibler divergence (i.e., how much information
+            is gained by the PCA analysis relative to the prior)
+        '''
+
+        return entropy(qk=self.w, pk=np.ones_like(self.w), base=2)
 
     def make_sample_diag_fig(self, f=[.5, .1]):
         '''
@@ -2310,7 +2389,7 @@ class PCA_Result(object):
 
         return P50, l_unc, u_unc, scale
 
-    def write_results(self, qtys='important+', pc_info=False):
+    def write_results(self, qtys='important', pc_info=True):
 
         # initialize FITS hdulist
         # PrimaryHDU is identical to DRP 0th HDU
@@ -2358,10 +2437,11 @@ class PCA_Result(object):
         for fi, f_ in enumerate(fracs):
             goodpdf_hdu.header['FRAC{}'.format(fi)] = f_
         goodpdf_hdu.header['EXTNAME'] = 'GOODFRAC'
+        goodpdf_hdu.header['NMODELS'] = len(self.pca.metadata)
         hdulist.append(goodpdf_hdu)
 
         # make extension with fit success
-        fit_success_hdu = fits.ImageHDU(self.success)
+        fit_success_hdu = fits.ImageHDU(self.fit_success.astype(float))
         fit_success_hdu.header['EXTNAME'] = 'SUCCESS'
         hdulist.append(fit_success_hdu)
 
@@ -2379,6 +2459,10 @@ class PCA_Result(object):
             norm_hdu = fits.ImageHDU(self.a_map)
             norm_hdu.header['EXTNAME'] = 'NORM'
             hdulist.append(norm_hdu)
+
+        kld_hdu = fits.ImageHDU(self.kullback_leibler())
+        kld_hdu.header['EXTNAME'] = 'KLD'
+        hdulist.append(kld_hdu)
 
         fname = os.path.join(self.figdir, '{}_res.fits'.format(self.objname))
 
@@ -2446,7 +2530,8 @@ def get_col_metadata(col, k, notfound=''):
 
 def setup_fake(row, pca, K_obs, dered_method='nearest', dered_kwargs={},
                mockspec_ix=None, CSPs_dir='.', mockspec_fname='CSPs_test.fits',
-               mocksfh_fname='SFHs_test.fits', pc_cov_method='full_iter', mpl_v='MPL-5'):
+               fakedata_basedir='fakedata', mocksfh_fname='SFHs_test.fits',
+               pc_cov_method='full_iter', mpl_v='MPL-5'):
 
     plateifu = row['plateifu']
     plate, ifu = plateifu.split('-')
@@ -2483,22 +2568,22 @@ def setup_fake(row, pca, K_obs, dered_method='nearest', dered_kwargs={},
         plateifu_base=plateifu, pca=pca, row=row,
         K_obs=K_obs, mpl_v=mpl_v)
 
-    data.write()
+    data.write(fakedata_basedir)
 
     dered = MaNGA_deredshift.from_fakedata(
         plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
-        basedir='fakedata', row=row)
+        basedir=fakedata_basedir, row=row)
     truth_fname = os.path.join(
-        'fakedata', '{}_truth.tab'.format(plateifu))
+        fakedata_basedir, '{}_truth.tab'.format(plateifu))
     truth = t.Table.read(truth_fname, format='ascii')[0]
 
     return dered, data, truth, truth_sfh
 
 def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
                dered_method='nearest', dered_kwargs={}, mockspec_ix=None, z_new=None,
-               CSPs_dir='.', mockspec_fname='CSPs_test.fits',
+               basedir='.', mockspec_fname='CSPs_test.fits',
                mocksfh_fname='SFHs_test.fits', vdisp_wt=False,
-               pc_cov_method='full_iter', makefigs=True, mpl_v='MPL-5'):
+               pc_cov_method='full_iter', makefigs=True, mpl_v='MPL-7'):
 
     plateifu = row['plateifu']
 
@@ -2509,16 +2594,17 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     plate, ifu = plateifu.split('-')
 
     if fake:
+        fakedata_basedir = os.path.join(basedir, 'fakedata')
         dered, data, truth, truth_sfh = setup_fake(
             row, pca, K_obs, dered_method=dered_method, dered_kwargs=dered_kwargs,
-            mockspec_ix=mockspec_ix, CSPs_dir=CSPs_dir, mockspec_fname=mockspec_fname,
-            mocksfh_fname=mocksfh_fname, mpl_v=mpl_v)
-        figdir = os.path.join('fakedata', 'results', plateifu)
+            mockspec_ix=mockspec_ix, CSPs_dir=basedir, fakedata_basedir=fakedata_basedir,
+            mockspec_fname=mockspec_fname, mocksfh_fname=mocksfh_fname, mpl_v=mpl_v)
+        figdir = os.path.join(fakedata_basedir, 'results', plateifu)
 
     else:
         dered = MaNGA_deredshift.from_plateifu(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row)
-        figdir = os.path.join('results', plateifu)
+        figdir = os.path.join(basedir, 'results', plateifu)
         truth_sfh = None
         truth = None
 
@@ -2571,17 +2657,28 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     else:
         row['nsa_z'], row['nsa_zdist'] = z_orig, zdist_orig
 
+    if fake:
+        # delete intermediate files
+        drp_fname = os.path.join(
+            fakedata_basedir, '{}_drp.fits'.format(pca_res.objname))
+        dap_fname = os.path.join(
+            fakedata_basedir, '{}_dap.fits'.format(pca_res.objname))
+        truth_fname = os.path.join(
+            fakedata_basedir, '{}_truth.tab'.format(pca_res.objname))
+        for fn in [drp_fname, dap_fname, truth_fname]:
+            os.remove(fn)
+
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 100
+    howmany = 150
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'drizzle'
     dered_kwargs = {'nper': 10}
     pc_cov_method = 'precomp'
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180307-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180713-1/'
 
     mpl_v = 'MPL-6'
 
@@ -2594,8 +2691,8 @@ if __name__ == '__main__':
     pca_pkl_fname = os.path.join(CSPs_dir, 'pca.pkl')
     pca, K_obs = setup_pca(
         fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
-        redo=False, pkl=True, q=8, fre_target=.005, nfiles=None,
-        pca_kwargs=pca_kwargs, makefigs=False)
+        redo=False, pkl=True, q=6, fre_target=.005, nfiles=40,
+        pca_kwargs=pca_kwargs, makefigs=True)
 
     K_obs.precompute_Kpcs(pca.PCs)
     K_obs._init_windows(len(pca.l))
@@ -2603,7 +2700,7 @@ if __name__ == '__main__':
     pca.write_pcs_fits()
 
     '''
-    row = drpall.loc['8982-1902']
+    row = drpall.loc['8592-9102']
 
     with catch_warnings():
         simplefilter(warn_behav)
@@ -2623,17 +2720,23 @@ if __name__ == '__main__':
         pca_res_f.write_results()
     '''
 
-    '''
+    #'''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
-    drpall = drpall[drpall['ifudesignsize'] != 127]
-    drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.4]
+    #drpall = drpall[np.where([pi in ['8939-12704', '8566-12705', '8567-12701']
+    #                          for pi in drpall['plateifu']])]
+    #drpall = drpall[drpall['ifudesignsize'] != 127]
+    #drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.5]
 
     #mwolf = t.Table.read('mwolf/gmrt_targets.csv')
     #drpall = drpall[[r['plateifu'] in mwolf['plateifu'] for r in drpall]]
 
-    # select DiskMass galaxies
-    #drpall =  drpall[np.where(m.mask_from_maskbits(drpall['mngtarg3'].data, [16]))]
-
+    # which galaxies have been run before? eliminate them from contention
+    already_run = np.array([os.path.exists(
+                                os.path.join(
+                                    basedir, 'res', plateifu,
+                                    '{}_res.fits'.format(plateifu)))
+                            for plateifu in drpall['plateifu']])
+    drpall = drpall[~already_run]
 
     with ProgressBar(howmany) as bar:
         for i, row in enumerate(m.shuffle_table(drpall)[:howmany]):
@@ -2644,19 +2747,21 @@ if __name__ == '__main__':
                     simplefilter(warn_behav)
 
                     pca_res = run_object(
-                        row=row, pca=pca, force_redo=True, fake=False, vdisp_wt=False,
+                        basedir=CSPs_dir,
+                        row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=False,
                         dered_method=dered_method, dered_kwargs=dered_kwargs,
                         pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v)
                     pca_res.write_results()
-
+                    '''
                     pca_res_f = run_object(
-                        row=row, pca=pca, force_redo=True, fake=True, vdisp_wt=False,
+                        basedir=CSPs_dir,
+                        row=row, pca=pca, force_redo=False, fake=True, vdisp_wt=False,
                         dered_method=dered_method, dered_kwargs=dered_kwargs,
                         pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v,
-                        CSPs_dir=CSPs_dir, redo_fake=True, mockspec_ix=None,
+                        redo_fake=False, mockspec_ix=None,
                         mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
                     pca_res_f.write_results()
-
+                    '''
             except Exception:
                 exc_info = sys.exc_info()
                 print('ERROR: {}'.format(plateifu))
@@ -2664,4 +2769,4 @@ if __name__ == '__main__':
                 continue
             finally:
                 bar.update()
-    '''
+    #'''

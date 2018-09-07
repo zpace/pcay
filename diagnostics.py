@@ -162,6 +162,14 @@ class Diagnostic(object):
         P50_ratio, l_unc_ratio, u_unc_ratio, ylabel = self._munge_yqty(yqty, i)
         x, xlabel = self._munge_xqty(xqty, i, arr_len=P50_ratio.shape)
 
+        mask = self.results[i]['MASK'].data.astype(bool)
+        badfit = ~self.results[i]['SUCCESS'].data.astype(bool)
+        badPDF = (self.results[i]['GOODFRAC'].data[0] * \
+                  self.results[i]['GOODFRAC'].header['NMODELS']) < 10
+
+        P50_ratio = np.ma.array(
+            P50_ratio, mask=np.logical_or.reduce((mask, badfit, badPDF)))
+
         ax.scatter(x, P50_ratio, s=1., edgecolor='None',
                    alpha=0.6, vmin=0., vmax=1., **kwargs)
         ax.axhline(0., c='k', linewidth=0.25)
@@ -185,7 +193,7 @@ if __name__ == '__main__':
     warn_behav = 'ignore'
     dered_method = 'supersample_vec'
     dered_kwargs = {'nper': 5}
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180501-1/'
 
     mpl_v = 'MPL-6'
 
@@ -202,7 +210,8 @@ if __name__ == '__main__':
         pca_kwargs=pca_kwargs)
 
     # find appropriate files
-    hdulists = list(map(fits.open, glob('fakedata/results/*/*_res.fits')))
+    hdulists = list(map(
+        fits.open, glob(os.path.join(CSPs_dir, 'fakedata/results/*/*_res.fits'))))
 
     # make diag plots
     plt.close('all')

@@ -149,13 +149,16 @@ class FSPS_SFHBuilder(object):
 
             # incidentals
             self.sigma_gen()
-            self.tau_V_gen()
+            self.tau_V_mu_gen()
             self.mu_gen()
 
             self.logzsol_gen()
 
             # bursts
             self.burst_gen()
+
+            self.fbhb_gen()
+            self.sbss_gen()
 
             goodMWA = (0 <= self.mass_weighted_age <= self.time0)
             nonzeromstar = (self.mstar > 0.)
@@ -177,8 +180,10 @@ class FSPS_SFHBuilder(object):
         self.sp.params['sfh'] = 3
         self.sp.params['dust_type'] = 0 # Charlot & Fall 2000
         self.sp.params['dust_tesc'] = 7.
-        self.sp.params['dust1'] = 0.
-        self.sp.params['dust2'] = 0.
+        self.sp.params['dust1'] = 0. # optical depth for young stars
+        self.sp.params['dust2'] = 0. # optical depth for old stars
+        self.sp.params['dust_index'] = -0.7 # dust power law index for old stars
+        self.sp.params['dust1_index'] = -1.3 # dust power law index for old stars
 
     def _cleanup_sp_(self):
         self.override = {}
@@ -192,13 +197,14 @@ class FSPS_SFHBuilder(object):
         '''
 
         self.sp.params['logzsol'] = self.FSPS_args['logzsol']
+        sfrs = self.sfrs
 
-        self.sp.set_tabular_sfh(age=self.ts, sfr=self.sfrs)
+        self.sp.set_tabular_sfh(age=self.ts, sfr=sfrs)
 
         spec, specinds = zip(
             *[self._run_fsps_newparams(
                   tage=self.time0,
-                  d={'dust1': tau, 'dust2': tau * mu, 'sigma_smooth': sigma})
+                  d={'dust1': tau * (1. - mu), 'dust2': tau * mu, 'sigma_smooth': sigma})
               for tau, mu, sigma in zip(
                   self.FSPS_args['tau_V'], self.FSPS_args['mu'],
                   self.FSPS_args['sigma'])])
@@ -218,7 +224,7 @@ class FSPS_SFHBuilder(object):
         self.sp.params['sigma_smooth'] = 0.
         lam, spec_zeroveldisp = self.sp.get_spectrum(tage=tage, peraa=True)
 
-        sis = ['Dn4000', 'Hdelta_A', 'Mg_b', 'Ca_HK', 'Na_D']
+        sis = indices.data['ixname']
         sis_tab = t.Table(
             data=[t.Column([indices.StellarIndex(si)(lam, spec_zeroveldisp, axis=0)],
                                name=si) for si in sis])
@@ -284,15 +290,15 @@ class FSPS_SFHBuilder(object):
             del tab[k]
 
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.02)],
-                                name='mf_20Myr'))
+                                name='F_20Myr'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.1)],
-                                name='mf_100Myr'))
+                                name='F_100Myr'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.2)],
-                                name='mf_200Myr'))
+                                name='F_200Myr'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.5)],
-                                name='mf_500Myr'))
+                                name='F_500Myr'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=1)],
-                                name='mf_1Gyr'))
+                                name='F_1Gyr'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
         tab.add_column(t.Column(data=[self.mstar], name='mstar'))
 
@@ -334,6 +340,14 @@ class FSPS_SFHBuilder(object):
                     low=np.log10(earlyt), high=np.log10(latet))
             else:
                 self.FSPS_args['tf'] = self.RS.uniform(low=earlyt, high=latet)
+        elif self.tform_key == 'norm':
+            # normal distribution
+            tf_min, tf_max = earlyt, latet
+            tf_mean = 5.
+            tf_std = 4.
+            tf_a, tf_b = (tf_min - tf_mean) / tf_std, (tf_max - tf_mean) / tf_std
+            tf_dist = stats.truncnorm(a=tf_a, b=tf_b, loc=tf_mean, scale=tf_std)
+            self.FSPS_args['tf'] = tf_dist.rvs(None, random_state=self.RS)
         else:
             self.FSPS_args['tf'] = self.RS.uniform(low=earlyt, high=latet)
 
@@ -351,34 +365,30 @@ class FSPS_SFHBuilder(object):
 
         self.sfh_changeflag = True
 
-    def _d1_gen(self, mean=.5, std=.5, a_=-2., b_=1.):
+    def _d1_gen(self, logmean=.4, logstd=.4, a_lin=.1, b_lin=15.):
         if 'd1' in self.override:
             return self.override['d1']
+        a_log, b_log = np.log10(a_lin), np.log10(b_lin)
+        a_dist, b_dist = ((a_log - logmean) / logstd, (b_log - logmean) / logstd)
+        dist = stats.truncnorm(a=a_dist, b=b_dist, loc=logmean, scale=logstd)
+        return 10.**dist.rvs(None, random_state=self.RS)
 
-        a, b = (a_ - mean) / std, (b_ - mean) / std
-        dist = stats.truncnorm(a=a, b=b, loc=mean, scale=std)
-        return 10.**dist.rvs(1, random_state=self.RS)
-
-    def _tt_gen(self, d1, d1delay=1., ddt=0.):
+    def _tt_gen(self, d1, d1delay=0.25, ddt=0.):
         # if param already set on object instantiation, leave it alone
         if 'tt' in self.override:
             return self.override['tt']
 
         tf = self.FSPS_args['tf']
 
-        # transition must come after maximum of tau-model is reached
-        # option to delay ramp by additional factor of d1 or + ddt
+        # transition comes after tf + some # of EFT delay + const
         dt = d1 * d1delay + ddt
 
         if tf + dt >= self.time0:
-            return np.array([self.time0 + .01])
+            return self.time0 + .01
         elif np.random.rand() > 1. - self.pct_notrans:
-            return np.array([self.time0 + .01])
+            return self.time0 + .01
         else:
-            t_peak = tf + dt
-            tt_mode = t_peak + self.trans_mode * (self.time0 - t_peak)
-            return self.RS.triangular(
-                left=t_peak, mode=tt_mode, right=self.time0 + .01)
+            return self.RS.uniform(tf + dt, self.time0 + .01, None)
 
     def _theta_gamma_gen(self, d1, tt):
         '''
@@ -448,7 +458,7 @@ class FSPS_SFHBuilder(object):
         return dt_
 
     def _A_burst_gen(self, nburst):
-        A_ = 10.**self.RS.uniform(np.log10(0.5), np.log10(5.), nburst)
+        A_ = 10.**self.RS.lognormal(-1., 1., nburst)
         npad = self.max_bursts - nburst
         A_ = np.pad(A_, (0, npad), mode='constant', constant_values=0.)
         return A_
@@ -478,7 +488,7 @@ class FSPS_SFHBuilder(object):
         if 'nburst' in self.override:
             nburst = self.override['nburst']
         else:
-            nburst = self.RS.poisson(self.NBB * dt / self.time0, 1)[0]
+            nburst = self.RS.poisson(self.NBB * dt / self.time0, None)
 
         if nburst > self.max_bursts:
             nburst = self.max_bursts
@@ -512,8 +522,8 @@ class FSPS_SFHBuilder(object):
 
         if 'logzsol' in self.override:
             self.FSPS_args.update({'logzsol': self.override['logzsol']})
-        # 90% chance of linearly-uniform metallicity range
-        elif self.RS.rand() < .8:
+        # 60% chance of linearly-uniform metallicity range
+        elif self.RS.rand() < .6:
             self.FSPS_args.update(
                 {'logzsol': np.log10(ut.lin_transform(
                     r1=[0., 1.], r2=[zsol.max(), zsol.min()], x=d_.rvs()))})
@@ -523,42 +533,56 @@ class FSPS_SFHBuilder(object):
                 {'logzsol': self.RS.uniform(
                     np.log10(zsol.min()), np.log10(zsol.max()))})
 
+    def fbhb_gen(self):
+        '''
+        fraction of horiz branch stars that are blue
+        '''
+        if 'fbhb' in self.override:
+            self.FSPS_args.update({'fbhb': self.override['fbhb']})
+        else:
+            self.FSPS_args.update(
+                {'fbhb': self.RS.beta(2., 7., None)})
 
-    def tau_V_gen(self):
+    def sbss_gen(self):
+        '''
+        specific frequency of blue stragglers (rel to all HB)
+        '''
+        # Santucci says that fBSS / fBHB is ~4 in thick disk,
+        # ~1.5-2 in inner halo, ~1 in outer halo
+
+        # to get specific num of BSS, mult fBSS / fBHB by fBHB
+
+        if 'sbss' in self.override:
+            self.FSPS_args.update({'sbss': self.override['sbss']})
+        else:
+            self.FSPS_args.update(
+                {'sbss': 10. * self.RS.beta(1., 4., None)})
+
+    def tau_V_mu_gen(self, loc=.4, scale=.2, a=-2., b=4.):
+        tau_V_mu_dist = stats.truncnorm(loc=loc, scale=scale, a=a, b=b)
+        tau_V_mu_dist.random_state = self.RS
+
+        tau_V_mu = tau_V_mu_dist.rvs(self.Nsubsample)
+
+        self.mu_gen()
+        self.tau_V_gen(tau_V_mu, self.FSPS_args['mu'])
+
+
+    def tau_V_gen(self, tau_V_mu, mu):
         if 'tau_V' in self.override:
             tau_V = self.override['tau_V']
         else:
-            mu_tau_V = 2.5
-            std_tau_V = 1.75
-            lclip_tau_V, uclip_tau_V = 0., 7.
-            a_tau_V = (lclip_tau_V - mu_tau_V) / std_tau_V
-            b_tau_V = (uclip_tau_V - mu_tau_V) / std_tau_V
-
-            pdf_tau_V = stats.truncnorm(
-                a=a_tau_V, b=b_tau_V, loc=mu_tau_V, scale=std_tau_V)
-            pdf_tau_V.random_state = self.RS
-
-            tau_V = pdf_tau_V.rvs(size=self.Nsubsample)
+            tau_V = tau_V_mu / mu
 
         self.FSPS_args.update({'tau_V': tau_V})
 
-    def mu_gen(self):
+    def mu_gen(self, loc=.3, scale=.2, a=-1., b=3.):
         if 'mu' in self.override:
             mu = self.override['mu']
         else:
-            mu_mu = 0.3
-            # std_mu = self.RS.uniform(.1, 1)
-            std_mu = 0.4
-            # 68th percentile range means that stdev is in range .1 - 1
-            lclip_mu, uclip_mu = 0., 1.
-            a_mu = (lclip_mu - mu_mu) / std_mu
-            b_mu = (uclip_mu - mu_mu) / std_mu
+            mu_dist = stats.truncnorm(loc=loc, scale=scale, a=a, b=b)
 
-            pdf_mu = stats.truncnorm(
-                a=a_mu, b=b_mu, loc=mu_mu, scale=std_mu)
-            pdf_mu.random_state = self.RS
-
-            mu = pdf_mu.rvs(size=self.Nsubsample)
+            mu = mu_dist.rvs(size=self.Nsubsample, random_state=self.RS)
 
         self.FSPS_args.update({'mu': mu})
 
@@ -698,6 +722,13 @@ class FSPS_SFHBuilder(object):
              'max_bursts': self.max_bursts}
         return d
 
+    @property
+    def sfr_at_max(self):
+        tf = self.FSPS_args['tf']
+        d1 = self.FSPS_args['d1']
+        sfr = self.delay_tau_model(tf + d1, self.FSPS_args)
+        return sfr
+
     # =====
     # utility methods
     # =====
@@ -770,7 +801,7 @@ class FSPS_SFHBuilder(object):
 
         burst = np.array([self.burst_modifier(t_, d) for t_ in t])
 
-        return cont * (1. + burst)
+        return cont + burst * self.sfr_at_max
 
     # =====
     # utility methods
@@ -783,6 +814,9 @@ class FSPS_SFHBuilder(object):
 def burst_modifier(t, nburst, tb, dtb, A):
         '''
         evaluate the SFR augmentation at some time
+
+        burst contribution is evaluated as a fraction of the peak of the
+            continuous model's SFR
         '''
         if nburst == 0:
             return np.ones_like(t)
@@ -983,20 +1017,22 @@ def make_spectral_library(spec_fname, sfh_fname, sfh,
                     family='sdss2010-*', axis=1, redshift=None)
     Cgr = s2p.color('sdss2010-g', 'sdss2010-r')
     Cri = s2p.color('sdss2010-r', 'sdss2010-i')
+    Cgi = s2p.color('sdss2010-g', 'sdss2010-i')
 
     s2p_z015 = Spec2Phot(lam=lam * u.AA, flam=specs * u.Unit('Lsun AA-1 pc-2'),
                          family='sdss2010-*', axis=1, redshift=.15)
     Cgr_z015 = s2p_z015.color('sdss2010-g-shift(0.15)', 'sdss2010-r-shift(0.15)')
     Cri_z015 = s2p_z015.color('sdss2010-r-shift(0.15)', 'sdss2010-i-shift(0.15)')
+    Cgi_z015 = s2p_z015.color('sdss2010-g-shift(0.15)', 'sdss2010-i-shift(0.15)')
 
     MLr, MLi, MLz, MLV = (metadata['mstar'] / Lr,
                           metadata['mstar'] / Li,
                           metadata['mstar'] / Lz,
                           metadata['mstar'] / LV)
-    ML = t.Table(data=[MLr, MLi, MLz, MLV, Cgr, Cri,
-                       Cgr_z015, Cri_z015],
+    ML = t.Table(data=[MLr, MLi, MLz, MLV, Cgr, Cri, Cgi,
+                       Cgr_z015, Cri_z015, Cgi_z015],
                  names=['MLr', 'MLi', 'MLz', 'MLV',
-                        'Cgr', 'Cri', 'Cgr_z015', 'Cri_z015'])
+                        'Cgr', 'Cri', 'Cgi', 'Cgr_z015', 'Cri_z015', 'Cgi_z015'])
     metadata = t.hstack([metadata, ML])
 
     write_spec_fits(metadata=metadata, lam=lam, specs=specs, loc=loc,
@@ -1051,183 +1087,10 @@ def random_SFH_plots(n=10, save=False, sfh=None):
     return sfh
 
 test_dicts = {
-    '1':   {'tf': 1., 'd1': np.array([2.]), 'tt': np.array([13.71]),
+    '1':   {'tf': 1., 'd1': 2., 'tt': 13.7,
             'nburst': 0, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([1.]),
-            'sigma': np.array([250.]), 'logzsol': -1.,
-            'A': np.zeros(5), 'dtb': np.zeros(5), 'tb': np.zeros([5])},
-    '1.1': {'tf': 1., 'd1': np.array([2.]), 'tt': np.array([13.71]),
-            'nburst': 1, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([1.]),
-            'sigma': np.array([250.]), 'logzsol': -1.,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([8., 0. ,0., 0., 0.])},
-    '1.2': {'tf': 1., 'd1': np.array([2.]), 'tt': np.array([4.]),
-            'nburst': 0, 'gamma': -1., 'mu': np.array([.2]), 'tau_V': np.array([1.]),
-            'sigma': np.array([250.]), 'logzsol': -1.,
-            'A': np.zeros(5), 'dtb': np.zeros(5), 'tb': np.zeros([5])},
-    '1.3': {'tf': 1., 'd1': np.array([2.]), 'tt': np.array([8.]),
-            'nburst': 0, 'gamma': -.25, 'mu': np.array([.2]), 'tau_V': np.array([1.]),
-            'sigma': np.array([250.]), 'logzsol': -1.,
-            'A': np.zeros(5), 'dtb': np.zeros(5), 'tb': np.zeros([5])},
-    '2':   {'tf': 5., 'd1': np.array([2.]), 'tt': np.array([12.]),
-            'nburst': 3, 'gamma': 0., 'mu': np.array([.4]), 'tau_V': np.array([1.]),
-            'sigma': np.array([150.]), 'logzsol': 0.,
-            'A': np.array([2., 1.5, 1., 0., 0.]), 'dtb': np.array([.125, .25, .5, 0., 0.]),
-            'tb': np.array([9., 11., 13., 0., 0.])},
-    '2.1': {'tf': 5., 'd1': np.array([2.]), 'tt': np.array([12.]),
-            'nburst': 2, 'gamma': 0., 'mu': np.array([.4]), 'tau_V': np.array([1.]),
-            'sigma': np.array([150.]), 'logzsol': 0.,
-            'A': np.array([2., 1.5, 0., 0., 0.]), 'dtb': np.array([.5, .25, 0., 0., 0.]),
-            'tb': np.array([9., 11., 0., 0., 0.])},
-    '2.2': {'tf': 5., 'd1': np.array([2.]), 'tt': np.array([12.]),
-            'nburst': 2, 'gamma': 0., 'mu': np.array([.4]), 'tau_V': np.array([1.]),
-            'sigma': np.array([150.]), 'logzsol': -.3,
-            'A': np.array([2., 1.5, 0., 0., 0.]), 'dtb': np.array([.125, .125, 0., 0., 0.]),
-            'tb': np.array([9., 11., 0., 0., 0.])},
-    '3':   {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': 0., 'mu': np.array([.1]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '3.1': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': 0., 'mu': np.array([.1]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '3.2': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '3.3': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([3.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '3.4': {'tf': 12., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 0, 'gamma': 0., 'mu': np.array([.5]), 'tau_V': np.array([3.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '4':   {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.71]),
-            'nburst': 1, 'gamma': 0., 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.1': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([12.]),
-            'nburst': 1, 'gamma': 0.25, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.2': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([12.5]),
-            'nburst': 1, 'gamma': 0.25, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.3': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.]),
-            'nburst': 1, 'gamma': 0.25, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.4': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.25]),
-            'nburst': 1, 'gamma': 0.25, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.5': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.5]),
-            'nburst': 1, 'gamma': 0.25, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.6': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([12.]),
-            'nburst': 1, 'gamma': 0.5, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.7': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([12.5]),
-            'nburst': 1, 'gamma': 0.5, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.8': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.]),
-            'nburst': 1, 'gamma': 0.5, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.9': {'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.25]),
-            'nburst': 1, 'gamma': 0.5, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '4.10':{'tf': 7., 'd1': np.array([3.]), 'tt': np.array([13.5]),
-            'nburst': 1, 'gamma': 0.5, 'mu': np.array([.4]), 'tau_V': np.array([2.]),
-            'sigma': np.array([80.]), 'logzsol': 0.0969,
-            'A': np.array([2., 0., 0., 0., 0.]), 'dtb': np.array([.25, 0., 0., 0., 0.]),
-            'tb': np.array([9., 0., 0., 0., 0.])},
-    '5':   {'tf': .5, 'd1': np.array([1.]), 'tt': np.array([.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.1': {'tf': 1.5, 'd1': np.array([1.]), 'tt': np.array([1.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.2': {'tf': 3.25, 'd1': np.array([1.]), 'tt': np.array([3.35]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.3': {'tf': 5., 'd1': np.array([1.]), 'tt': np.array([5.1]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.4': {'tf': 6.5, 'd1': np.array([1.]), 'tt': np.array([6.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.5': {'tf': 8., 'd1': np.array([1.]), 'tt': np.array([8.1]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.6': {'tf': 9.5, 'd1': np.array([1.]), 'tt': np.array([9.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.7': {'tf': 10.5, 'd1': np.array([1.]), 'tt': np.array([10.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.8': {'tf': 11.5, 'd1': np.array([1.]), 'tt': np.array([11.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.9': {'tf': 12.5, 'd1': np.array([1.]), 'tt': np.array([12.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.10':{'tf': 13.25, 'd1': np.array([1.]), 'tt': np.array([13.3]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.11':{'tf': 13.5, 'd1': np.array([1.]), 'tt': np.array([13.6]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])},
-    '5.12':{'tf': 13.61, 'd1': np.array([1.]), 'tt': np.array([13.71]),
-            'nburst': 0, 'theta': -np.pi / 2, 'mu': np.array([.4]), 'tau_V': np.array([1.5]),
-            'sigma': np.array([100.]), 'logzsol': 0.,
-            'A': np.array([0., 0., 0., 0., 0.]), 'dtb': np.array([0., 0., 0., 0., 0.]),
-            'tb': np.array([0., 0., 0., 0., 0.])}
+            'sigma': np.array([250.]), 'logzsol': -1., 'fbhb': .1, 'sbss': 1.,
+            'A': np.zeros(5), 'dtb': np.zeros(5), 'tb': np.zeros(5)},
 }
 
 def make_tailored_tests(dicts, sfh, *args, **kwargs):
@@ -1254,17 +1117,17 @@ class TemplateCoverageError(TemplateError):
 
 if __name__ == '__main__':
 
-    nfiles, nper, Nsubsample = 50, 100, 10
+    nfiles, nper, Nsubsample = 40, 100, 10
     name_ix0 = 0
     name_ixf = name_ix0 + nfiles
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180313-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180806-1/'
     if not os.path.isdir(CSPs_dir):
         os.makedirs(CSPs_dir)
 
     RS = np.random.RandomState()
-    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=3, NBB=0.75,
-                          pct_notrans=0.5, tform_key='loglinmix', trans_mode=0.75)
+    sfh = FSPS_SFHBuilder(RS=RS, Nsubsample=Nsubsample, max_bursts=3, NBB=0.5,
+                          pct_notrans=.75, tform_key='norm', trans_mode=.75)
     sfh.dump_tuners(loc=CSPs_dir)
 
     print('Making spectral library...')
@@ -1297,10 +1160,10 @@ if __name__ == '__main__':
         lllim=3500., lulim=10000.)
     #'''
 
-    #'''
+    '''
     print('Making tailored tests...')
     sfh.Nsubsample = 1
     sfh = make_tailored_tests(
         dicts=test_dicts, sfh=sfh, loc=CSPs_dir,
         nsfhper=nper, nsubper=1, lllim=3500., lulim=10000.)
-    #'''
+    '''

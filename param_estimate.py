@@ -12,6 +12,9 @@ class ParamInterpMap(object):
 
         # apply sort to values and then weights
         self.v_o = v[order]
+        w_sum = w.sum(axis=0, keepdims=True)
+        w = w + eps * np.isclose(w_sum, 0, atol=eps)
+
         w_o = w[order] + eps
 
         self.cumpctl = 100. * (np.cumsum(w_o, axis=0) - w_o / 2) / \

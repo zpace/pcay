@@ -664,6 +664,25 @@ def random_orthogonal_basis(shape):
     order = np.argsort(evals)[::-1][:nsamp]
     return evecs[:, order].T
 
+def brokenstick(N, n):
+    '''
+    return broken-stick model for N, s.t.
+        E_n = (1/n + 1/(n+1) + ... + 1/N) / N
+    '''
+    ns = np.linspace(n, N, N - n + 1)
+    inv_ns = 1. / ns
+    return inv_ns.sum() / N
+
+def ba_to_i_holmberg(ba, alpha=0.2):
+    '''
+    return inclination angle from axis ratio
+    '''
+    cos2i = (ba**2. - alpha**2.) / (1. - alpha**2.)
+    cosi = np.sqrt(cos2i)
+    i = np.arccos(cosi)
+    return i
+
+
 class LogcubeDimError(Exception):
     def __init__(self, *args, **kwargs):
         super().__init__()

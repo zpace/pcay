@@ -10,3 +10,5 @@ if mangarc.tools_loc not in sys.path:
     sys.path.append(mangarc.tools_loc)
 
 mpl_v = 'MPL-6'
+basedir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180713-1/'
+from astropy.cosmology import WMAP9

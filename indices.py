@@ -1,6 +1,8 @@
 import numpy as np
 import astropy.table as t
 
+import utils as ut
+
 from warnings import simplefilter, catch_warnings
 
 data = t.Table.read('data/indices.dat', format='ascii')
@@ -63,19 +65,17 @@ class StellarIndex(object):
         # (ApJ 527:54, 1999); and Hamilton (ApJ 297:371, 1985)
         mask_red = self.mask('red', l)
         mask_blue = self.mask('blue', l)
-        mask_band = self.mask('band', l)
 
         l_red = l[..., mask_red]
         l_blue = l[..., mask_blue]
-        l_band = l[..., mask_band]
         flam_red = flam[..., mask_red]
         flam_blue = flam[..., mask_blue]
-        flam_band = flam[..., mask_band]
-        ivar_red = ivar[..., mask_red]
-        ivar_blue = ivar[..., mask_blue]
+        dl = l * ut.determine_dlogl(np.log(l))
+        dl_red = dl[..., mask_red]
+        dl_blue = dl[..., mask_blue]
 
-        F0_red = np.average(flam_red, weights=ivar_red, axis=-1)
-        F0_blue = np.average(flam_blue, weights=ivar_blue, axis=-1)
+        F0_red = np.sum(flam_red * l_red**2. * dl_red, axis=-1)
+        F0_blue = np.sum(flam_blue * l_blue**2. * dl_blue, axis=-1)
 
         return F0_red / F0_blue
 

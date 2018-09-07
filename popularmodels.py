@@ -89,13 +89,13 @@ class Comparator(object):
         rawhist, *_ = np.histogram2d(xdata, ydata, bins=[xbinedges, ybinedges])
         wthist, *_ = np.histogram2d(xdata, ydata, bins=[xbinedges, ybinedges],
                                     weights=self.trn_usage_cts)
-        Xgrid, Ygrid = np.meshgrid(xbinctrs, ybinctrs)
+        Xgrid, Ygrid = np.meshgrid(xbinctrs, ybinctrs, indexing='ij')
 
         fig, ax = plt.subplots(1, 1)
         raw_cs = ax.contour(
-            Xgrid, Ygrid, rawhist, label='all', colors='C0', linewidths=0.25)
+            Xgrid, Ygrid, rawhist, colors='C0', linewidths=0.25)
         wtd_cs = ax.contour(
-            Xgrid, Ygrid, wthist, label='wtd', colors='C1', linewidths=0.25)
+            Xgrid, Ygrid, wthist, colors='C1', linewidths=0.25)
 
         raw_cs.collections[-1].set_label('all')
         wtd_cs.collections[-1].set_label('wtd')
@@ -152,17 +152,17 @@ class Comparator(object):
                     for (ii, jj), n in zip(subplot_inds, paramlist)}
 
         for n, ax in fig_axes.items():
-            ax.scatter(self.trn_metadata[n].data, 1. + self.trn_usage_cts,
-                       marker='.', s=.5, alpha=.5, c='k', edgecolor='None')
+            ax.hist(self.trn_metadata[n].data, weights=self.trn_usage_cts,
+                       histtype='step', density=True)
             ax.set_yscale('log')
-            ax.set_ylabel(r'$N + 1$', size='x-small')
+            ax.set_ylabel(r'density', size='x-small')
             ax.tick_params(labelsize='x-small')
             ax.set_xlabel(n.replace('_', '\_'))
 
         figures_tools.savefig(fig, fname='wtsvsparams.png', fdir=self.workdir)
 
 if __name__ == '__main__':
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180130-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180523-1/'
     all_metadata_fnames = glob.glob(os.path.join(CSPs_dir, 'CSPs_*.fits'))
     trn_metadata_fnames = [f for f in all_metadata_fnames
                            if (('validation' not in f) and ('test' not in f))]
@@ -172,7 +172,7 @@ if __name__ == '__main__':
     trn_metadata = t.vstack(list(map(t.Table.read, trn_metadata_fnames)))
     test_metadata = t.vstack(list(map(t.Table.read, test_metadata_fnames)))
 
-    mocks_results_fnames = glob.glob('results/*/*_res.fits')
+    mocks_results_fnames = glob.glob(os.path.join(CSPs_dir, 'results/*/*_res.fits'))
     nsub = fits.getval(trn_metadata_fnames[0], ext=0, keyword='NSUBPER')
 
     mpl_v = 'MPL-6'

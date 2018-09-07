@@ -175,7 +175,7 @@ class MaNGA_deredshift(object):
 
         # find mask width for all spaxels
         mask_velwidth = determine_eline_mask_dv(
-            self.dap_hdulist, minimum_value=half_dv.value, n_times_sigma=2.5)
+            self.dap_hdulist, minimum_value=half_dv.value, n_times_sigma=1.5)
 
         if template_dlogl is None:
             template_dlogl = spec_tools.determine_dlogl(template_logl)

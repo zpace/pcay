@@ -4,7 +4,7 @@ from utils import SqFromSqCacher
 
 from scipy.optimize import curve_fit, OptimizeWarning
 from scipy import linalg as spla
-from scipy.sparse import dia_matrix
+from scipy.sparse import diags
 
 eps = np.finfo(float).eps
 
@@ -82,7 +82,7 @@ class PCAProjectionSolver(object):
     '''
     projects data down onto PCs
     '''
-    def __init__(self, e, K_inst_cacher, K_th):
+    def __init__(self, e, K_inst_cacher, K_th, regul=.1):
         self.e = e
         self.q, self.nl = e.shape
         self.K_inst_cacher = K_inst_cacher
@@ -90,7 +90,8 @@ class PCAProjectionSolver(object):
 
         self.eTe = e.T @ e
         self.inv_eTe = spla_chol_invert(
-            self.eTe + np.diag(np.diag(self.eTe)), np.eye(self.nl))
+            self.eTe + regul * np.diag(np.diag(self.eTe)),
+            np.eye(self.nl))
         self.H = self.inv_eTe @ e.T
 
         self.K_PC_th = self.H.T @ self.K_th @ self.H
@@ -102,13 +103,13 @@ class PCAProjectionSolver(object):
 
         K_PC_inst = self.K_inst_cacher.covwindows.all_K_PCs[lam_i0]
 
-        alpha = 1.0e-4
+        min_rel_flux_unc = .047  # Yan+ (2016)
+        alpha = min_rel_flux_unc**2. * f
         fr = 0.5
         offdiag = fr * var[1:] + (1. - fr) * var[:-1]
-        K_meas = dia_matrix(np.diag(var) + np.diag(offdiag, k=1) + np.diag(offdiag, k=-1))
+        K_meas = diags([offdiag, var + alpha, offdiag], [-1, 0, 1])
 
-        K_PC_meas = (self.H.T @ K_meas @ self.H) + \
-                    np.einsum('li,i,mi->lm', self.H.T, alpha * np.ones(self.nl), self.H.T)
+        K_PC_meas = self.H.T @ K_meas @ self.H
         K_PC = K_PC_inst + K_PC_meas + (a**2. * self.K_PC_th)
 
         try:
@@ -370,3 +371,29 @@ class HighDimDataSet(object):
         self.ivar0 = (snr / self.obs)**2.
         self.ivar = (self.ivar0 * (1. + ivar_precision * \
                      np.random.randn(*self.ivar0.shape))).clip(min=0.)
+
+def run_pca(S, q=None):
+    R = np.cov(S, rowvar=False)
+    # calculate evecs & evalse of covariance matrix
+    # (use 'eigh' rather than 'eig' since R is symmetric for performance
+    evals_, evecs_ = np.linalg.eigh(R)
+    # sort eigenvalues and eigenvectors in decreasing order
+    idx = np.argsort(evals_)[::-1]
+    evals_, evecs_ = evals_[idx], evecs_[:, idx].T
+    # and select first `q`
+    evals, evecs = evals_[:q], evecs_[:q]
+
+    return evals_, evals, evecs_, evecs
+
+def quick_data_to_PC(specs, e, regul=.1):
+    q, nl = e.shape
+
+    eTe = e.T @ e
+    inv_eTe = spla_chol_invert(
+        eTe + regul * np.diag(np.diag(eTe)), np.eye(nl))
+    H = inv_eTe @ e.T
+
+    # carry out the transformation on the data using eigenvectors
+    A = specs @ H
+
+    return A

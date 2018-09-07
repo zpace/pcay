@@ -32,7 +32,7 @@ def compute_snrcube(flux, ivar, filtersize_l=15, return_rms_map=False):
         rms map of the cube
     '''
 
-    snrcube = medfilt(flux * np.sqrt(ivar + 1), [filtersize_l, 1, 1])
+    snrcube = medfilt(np.abs(flux) * np.sqrt(ivar), [filtersize_l, 1, 1])
     rms_map = 1. / np.mean(snrcube, axis=0)
 
     if return_rms_map:
@@ -123,7 +123,7 @@ class FakeData(object):
         # spectrophotometric noise
         cov_noise = noisify_cov(Kspec_obs, mapshape=mapshape)
         # random noise: signal * (gauss / snr)
-        random_noise = np.random.randn(*cubeshape) / (snrcube_obs + .01)
+        random_noise = np.random.randn(*cubeshape) / (snrcube_obs + 1.0e-6)
         fluxscaled_random_noise = random_noise * final_fluxcube
 
         final_fluxcube += (cov_noise + fluxscaled_random_noise)
@@ -133,19 +133,21 @@ class FakeData(object):
         u_flam = 1.0e-17 * (u.erg / (u.s * u.cm**2 * u.AA))
         rband_drp = Spec2Phot(
             lam=drp_base['WAVE'].data,
-            flam=drp_base['FLUX'].data * u_flam).ABmags['sdss2010-r']
+            flam=drp_base['FLUX'].data * u_flam).ABmags['sdss2010-r'] * u.ABmag
+        rband_drp[~np.isfinite(rband_drp)] = rband_drp[np.isfinite(rband_drp)].max()
         rband_model = Spec2Phot(
             lam=drp_base['WAVE'].data,
-            flam=final_fluxcube * u_flam).ABmags['sdss2010-r']
+            flam=final_fluxcube * u_flam).ABmags['sdss2010-r'] * u.ABmag
+        rband_model[~np.isfinite(rband_model)] = rband_model[np.isfinite(rband_model)].max()
         # flux ratio map
-        r = 10.**(-0.4 * (rband_drp - rband_model))
+        r = (rband_drp.to(m.Mgy) / rband_model.to(m.Mgy)).value
 
         final_fluxcube *= r[None, ...]
         # initialize the ivar cube according to the SNR cube
         # of base observations
         # this is because while we think we know the actual spectral covariance,
         # that is not necessarily reflected in the quoted ivars!!!
-        final_ivarcube = snrcube_obs**2. / final_fluxcube
+        final_ivarcube = (snrcube_obs / final_fluxcube)**2.
 
         '''STEP 8'''
         # mask where the native datacube has no signal
@@ -193,9 +195,6 @@ class FakeData(object):
         models_meta = t.Table(models_hdulist['meta'].data)
         models_meta['tau_V mu'] = models_meta['tau_V'] * models_meta['mu']
 
-        stellar_indices = get_stellar_indices(l=models_lam, spec=models_specs.T)
-        models_meta = t.hstack([models_meta, stellar_indices])
-
         models_meta.keep_columns(pca.metadata.colnames)
 
         for n in models_meta.colnames:
@@ -232,17 +231,17 @@ class FakeData(object):
         # 0. is a sentinel value, that tells us where to mask later
         return interp(logl_out)
 
-    def write(self):
+    def write(self, fake_basedir):
         '''
         write out fake LOGCUBE and DAP
         '''
 
         fname_base = self.plateifu_base
         basedir = 'fakedata'
-        drp_fname = os.path.join(basedir, '{}_drp.fits'.format(fname_base))
-        dap_fname = os.path.join(basedir, '{}_dap.fits'.format(fname_base))
+        drp_fname = os.path.join(fake_basedir, '{}_drp.fits'.format(fname_base))
+        dap_fname = os.path.join(fake_basedir, '{}_dap.fits'.format(fname_base))
         truthtable_fname = os.path.join(
-            basedir, '{}_truth.tab'.format(fname_base))
+            fake_basedir, '{}_truth.tab'.format(fname_base))
 
         new_drp_cube = fits.HDUList([hdu for hdu in self.drp_base])
         new_drp_cube['FLUX'].data = self.fluxcube
