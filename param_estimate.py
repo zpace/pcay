@@ -1,5 +1,37 @@
 import numpy as np
+import numba
 eps = np.finfo(float).eps
+
+@numba.jit
+def param_interp_map(v, w, pctl, mask, order=None):
+    '''
+    '''
+    if order is None:
+        order = np.argsort(v)
+
+    v_o = v[order]
+    w_sum = w.sum(axis=0, keepdims=True)
+    w = w + eps * np.isclose(w_sum, 0, atol=eps)
+
+    w_o = w[order] + eps
+
+    cumpctl = 100. * (np.cumsum(w_o, axis=0) - 0.5 * w_o) / w_sum
+
+    vals_at_pctls = np.zeros(np.array(pctl).shape + mask.shape)
+
+    for i, j in np.ndindex(mask.shape):
+        # don't bother where there's a mask
+        if mask[i, j]:
+            continue
+
+        ix_rhs = np.searchsorted(cumpctl[:, i, j], pctl, side='right')
+        ix_lhs = ix_rhs - 1
+
+        v_lhs, v_rhs = v_o[ix_lhs], v_o[ix_rhs]
+        p_lhs, p_rhs = cumpctl[ix_lhs, i, j], cumpctl[ix_rhs, i, j]
+        vals_at_pctls[:, i, j] = v_lhs + ((pctl - p_lhs) / (p_rhs - p_lhs)) * (v_rhs - v_lhs)
+
+    return vals_at_pctls
 
 class ParamInterpMap(object):
     '''

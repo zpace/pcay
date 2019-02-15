@@ -14,7 +14,6 @@ from astropy import constants as c, units as u, table as t
 from astropy.io import fits
 from astropy import wcs
 from astropy.utils.console import ProgressBar
-from specutils.extinction import reddening
 from astropy.cosmology import WMAP9
 from astropy import coordinates as coord
 from astropy.wcs.utils import pixel_to_skycoord
@@ -44,6 +43,7 @@ import sklearn.decomposition as decomp
 from statsmodels.nonparametric.kde import KDEUnivariate
 
 # local
+from importer import *
 import csp
 import cov_obs
 import figures_tools
@@ -51,19 +51,20 @@ import radial
 from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
                          Spec2Phot, absmag_sun_band as Msun)
 import utils as ut
-from fakedata import FakeData
+from fakedata import FakeData, SkyContamination
 from partition import CovCalcPartitioner, CovWindows
 from linalg import *
+import solvecube
 from param_estimate import *
 from rectify import MaNGA_deredshift
-
-from importer import *
 
 # personal
 import manga_tools as m
 import spec_tools
 
 eps = np.finfo(float).eps
+
+skymodel = SkyContamination.from_mpl_v(mpl_v)
 
 
 class StellarPop_PCA(object):
@@ -134,10 +135,15 @@ class StellarPop_PCA(object):
         self.important_params = ['MLi', 'Dn4000', 'Hdelta_A',
                                  'MWA', 'sigma', 'logzsol',
                                  'tau_V', 'mu', 'tau_V mu',
-                                 'Mg_b', 'Ca_HK', 'F_1G']
+                                 'Mg_b', 'Ca_HK', 'F_1G',
+                                 'logQHpersolmass']
 
         self.importantplus_params = self.important_params + \
                                     ['F_200M', 'tf', 'd1', 'tt', 'MLV']
+
+        self.confident_params = ['MLi', 'logzsol',
+                                 'tau_V', 'mu', 'tau_V mu', 'tau_V (1 - mu)',
+                                 'logQHpersolmass', 'uv_slope']
 
         # observational covariance matrix
         if not isinstance(K_obs, cov_obs.Cov_Obs):
@@ -151,8 +157,8 @@ class StellarPop_PCA(object):
     def from_FSPS(cls, K_obs, lsf, base_dir, nfiles=None,
                   log_params=['MWA', 'MLr', 'MLi', 'MLz', 'MLV',
                               'F_20M', 'F_100M', 'F_200M', 'F_500M', 'F_1G'],
-                  inf_replace={zip(['F_20M', 'F_100M', 'F_200M', 'F_500M', 'F_1G'],
-                                   [-15., -15., -15., -15., -15.])},
+                  inf_replace=dict(zip(['F_20M', 'F_100M', 'F_200M', 'F_500M', 'F_1G'],
+                                       [-20., -20., -20., -20., -20.])),
                   vel_params={}, dlogl=1.0e-4, z0_=.04,
                   preload_llims=[3000. * u.AA, 10000. * u.AA], **kwargs):
         '''
@@ -189,6 +195,7 @@ class StellarPop_PCA(object):
         logl = logl[in_lrange]
 
         meta['tau_V mu'] = meta['tau_V'] * meta['mu']
+        meta['tau_V (1 - mu)'] = meta['tau_V'] * (1. - meta['mu'])
 
         for k in meta.colnames:
             if len(meta[k].shape) > 1:
@@ -216,16 +223,18 @@ class StellarPop_PCA(object):
         meta['tau_V'].meta['TeX'] = r'$\tau_V$'
         meta['mu'].meta['TeX'] = r'$\mu$'
         meta['tau_V mu'].meta['TeX'] = r'$\tau_V ~ \mu$'
+        meta['tau_V (1 - mu)'].meta['TeX']  = r'$\tau_V ~ (1 - \mu)$'
         meta['MLr'].meta['TeX'] = r'$\log \Upsilon^*_r$'
         meta['MLi'].meta['TeX'] = r'$\log \Upsilon^*_i$'
         meta['MLz'].meta['TeX'] = r'$\log \Upsilon^*_z$'
         meta['MLV'].meta['TeX'] = r'$\log \Upsilon^*_V$'
         meta['sigma'].meta['TeX'] = r'$\sigma$'
-        meta['F_20M'].meta['TeX'] = r'$F_m^{\rm 20~Myr}$'
-        meta['F_100M'].meta['TeX'] = r'$F_m^{\rm 100~Myr}$'
-        meta['F_200M'].meta['TeX'] = r'$F_m^{\rm 200~Myr}$'
-        meta['F_500M'].meta['TeX'] = r'$F_m^{\rm 500~Myr}$'
-        meta['F_1G'].meta['TeX'] = r'$F_m^{\rm 1~Gyr}$'
+        meta['F_20M'].meta['TeX'] = r'$F_m^{\rm .02G}$'
+        meta['F_50M'].meta['TeX'] = r'$F_m^{\rm .05G}$'
+        meta['F_100M'].meta['TeX'] = r'$F_m^{\rm .1G}$'
+        meta['F_200M'].meta['TeX'] = r'$F_m^{\rm .2G}$'
+        meta['F_500M'].meta['TeX'] = r'$F_m^{\rm .5G}$'
+        meta['F_1G'].meta['TeX'] = r'$F_m^{\rm 1G}$'
         meta['gamma'].meta['TeX'] = r'$\gamma$'
         meta['theta'].meta['TeX'] = r'$\Theta$'
         meta['d1'].meta['TeX'] = r'$\tau_{\rm SFH}$'
@@ -238,6 +247,8 @@ class StellarPop_PCA(object):
         meta['Cri_z015'].meta['TeX'] = r'$C^{.15}_{ri}$'
         meta['sbss'].meta['TeX'] = r'$S_{\rm BSS}$'
         meta['fbhb'].meta['TeX'] = r'$f_{\rm BHB}$'
+        meta['logQHpersolmass'].meta['TeX'] = r'$\log{\frac{Q_H}{M_{\odot}}}$'
+        meta['uv_slope'].meta['TeX'] = r'$\beta_{UV}$'
 
         for n in meta.colnames:
             if n in log_params:
@@ -439,7 +450,7 @@ class StellarPop_PCA(object):
         pc_hdu.header['EXTNAME'] = 'EVECS'
         hdulist.append(pc_hdu)
 
-        hdulist.writeto('pc_vecs.fits', overwrite=True)
+        hdulist.writeto(os.path.join(self.basedir, 'pc_vecs.fits'), overwrite=True)
 
     def reconstruct_normed(self, A):
         '''
@@ -527,7 +538,7 @@ class StellarPop_PCA(object):
 
         return w
 
-    def param_pct_map(self, qty, W, P, factor=None, add=None):
+    def param_pct_map(self, qty, W, P, mask, order=None, factor=None, add=None):
         '''
         This is no longer iteration based, which is awesome.
 
@@ -553,12 +564,11 @@ class StellarPop_PCA(object):
         if add is None:
             add = np.zeros(cubeshape)
 
-        pctl_interp = ParamInterpMap(v=Q, w=W)
-        A = pctl_interp(P)
+        A = param_interp_map(v=Q, w=W, pctl=np.array(P), mask=mask, order=order)
 
         return (A + add[None, ...]) * factor[None, ...]
 
-    def param_cred_intvl(self, qty, W, factor=None):
+    def param_cred_intvl(self, qty, W, mask, order=None, factor=None):
         '''
         find the median and Bayesian credible interval size (two-sided)
             of some param's PDF
@@ -582,7 +592,8 @@ class StellarPop_PCA(object):
         unc_incr = self.metadata[qty].meta.get('unc_incr', 0.)
 
         # get param pctl maps
-        P = self.param_pct_map(qty=qty, W=W, P=P, factor=factor, add=add)
+        P = self.param_pct_map(qty=qty, W=W, P=P, mask=mask, order=order,
+                               factor=factor, add=add)
 
         P16, P50, P84 = tuple(map(np.squeeze, np.split(P, 3, axis=0)))
         if scale == 'log':
@@ -617,7 +628,7 @@ class StellarPop_PCA(object):
             ax.plot(self.l, PCs[i, :], color='k', linestyle='-',
                     drawstyle='steps-mid', linewidth=0.5)
             if i == 0:
-                pcnum = 'Mean'
+                pcnum = 'Median'
             else:
                 pcnum = 'PC{}'.format(i)
             ax.set_ylabel(pcnum, size=6)
@@ -1021,10 +1032,10 @@ class PCA_Result(object):
         self.guessbaddata = ut.find_bad_data(self.O, self.ivar, wid=51)
 
         # combine masks
+        self.to_impute = np.logical_or.reduce((
+            self.drppixmask, self.guessbaddata, self.eline_mask))
         self.mask_cube = np.logical_or(
-            np.logical_or.reduce((
-                self.drppixmask, self.guessbaddata, self.eline_mask)),
-            np.logical_or(self.nodata, self.mask_spax)[None, ...])
+            self.to_impute, np.logical_or(self.nodata, self.mask_spax)[None, ...])
 
         # normalize data
         self.O_norm, self.a_map = self.pca.scaler(self.O)
@@ -1047,8 +1058,6 @@ class PCA_Result(object):
 
         # solve for PC coefficients and covariances
         self.A, self.P_PC, self.fit_success = self.solve_cube()
-        self.P_PC = np.moveaxis(self.P_PC, [0, 1, 2, 3], [2, 3, 0, 1]).astype(float)
-        self.A = np.moveaxis(self.A, -1, 0).astype(float)
 
         self.w = pca.compute_model_weights(P=self.P_PC, A=self.A)
 
@@ -1091,17 +1100,30 @@ class PCA_Result(object):
         self.goodPDF = ~self.badPDF
 
     def solve_cube(self):
+        '''
+        '''
+        var_norm = 1. / self.ivar_norm
+        #'''
         solver = PCAProjectionSolver(
-            e=self.E, K_inst_cacher=self.K_obs, K_th=self.pca.cov_th)
+            e=self.E, K_inst_cacher=self.K_obs, K_th=self.pca.cov_th, regul=1.0e-2)
 
         solve_all = np.vectorize(
             solver.solve_single, signature='(l),(l),(l),(),(),()->(q),(q,q),()',
             otypes=[np.ndarray, np.ndarray, bool])
 
-        var_norm = 1. / self.ivar_norm
         A, P_PC, success = solve_all(
             np.moveaxis(self.S_cens, 0, -1), np.moveaxis(var_norm, 0, -1),
             np.moveaxis(self.mask_cube, 0, -1), self.a_map, self.i0_map, self.nodata)
+
+        P_PC = np.moveaxis(P_PC, [0, 1, 2, 3], [2, 3, 0, 1]).astype(float)
+        A = np.moveaxis(A, -1, 0).astype(float)
+        #'''
+        '''
+        A, P_PC, success = solvecube.solve_cube_gls(
+            e=self.pca.PCs, s=self.S_cens, var=var_norm, mask_cube=self.mask_cube,
+            K_inst=self.K_obs, K_th=self.pca.cov_th, i0=self.i0_map,
+            mask_map=np.logical_or(self.mask_spax, self.nodata))
+        '''
         return A, P_PC, success
 
     def reconstruct(self):
@@ -1281,7 +1303,8 @@ class PCA_Result(object):
         '''
 
         P50, l_unc, u_unc, scale = self.pca.param_cred_intvl(
-            qty=qty_str, factor=f, W=self.w)
+            qty=qty_str, factor=f, W=self.w,
+            mask=np.logical_or(self.mask_map, ~self.fit_success))
 
         if not TeX_over:
             med_TeX = self.pca.metadata[qty_str].meta.get('TeX', qty_str)
@@ -1303,13 +1326,16 @@ class PCA_Result(object):
 
         mask = self.mask_map
 
+        m_vmin, m_vmax = np.percentile(np.ma.array(P50, mask=mask).compressed(), [2., 98.])
         m = ax1.imshow(
             np.ma.array(P50, mask=mask),
-            aspect='equal', norm=norm[0])
+            aspect='equal', norm=norm[0], vmin=m_vmin, vmax=m_vmax)
 
+        s_vmin, s_vmax = np.percentile(np.ma.array(unc, mask=mask).compressed(),
+                                       [2., 98.])
         s = ax2.imshow(
             np.ma.array(unc, mask=mask),
-            aspect='equal', norm=norm[1])
+            aspect='equal', norm=norm[1], vmin=s_vmin, vmax=s_vmax)
 
         mcb = plt.colorbar(m, ax=ax1, pad=0.025)
         mcb.set_label(med_TeX, size='xx-small')
@@ -1317,7 +1343,7 @@ class PCA_Result(object):
 
         scb = plt.colorbar(s, ax=ax2, pad=0.025)
         scb.set_label(r'$\sigma$', size=8)
-        scb.ax.tick_params(labelsize=8)
+        scb.ax.tick_params(labelsize='xx-small')
 
         return m, s, mcb, scb, scale
 
@@ -1359,7 +1385,8 @@ class PCA_Result(object):
         f = self.lum(band=band)
 
         P50, *_, scale = self.pca.param_cred_intvl(
-            qty=qty_str, factor=f, W=self.w)
+            qty=qty_str, factor=f, W=self.w,
+            mask=np.logical_or(self.mask_map, ~self.fit_success))
 
         if scale == 'log':
             return 10.**P50
@@ -1411,7 +1438,8 @@ class PCA_Result(object):
         # this SHOULD and DOES call the method in PCA rather than
         # in self, since we aren't using self.w
         P50, *_, scale = self.pca.param_cred_intvl(
-            qty='ML{}'.format(band), factor=lum.sum(keepdims=True), W=w)
+            qty='ML{}'.format(band), factor=lum.sum(keepdims=True), W=w,
+            mask=np.logical_or(self.mask_map, ~self.fit_success))
 
         if scale == 'log':
             ret = (10.**P50).sum()
@@ -1447,7 +1475,7 @@ class PCA_Result(object):
         logify = (self.pca.metadata[qty].meta.get(
                   'scale', 'linear') == 'linear')
 
-        TeX_over = r'$M^*_{{{}}}$'.format(band)
+        TeX_over = r'$\log M^*_{{{}}} {{\rm [M_{{\odot}}]}}$'.format(band)
 
         m, s, mcb, scb, scale = self.qty_map(
             ax1=ax1, ax2=ax2, qty_str=qty, f=f, norm=[None, None],
@@ -1476,7 +1504,8 @@ class PCA_Result(object):
         ax1.text(x=tr((0, 1), ax1xlims, 0.05),
                  y=tr((0, 1), ax1ylims, 0.05),
                  s='; '.join((TeX1, TeX2)),
-                 color='k', bbox=figures_tools.textboxprops)
+                 color='k', bbox=figures_tools.textboxprops,
+                 zorder=100)
 
         return m, s, mcb, scb
 
@@ -1499,6 +1528,33 @@ class PCA_Result(object):
         self.savefig(fig, fname, self.figdir, dpi=300)
 
         return fig
+
+    def logQH(self, band='i', P=[16., 50., 84.]):
+        logQHpersolmass = self.pca.metadata['logQHpersolmass']
+        logML = self.pca.metadata['ML{}'.format(band)]
+        loglum = np.log10(self.lum(band))
+        logQHperlum = logQHpersolmass + logML
+
+        A = param_interp_map(v=logQHperlum, w=self.w, pctl=np.array(P),
+                             mask=np.logical_or(self.mask_map, ~self.fit_success))
+        A = A[:, None, None] + loglum[None, :, :]
+        return A
+
+    def make_logQH_hdu(self):
+        V = self.logQH(band='i', P=[16., 50., 84.])
+        P16, P50, P84 = tuple(map(np.squeeze, np.split(V, 3, axis=0)))
+        l_unc, u_unc = P84 - P50, P50 - P16
+
+        qty_hdu = fits.ImageHDU(np.stack([P50, l_unc, u_unc]))
+        qty_hdu.header['LOGSCALE'] = False
+        qty_hdu.header['CHANNEL0'] = 'median'
+        qty_hdu.header['CHANNEL1'] = 'lower uncertainty'
+        qty_hdu.header['CHANNEL2'] = 'upper uncertainty'
+        qty_hdu.header['QTYNAME'] = 'logQH'
+        qty_hdu.header['EXTNAME'] = 'logQH'
+
+        return qty_hdu
+
 
     def qty_kde(self, q, **kwargs):
         '''
@@ -1565,7 +1621,7 @@ class PCA_Result(object):
         if len(q) == 0:
             return None
 
-        TeX = self.pca.metadata[qty].meta['TeX']
+        TeX = self.pca.metadata[qty].meta.get('TeX', qty)
 
         scale = self.pca.metadata[qty].meta.get('scale')
 
@@ -1758,12 +1814,25 @@ class PCA_Result(object):
 
         from utils import matcher
 
-        fig_height = 15
-        fig_width = 12
-
-        nparams = len(self.pca.important_params)
+        nparams = len(self.pca.confident_params)
         ncols = 3
         nrows = nparams // ncols + (nparams % ncols != 0)
+
+        wper = 3
+        hper = 2
+        htoprow = 2.5
+        lborder = rborder = 0.25
+        tborder = bborder = 0.5
+        lborder1, rborder1 = 0.75, 0.25
+        fig_height = hper * nrows + htoprow + tborder + bborder
+        fig_width = wper * ncols
+
+        llim, rlim = lborder / fig_width, 1. - (rborder / fig_width)
+        llim1, rlim1 = lborder1 / fig_width, 1. - (rborder1 / fig_width)
+        lolim, uplim = bborder / fig_height, 1. - (tborder / fig_height)
+
+        gs1_loborder = 1. - (tborder + htoprow) / fig_height
+        gs2_hiborder = (bborder + hper * nrows) / fig_height
 
         plt.close('all')
 
@@ -1771,13 +1840,13 @@ class PCA_Result(object):
 
         # gridspec used for map + spec_compare
         gs1 = gridspec.GridSpec(
-            3, 4, bottom=(nrows - 1.) / nrows, top=0.95,
+            3, 4, bottom=gs1_loborder, top=uplim,
             height_ratios=[3, 1, 1], width_ratios=[2, 0.5, 2, 2],
-            hspace=0., wspace=.1, left=.075, right=.95)
+            hspace=0., wspace=.1, left=llim1, right=rlim1)
 
         gs2 = gridspec.GridSpec(
-            nrows, ncols, bottom=.05, top=(nrows - 1.) / nrows,
-            left=.05, right=.95, hspace=.25)
+            nrows, ncols, bottom=lolim, top=gs2_hiborder,
+            left=llim, right=rlim, hspace=.35)
 
         # put the spectrum and residual here!
         spec_ax = fig.add_subplot(gs1[0, 2:])
@@ -1792,7 +1861,7 @@ class PCA_Result(object):
 
         # loop through parameters of interest, and make a weighted
         # histogram for each parameter
-        enum_ = enumerate(zip(gs2, self.pca.important_params))
+        enum_ = enumerate(zip(gs2, self.pca.confident_params))
         for i, (gs_, q) in enum_:
             ax = fig.add_subplot(gs_)
             is_ML = matcher(q, 'ML')
@@ -2353,7 +2422,9 @@ class PCA_Result(object):
         '''
         caches result of external call to pca.param_pctl_map
         '''
-        return self.pca.param_pct_map(qty, P=[16., 50., 84.], W=self.w)
+        return self.pca.param_pct_map(
+            qty, P=[16., 50., 84.], W=self.w,
+            mask=np.logical_or(self.mask_map, ~self.fit_success))
 
     def param_cred_intvl(self, qty, factor=None, add=None):
         '''
@@ -2397,14 +2468,16 @@ class PCA_Result(object):
 
         if qtys == 'all':
             qtys = self.pca.metadata.colnames
-        if qtys == 'important':
+        elif qtys == 'important':
             qtys = self.pca.important_params
-        if qtys == 'important+':
+        elif qtys == 'important+':
             qtys = self.pca.importantplus_params
+        elif qtys == 'confident':
+            qtys = self.pca.confident_params
 
         for qty in qtys:
             # retrieve results
-            P50, l_unc, u_unc, scale = self.pca.param_cred_intvl(qty=qty, W=self.w)
+            P50, l_unc, u_unc, scale = self.param_cred_intvl(qty=qty)
             qty_hdu = fits.ImageHDU(np.stack([P50, l_unc, u_unc]))
             qty_hdu.header['LOGSCALE'] = (scale == 'log')
             qty_hdu.header['CHANNEL0'] = 'median'
@@ -2418,6 +2491,10 @@ class PCA_Result(object):
                 qty_hdu.header['TRUTH'] = self.truth[qty]
 
             hdulist.append(qty_hdu)
+
+        logQH_hdu = self.make_logQH_hdu()
+        logQH_hdu.header['EXTNAME'] = 'logQH'
+        hdulist.append(logQH_hdu)
 
         # make extension with median spectral SNR
         snr_hdu = fits.ImageHDU(self.SNR_med)
@@ -2531,7 +2608,7 @@ def get_col_metadata(col, k, notfound=''):
 def setup_fake(row, pca, K_obs, dered_method='nearest', dered_kwargs={},
                mockspec_ix=None, CSPs_dir='.', mockspec_fname='CSPs_test.fits',
                fakedata_basedir='fakedata', mocksfh_fname='SFHs_test.fits',
-               pc_cov_method='full_iter', mpl_v='MPL-5'):
+               pc_cov_method='full_iter', mpl_v='MPL-6', sky=None):
 
     plateifu = row['plateifu']
     plate, ifu = plateifu.split('-')
@@ -2566,13 +2643,13 @@ def setup_fake(row, pca, K_obs, dered_method='nearest', dered_kwargs={},
     data = FakeData.from_FSPS(
         fname=mockspec_fullpath, i=mockspec_ix,
         plateifu_base=plateifu, pca=pca, row=row,
-        K_obs=K_obs, mpl_v=mpl_v)
+        K_obs=K_obs, mpl_v=mpl_v, sky=sky)
 
     data.write(fakedata_basedir)
 
     dered = MaNGA_deredshift.from_fakedata(
         plate=int(plate), ifu=int(ifu), MPL_v=mpl_v,
-        basedir=fakedata_basedir, row=row)
+        basedir=fakedata_basedir, row=row, kind=daptype)
     truth_fname = os.path.join(
         fakedata_basedir, '{}_truth.tab'.format(plateifu))
     truth = t.Table.read(truth_fname, format='ascii')[0]
@@ -2583,7 +2660,7 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
                dered_method='nearest', dered_kwargs={}, mockspec_ix=None, z_new=None,
                basedir='.', mockspec_fname='CSPs_test.fits',
                mocksfh_fname='SFHs_test.fits', vdisp_wt=False,
-               pc_cov_method='full_iter', makefigs=True, mpl_v='MPL-7'):
+               pc_cov_method='full_iter', makefigs=True, mpl_v='MPL-7', sky=None):
 
     plateifu = row['plateifu']
 
@@ -2598,12 +2675,13 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
         dered, data, truth, truth_sfh = setup_fake(
             row, pca, K_obs, dered_method=dered_method, dered_kwargs=dered_kwargs,
             mockspec_ix=mockspec_ix, CSPs_dir=basedir, fakedata_basedir=fakedata_basedir,
-            mockspec_fname=mockspec_fname, mocksfh_fname=mocksfh_fname, mpl_v=mpl_v)
+            mockspec_fname=mockspec_fname, mocksfh_fname=mocksfh_fname, mpl_v=mpl_v,
+            sky=sky)
         figdir = os.path.join(fakedata_basedir, 'results', plateifu)
 
     else:
         dered = MaNGA_deredshift.from_plateifu(
-            plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row)
+            plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row, kind=daptype)
         figdir = os.path.join(basedir, 'results', plateifu)
         truth_sfh = None
         truth = None
@@ -2626,30 +2704,13 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
         #pca_res.make_top_sfhs_fig()
         #pca_res.make_all_sfhs_fig(massnorm='mstar', mass_abs=True)
 
-        #pca_res.make_qty_fig(qty_str='MLr')
         pca_res.make_qty_fig(qty_str='MLi')
-        #pca_res.make_qty_fig(qty_str='MLz')
-        #pca_res.make_qty_fig(qty_str='MLV')
 
-        #pca_res.make_qty_fig(qty_str='MWA')
+        pca_res.make_qty_fig(qty_str='uv_slope')
 
         #pca_res.make_Mstar_fig(band='r')
         pca_res.make_Mstar_fig(band='i')
         #pca_res.make_Mstar_fig(band='z')
-
-        #pca_res.make_radial_gp_fig(qty='MLr', q_bdy=[.01, 100.])
-        #pca_res.make_radial_gp_fig(qty='MLi', q_bdy=[.01, 100.])
-        #pca_res.make_radial_gp_fig(qty='MLz', q_bdy=[.01, 100.])
-        #pca_res.make_radial_gp_fig(qty='MLV', q_bdy=[.01, 100.])
-
-        #pca_res.make_qty_fig('Dn4000')
-
-        #pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='R')
-        #pca_res.make_color_ML_fig(mlb='i', b1='g', b2='i', colorby='tau_V mu')
-
-        #pca_res.compare_sigma()
-
-        #pca_res.sigma_vel()
 
     # reset redshift to original value
     if not z_new:
@@ -2671,16 +2732,16 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 150
+    howmany = 50
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'drizzle'
     dered_kwargs = {'nper': 10}
     pc_cov_method = 'precomp'
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180713-1/'
+    CSPs_dir = basedir
 
-    mpl_v = 'MPL-6'
+    mpl_v = 'MPL-8'
 
     drpall = m.load_drpall(mpl_v, index='plateifu')
     drpall = drpall[drpall['nsa_z'] != -9999]
@@ -2699,32 +2760,10 @@ if __name__ == '__main__':
 
     pca.write_pcs_fits()
 
-    '''
-    row = drpall.loc['8592-9102']
-
-    with catch_warnings():
-        simplefilter(warn_behav)
-
-        pca_res = run_object(
-            row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=True,
-            dered_method=dered_method, dered_kwargs=dered_kwargs,
-            pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v, makefigs=True)
-        pca_res.write_results(pc_info=True)
-
-        pca_res_f = run_object(
-            row=row, pca=pca, force_redo=True, fake=True, K_obs=K_obs,
-            redo_fake=True, mockspec_ix=0, dered_method=dered_method,
-            dered_kwargs=dered_kwargs, CSPs_dir=CSPs_dir, vdisp_wt=True,
-            pc_cov_method=pc_cov_method, mpl_v=mpl_v,
-            mockspec_fname='TestSpecs-5.9.fits', mocksfh_fname='TestSFH-5.9.fits')
-        pca_res_f.write_results()
-    '''
-
     #'''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
-    #drpall = drpall[np.where([pi in ['8939-12704', '8566-12705', '8567-12701']
-    #                          for pi in drpall['plateifu']])]
-    #drpall = drpall[drpall['ifudesignsize'] != 127]
+    #drpall = drpall[np.where([pi in ['8624-12703'] for pi in drpall['plateifu']])]
+    #drpall = drpall[drpall['ifudesignsize'] == 19]
     #drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.5]
 
     #mwolf = t.Table.read('mwolf/gmrt_targets.csv')
@@ -2746,22 +2785,26 @@ if __name__ == '__main__':
                 with catch_warnings():
                     simplefilter(warn_behav)
 
+                    #'''
                     pca_res = run_object(
                         basedir=CSPs_dir,
                         row=row, pca=pca, force_redo=False, fake=False, vdisp_wt=False,
                         dered_method=dered_method, dered_kwargs=dered_kwargs,
                         pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v)
-                    pca_res.write_results()
-                    '''
+                    pca_res.write_results('confident')
+                    #'''
+
+                    #'''
                     pca_res_f = run_object(
                         basedir=CSPs_dir,
                         row=row, pca=pca, force_redo=False, fake=True, vdisp_wt=False,
                         dered_method=dered_method, dered_kwargs=dered_kwargs,
                         pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v,
                         redo_fake=False, mockspec_ix=None,
-                        mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits')
+                        mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits',
+                        sky=skymodel)
                     pca_res_f.write_results()
-                    '''
+                    #'''
             except Exception:
                 exc_info = sys.exc_info()
                 print('ERROR: {}'.format(plateifu))

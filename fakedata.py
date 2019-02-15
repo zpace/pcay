@@ -19,6 +19,38 @@ from importer import *
 
 import manga_tools as m
 
+class SkyContamination(object):
+    def __init__(self, drpall):
+        sky_ifus = drpall[np.where(m.mask_from_maskbits(drpall['mngtarg2'], [1]))[0]]
+
+        flux, ivar, lam = zip(*[self.get_ifu_sky_spectra(row) for row in sky_ifus])
+        self.flux, self.ivar = np.row_stack(flux), np.row_stack(ivar)
+        self.lam = lam[0]
+
+    @classmethod
+    def from_mpl_v(cls, v):
+        drpall = m.load_drpall(v)
+        return cls(drpall)
+
+    def get_ifu_sky_spectra(self, row):
+        drp = m.load_drp_logcube(row['plate'], row['ifudsgn'], mpl_v)
+        mask = m.mask_from_maskbits(
+            drp['MASK'].data, [3, 10]).astype(float).mean(axis=0) >= .1
+        sp_i, sp_j = np.where(~mask)
+        flux = drp['FLUX'].data[:, sp_i, sp_j].T
+        ivar = drp['IVAR'].data[:, sp_i, sp_j].T
+        lam = drp['WAVE'].data
+        drp.close()
+        return flux, ivar, lam
+
+    def make_skycube(self, mapshape):
+        ixs = np.random.randint(0, self.flux.shape[0] - 1, np.multiply(*mapshape))
+
+        skyfluxs = self.flux[ixs, :].T.reshape((-1, ) + mapshape)
+        skyivars = self.ivar[ixs, :].T.reshape((-1, ) + mapshape)
+
+        return skyfluxs, skyivars
+
 def noisify_cov(cov, mapshape):
     cov_noise = np.random.multivariate_normal(
         mean=np.zeros_like(np.diag(cov.cov)),
@@ -46,7 +78,7 @@ class FakeData(object):
     '''
     def __init__(self, lam_model, spec_model, meta_model,
                  row, drp_base, dap_base, plateifu_base, model_ix,
-                 Kspec_obs=None):
+                 Kspec_obs=None, sky=None):
         '''
         create mocks of DRP LOGCUBE and DAP MAPS
 
@@ -149,6 +181,13 @@ class FakeData(object):
         # that is not necessarily reflected in the quoted ivars!!!
         final_ivarcube = (snrcube_obs / final_fluxcube)**2.
 
+        # add sky spectrum
+        if sky:
+            skyfluxs, skyivars = sky.make_skycube(mapshape)
+            final_fluxcube = final_fluxcube + skyfluxs
+            #final_ivarcube = 1. / (1. / final_ivarcube + 1. / skyivars)
+
+
         '''STEP 8'''
         # mask where the native datacube has no signal
         rimg = drp_base['RIMG'].data
@@ -178,7 +217,7 @@ class FakeData(object):
 
     @classmethod
     def from_FSPS(cls, fname, i, plateifu_base, pca, row, K_obs,
-                  mpl_v='MPL-5', kind='SPX-GAU-MILESHC'):
+                  mpl_v='MPL-5', kind='SPX-GAU-MILESHC', sky=None):
 
         # load models
         models_hdulist = fits.open(fname)
@@ -219,7 +258,7 @@ class FakeData(object):
         return cls(lam_model=models_lam, spec_model=model_spec,
                    meta_model=model_meta, row=row, plateifu_base=plateifu_base,
                    drp_base=drp_base, dap_base=dap_base, model_ix=i,
-                   Kspec_obs=K_obs)
+                   Kspec_obs=K_obs, sky=None)
 
     def resample_spaxel(self, logl_in, flam_in, logl_out):
         '''

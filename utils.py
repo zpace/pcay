@@ -5,11 +5,9 @@ import pickle as pkl
 from astropy import units as u, constants as c, table as t
 from astropy.io import fits
 from astropy.stats import sigma_clip
-from specutils import extinction
+from extinction import apply as apply_extinction, remove as remove_extinction
 from speclite import redshift as slrs
 from speclite import accumulate as slacc
-
-from dered_drizzle import drizzle_flux
 
 from scipy.ndimage.filters import gaussian_filter1d as gf
 from scipy.interpolate import interp1d
@@ -536,10 +534,10 @@ def extinction_atten(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
     '''
 
     a_v = r_v * EBV
-    r = extinction.reddening
+    r = extinction.fitzpatrick99
 
     # output from reddening is inverse-flux-transmission
-    f_itr = r(wave=l, a_v=a_v, r_v=r_v, **kwargs)
+    f_itr = 2.5**r(wave=l, a_v=a_v, r_v=r_v, **kwargs)
     # to deredden, divide f by f_itr
 
     f_atten = f / f_itr
@@ -556,10 +554,10 @@ def extinction_correct(l, f, EBV, r_v=3.1, ivar=None, **kwargs):
     '''
 
     a_v = r_v * EBV
-    r = extinction.reddening
+    r = extinction.fitzpatrick99
 
     # output from reddening is inverse-flux-transmission
-    f_itr = r(wave=l, a_v=a_v, r_v=r_v, **kwargs)[:, None, None]
+    f_itr = 2.5**r(wave=l, a_v=a_v, r_v=r_v, **kwargs)[:, None, None]
     # to redden, mult f by f_itr
 
     f_att = f * f_itr
@@ -613,7 +611,6 @@ def PC_cov(cov, snr, i0, E, nl, q):
     else:
         sl = [slice(i0, i0 + nl) for _ in range(2)]
         return E @ (cov[i0 : i0 + nl, i0 : i0 + nl]) @ E.T
-
 
 def reshape_cube2rss(cubes):
     '''

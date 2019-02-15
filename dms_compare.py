@@ -23,9 +23,9 @@ def make_manga_dms_comparison(res, pca_system, band, cosmo, drpall_row,
 
     return fig, ax
 
-def smsd_radial_plot(res, pca_system, band, cosmo, drpall_row, ax, h_old):
+def smsd_radial_plot(res, pca_system, band, cosmo, drpall_row, ax, h_old, incl_over=None):
     smsd_map, smsd_lunc_map, smsd_uunc_map = smsd.smsd(
-        res, pca_system, band, cosmo, drpall_row)
+        res, pca_system, band, cosmo, drpall_row, incl_over)
 
     mask = np.logical_or(res.mask, res.badPDF())
 
@@ -81,14 +81,14 @@ def overplot_dms_dmsd(fname, ax, label, h_old, h_new, factor=1., datacolor='k', 
     return dms_table
 
 def find_galaxy_hz_scaling(res, pca_system, dms_table, cosmo, drpall_row, h_old,
-                           Fbar0, Rbulge, band='i'):
+                           Fbar0, Rbulge, band='i', incl_over=None):
     '''
     Find the optimal disk scale-height scaling for one galaxy
     '''
 
     # get stellar mass SD from PCA results
     smsd_map, smsd_lunc_map, smsd_uunc_map = smsd.smsd(
-        res, pca_system, band, cosmo, drpall_row)
+        res, pca_system, band, cosmo, drpall_row, incl_over)
 
     mask = np.logical_or(res.mask, res.badPDF())
     smsd_a, smsd_lunc_a, smsd_uunc_a = smsd_map[~mask], smsd_lunc_map[~mask], \
@@ -148,12 +148,13 @@ if __name__ == '__main__':
     h_dms = 0.7
 
     fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, ncols=1, figsize=(3.5, 8))
-    for plateifu, dms_name, ax, Rbulge, F in zip(
+    for plateifu, dms_name, ax, Rbulge, F, incl in zip(
         ['8566-12705', '8567-12701', '8939-12704'],
         ['UGC3997', 'UGC4107', 'UGC4368'],
         [ax1, ax2, ax3],
         [1.97, 1.18, 2.23],
-        [.48, .56, .72]):
+        [.48, .56, .72],
+        np.array([26.2, 24.1, 45.3]) * u.deg):
 
         ugc_num = dms_name[3:]
         dms_fname = \
@@ -164,7 +165,7 @@ if __name__ == '__main__':
             os.path.join(basedir, 'results'),
             drpall_row['plate'], drpall_row['ifudsgn'])
         smsd_radial_plot(
-            res, pca_system, 'i', WMAP9, drpall_row, ax, h_old=h_dms)
+            res, pca_system, 'i', WMAP9, drpall_row, ax, h_old=h_dms, incl_over=incl)
         dms_table = overplot_dms_dmsd(dms_fname, ax, dms_name, h_old=h_dms, h_new=WMAP9.h)
 
         f_hz_factor_1_5 = 1.5
@@ -191,11 +192,12 @@ if __name__ == '__main__':
         #'''
         # find preferred value
         popt, pcov = find_galaxy_hz_scaling(
-            res, pca_system, dms_table, WMAP9, drpall_row, h_old=h_dms, Fbar0=F, Rbulge=Rbulge)
+            res, pca_system, dms_table, WMAP9, drpall_row,
+            h_old=h_dms, Fbar0=F, Rbulge=Rbulge, incl_over=incl)
         print(' / '.join((plateifu, dms_name)))
-        print('fhz: {:.2g} +/- {:.2g}'.format(popt[0], np.sqrt(np.diag(pcov))[0]))
-        print('F0: {:.2g}'.format(F))
-        print('F1: {:.2g}'.format(F * np.sqrt(popt[0])))
+        print('fhz: {:.3g} +/- {:.3g}'.format(popt[0], np.sqrt(np.diag(pcov))[0]))
+        print('F0: {:.3g}'.format(F))
+        print('F1: {:.3g}'.format(F * np.sqrt(popt[0])))
         #'''
         res.close()
 

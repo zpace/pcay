@@ -39,6 +39,23 @@ m_to_l_unit = 1. * u.Msun / bandpass_sol_l_unit
 
 band_ix = dict(zip('FNugriz', range(len('FNugriz'))))
 
+def infer_masked(ml, ml_mask, interior_mask):
+    '''
+    infer the masked values in the interior of an IFU (foreground stars, dropped fibers)
+    '''
+
+    ml_final = 1. * ml
+
+    # coordinate arrays
+    II, JJ = np.meshgrid(*list(map(np.arange, ml.shape)), indexing='ij')
+
+    # set up KNN regressor
+    knn = knn_regr(trn_coords=[II, JJ], trn_vals=ml, good_trn=~ml_mask)
+    ml_final[interior_mask] = infer_from_knn(knn=knn, coords=(II, JJ))[interior_mask]
+
+    return ml_final
+
+
 def estimate_total_stellar_mass(results, pca_system, drp, dap, drpall_row, dapall_row,
                                 cosmo, band='i', missing_mass_kwargs={}):
     '''
@@ -50,19 +67,13 @@ def estimate_total_stellar_mass(results, pca_system, drp, dap, drpall_row, dapal
     badpdf = results.cubechannel('GOODFRAC', 2) < 1.0e-4
     ml_mask = np.logical_or.reduce((results.mask, badpdf))
 
-    ml_final = 1. * ml
-
-    # coordinate arrays
-    II, JJ = np.meshgrid(*list(map(np.arange, ml.shape)), indexing='ij')
-
-    # set up KNN regressor
-    knn = knn_regr([II, JJ], ml, ~ml_mask)
     # infer values in interior spaxels affected by one of the following:
     # bad PDF, foreground star, dead fiber
     interior_mask = np.logical_or.reduce((
         badpdf, (m.mask_from_maskbits(drp['MASK'].data, [3]).sum(axis=0) > 0),
         (m.mask_from_maskbits(drp['MASK'].data, [2]).sum(axis=0) > 0)))
-    ml_final[interior_mask] = infer_from_knn(knn, (II, JJ))[interior_mask]
+
+    ml_final = infer_masked(ml, ml_mask, interior_mask)
 
     # convert spectroscopy to photometry
     results.setup_photometry(pca_system)

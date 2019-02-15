@@ -284,7 +284,7 @@ def make_stdtauV_vs_dMass_fig(full_table):
         x=std_atten_mwtd, y=(logmass_in_ifu - logmass_in_ifu_lw), c=mean_atten_mwtd,
         edgecolor='k', linewidths=0.25, s=3., cmap='viridis_r', norm=mcolors.LogNorm())
 
-    cb = fig.colorbar(sc, ax=ax)
+    cb = fig.colorbar(sc, ax=ax, format='%.0f')
     cb.set_label(r'$\bar{\tau_V}$', size='x-small')
     cb.ax.tick_params(labelsize='xx-small')
 
@@ -366,13 +366,14 @@ def make_stdtauV_vs_dMass_ba_fig(full_table):
 def make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring'):
     fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
 
-    std_atten_mwtd = full_table['std_atten_mwtd']
-    logmass_in_ifu = np.log10(full_table['mass_in_ifu'])
-    logmass_in_ifu_lw = np.log10(full_table['fluxwt_ml'] * full_table['inner_lum'])
-    sfrsd = np.array([sfrsd_tab.loc[plateifu]['sigma_sfr']
-                      for plateifu in full_table['plateifu']])
+    merge_table = t.join(full_table, sfrsd_tab, 'plateifu')
 
-    mass_pca = full_table['mass_in_ifu'] + full_table['outer_mass_{}'.format(mltype)]
+    std_atten_mwtd = merge_table['std_atten_mwtd']
+    logmass_in_ifu = np.log10(merge_table['mass_in_ifu'])
+    logmass_in_ifu_lw = np.log10(merge_table['fluxwt_ml'] * merge_table['inner_lum'])
+    sfrsd = merge_table['sigma_sfr']
+
+    mass_pca = merge_table['mass_in_ifu'] + merge_table['outer_mass_{}'.format(mltype)]
 
     sc = ax.scatter(
         x=std_atten_mwtd, y=(logmass_in_ifu - logmass_in_ifu_lw),

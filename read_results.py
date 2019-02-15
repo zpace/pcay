@@ -1,4 +1,6 @@
 import numpy as np
+from scipy.stats import skewnorm
+import scipy.optimize as spopt
 
 from astropy.io import fits
 from astropy import nddata, wcs
@@ -123,6 +125,11 @@ class PCAOutput(fits.HDUList):
         plateifu = self[0].header['PLATEIFU']
         drp = m.load_dap_maps(*plateifu.split('-'), mpl_v, kind)
         return drp
+
+    def to_normaldist(self, extname):
+        mu = self.param_dist_med(extname)
+        sd = 0.5 * self.param_dist_wid(extname)
+        return mu, sd
 
 
 class MocksPCAOutput(PCAOutput):

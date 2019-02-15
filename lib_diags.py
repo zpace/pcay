@@ -8,6 +8,8 @@ from corner import corner
 from glob import glob
 import os
 
+from scipy import stats
+
 from importer import *
 import manga_tools as m
 
@@ -105,11 +107,12 @@ def make_binned_hist_fig(results_fnames, pca_system,
         subplots, and bin2bds defines how points are apportioned to histograms within
         a given subplot
     '''
+    print(histdatatype, histname)
     nbin1s = len(bin1bds) + 1
     nbin2s = len(bin2bds) + 1
 
     fig = plt.figure(figsize=(3, 4))
-    gs = gridspec.GridSpec(nrows=nbin1s, ncols=1, hspace=0., top=0.92)
+    gs = gridspec.GridSpec(nrows=nbin1s, ncols=1, hspace=0., top=0.85)
     axs = [None, ] * (len(bin1bds) + 1)
     for i in reversed(range(nbin1s)):
         axs[i] = plt.subplot(gs[i, 0], sharex=axs[-1])
@@ -148,6 +151,13 @@ def make_binned_hist_fig(results_fnames, pca_system,
                        s=str(len(histdata[in_2d_bin].compressed())),
                        fontsize='xx-small', color=b2_color,
                        transform=b1_ax.transAxes)
+            print('\t', b1label_i, b2label_i)
+            _, _, mean, var, skew, kurt = stats.describe(
+                histdata[in_2d_bin].compressed(), nan_policy='omit')
+            print('\t', 'mean = {:.2e}'.format(mean))
+            print('\t', 'var  = {:.2e}'.format(var))
+            print('\t', 'skew = {:.2e}'.format(skew))
+            print('\t', 'kurt = {:.2e}'.format(kurt))
 
         b1_ax.set_yticks([])
 
@@ -155,7 +165,9 @@ def make_binned_hist_fig(results_fnames, pca_system,
             b1_ax.yaxis.set_label_position('right')
 
         if b1_ax is axs[0]:
-            b1_ax.legend(loc='best', prop={'size': 'xx-small'})
+            b1_ax.legend(loc='lower left', bbox_to_anchor=(-.05, 1.01),
+                         prop={'size': 'xx-small'}, ncol=2, borderaxespad=0,
+                         frameon=False)
 
         if b1_ax is axs[-1]:
             b1_ax.tick_params(labelsize='xx-small')
@@ -172,8 +184,6 @@ def make_binned_hist_fig(results_fnames, pca_system,
 
     fig.suptitle('{}: {} fit diagnostics'.format(titletype, histlabel),
                  size='x-small')
-    fig.tight_layout()
-
     return fig
 
 def make_fitdiag_fig(results_fnames, pca_system, xdatatype, xname, xlabel,

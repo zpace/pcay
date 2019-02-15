@@ -63,7 +63,7 @@ class MaNGA_deredshift(object):
         self.ivar *= ~self.DONOTUSE
 
     @classmethod
-    def from_plateifu(cls, plate, ifu, MPL_v, kind='SPX-GAU-MILESHC', row=None,
+    def from_plateifu(cls, plate, ifu, MPL_v, kind, row=None,
                       **kwargs):
         '''
         load a MaNGA galaxy from a plateifu specification
@@ -81,7 +81,7 @@ class MaNGA_deredshift(object):
 
     @classmethod
     def from_fakedata(cls, plate, ifu, MPL_v, basedir='fakedata', row=None,
-                      kind='SPX-GAU-MILESHC', **kwargs):
+                      kind='SPX-MILESHC-MILESHC', **kwargs):
         '''
         load fake data based on a particular already-observed galaxy
         '''

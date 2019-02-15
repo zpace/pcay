@@ -183,7 +183,7 @@ class FSPS_SFHBuilder(object):
         self.sp.params['dust1'] = 0. # optical depth for young stars
         self.sp.params['dust2'] = 0. # optical depth for old stars
         self.sp.params['dust_index'] = -0.7 # dust power law index for old stars
-        self.sp.params['dust1_index'] = -1.3 # dust power law index for old stars
+        self.sp.params['dust1_index'] = -1.3 # dust power law index for young stars
 
     def _cleanup_sp_(self):
         self.override = {}
@@ -201,7 +201,7 @@ class FSPS_SFHBuilder(object):
 
         self.sp.set_tabular_sfh(age=self.ts, sfr=sfrs)
 
-        spec, specinds = zip(
+        spec, specinds, ion_ph_rate, uv_slope = zip(
             *[self._run_fsps_newparams(
                   tage=self.time0,
                   d={'dust1': tau * (1. - mu), 'dust2': tau * mu, 'sigma_smooth': sigma})
@@ -212,13 +212,13 @@ class FSPS_SFHBuilder(object):
         spec = np.row_stack(spec)
         specinds = t.vstack(specinds)
 
-        return spec, specinds
+        return spec, specinds, ion_ph_rate, uv_slope
 
     def _run_fsps_newparams(self, tage, d):
         for k in d:
             self.sp.params[k] = d[k]
 
-        _, spec = self.sp.get_spectrum(tage=tage, peraa=True)
+        lam, spec = self.sp.get_spectrum(tage=tage, peraa=True)
 
         # calculate spectral indices using velocity dispersion of zero
         self.sp.params['sigma_smooth'] = 0.
@@ -229,9 +229,20 @@ class FSPS_SFHBuilder(object):
             data=[t.Column([indices.StellarIndex(si)(lam, spec_zeroveldisp, axis=0)],
                                name=si) for si in sis])
 
+        self.sp.params['dust1'] = 0.
+        self.sp.params['dust2'] = 0.
+        lam, spec_zeroatten = self.sp.get_spectrum(tage=tage, peraa=True)
+        H_ion_ph_rate = spec_to_photon_rate(
+            x=lam, xunit=u.AA, spec=spec_zeroatten, specunit=u.Lsun/u.AA,
+            ph_e_thresh=(c.h * c.c * c.Ryd), out_unit=u.ph/u.s)
+
+        uv_slope = calc_uv_slope(
+            x=lam, xunit=u.AA, spec=spec_zeroatten, specunit=u.Lsun/u.AA,
+            ratio_unit=u.Lsun/u.AA, xrg=[505., 912.])
+
         self.sfh_changeflag = False
 
-        return spec, sis_tab
+        return spec, sis_tab, H_ion_ph_rate, uv_slope
 
     def plot_sfh(self, ts=None, sfrs=None, save=False):
 
@@ -290,15 +301,17 @@ class FSPS_SFHBuilder(object):
             del tab[k]
 
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.02)],
-                                name='F_20Myr'))
+                                name='F_20M'))
+        tab.add_column(t.Column(data=[self.frac_mform_dt(age=.05)],
+                                name='F_50M'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.1)],
-                                name='F_100Myr'))
+                                name='F_100M'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.2)],
-                                name='F_200Myr'))
+                                name='F_200M'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=.5)],
-                                name='F_500Myr'))
+                                name='F_500M'))
         tab.add_column(t.Column(data=[self.frac_mform_dt(age=1)],
-                                name='F_1Gyr'))
+                                name='F_1G'))
         tab.add_column(t.Column(data=[self.mass_weighted_age], name='MWA'))
         tab.add_column(t.Column(data=[self.mstar], name='mstar'))
 
@@ -848,7 +861,6 @@ def get_sfh_sfrs(sfh, ts, override={}, norm='mformed'):
 
     return sfrs / mtot
 
-
 def make_csp(sfh, override=None):
     sfh._cleanup_sp_()
 
@@ -856,12 +868,50 @@ def make_csp(sfh, override=None):
         sfh.override = override
     sfh.gen_FSPS_args()
 
-    spec, spectral_indices = sfh.run_fsps()
-    tab = t.hstack([sfh.to_table(), spectral_indices])
+    spec, spectral_indices, ion_ph_rate, uv_slope = sfh.run_fsps()
+    specdata = t.Table(
+        [np.log10(ion_ph_rate / sfh.mstar).clip(min=0.), uv_slope],
+        names=['logQHpersolmass', 'uv_slope'])
+    tab = t.hstack([sfh.to_table(), spectral_indices, specdata])
 
     allsfrs = sfh.allsfrs
 
     return spec, tab, sfh.FSPS_args, allsfrs
+
+def spec_to_photon_rate(x, xunit, spec, specunit, ph_e_thresh, out_unit):
+    x = x * u.Unit(xunit)
+    spec = spec * u.Unit(specunit)
+
+    ph_spec = spec.to(u.photon / u.s / u.Hz, equivalencies=u.spectral_density(x))
+    ph_energy = x.to(u.eV, equivalencies=u.spectral())
+    nu = x.to(u.Hz, equivalencies=u.spectral())
+
+    ph_rate = np.abs(np.trapz(x=nu, y=ph_spec * (ph_energy >= (c.Ryd * c.c * c.h))))
+
+    return ph_rate.to(out_unit).value
+
+def calc_uv_slope(x, xunit, spec, specunit, ratio_unit, xrg=[1250., 2600.]):
+    '''
+    UV slope in range 1250, 2600 AA
+    (Calzetti et al, http://adsabs.harvard.edu/abs/1994ApJ...429..582C)
+    '''
+    x = x * u.Unit(xunit)
+    spec = spec * u.Unit(specunit)
+
+    new_x = x.to('AA', equivalencies=u.spectral())
+    new_spec = spec.to(ratio_unit, equivalencies=u.spectral_density(x))
+    new_x_range = (xrg[0] * u.Unit(xunit), xrg[1] * u.Unit(xunit))
+    in_new_x_range = ~np.logical_or(new_x < new_x_range[0], new_x > new_x_range[1])
+
+    log_new_x = np.log10(new_x.value)
+    log_new_spec = np.log10(new_spec.value)
+
+    poly = np.polyfit(
+        x=log_new_x[in_new_x_range], y=log_new_spec[in_new_x_range], deg=1)
+    plslope, plint = poly
+
+    return plslope
+
 
 def write_spec_fits(metadata, lam, specs, loc, fname, nsubper, nsfhper):
     '''
@@ -1121,7 +1171,7 @@ if __name__ == '__main__':
     name_ix0 = 0
     name_ixf = name_ix0 + nfiles
 
-    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20180806-1/'
+    CSPs_dir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20190215-1/'
     if not os.path.isdir(CSPs_dir):
         os.makedirs(CSPs_dir)
 
