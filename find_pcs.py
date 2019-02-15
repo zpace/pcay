@@ -637,7 +637,7 @@ class StellarPop_PCA(object):
             ax.yaxis.set_major_locator(loc)
 
             if i != q:
-                ax.tick_params(axis='x', labelbottom='off')
+                ax.tick_params(axis='x', labelbottom=False)
             else:
                 ax.tick_params(axis='x', color='k', labelsize=8)
 
@@ -702,8 +702,8 @@ class StellarPop_PCA(object):
                       linewidth=0.5)
             except ValueError:
                 pass
-            ax.tick_params(axis='x', labelbottom='off')
-            ax.tick_params(axis='y', labelleft='off')
+            ax.tick_params(axis='x', labelbottom=False)
+            ax.tick_params(axis='y', labelleft=False)
             PC_hist_axes[i] = ax
 
         # param histograms in right column
@@ -720,11 +720,11 @@ class StellarPop_PCA(object):
                       linewidth=0.5)
             except ValueError:
                 pass
-            ax.tick_params(axis='x', labelbottom='off')
+            ax.tick_params(axis='x', labelbottom=False)
             yloc = mticker.MaxNLocator(nbins=5, prune='upper')
             # tick labels on RHS of hists
             ax.yaxis.set_major_locator(yloc)
-            ax.tick_params(axis='y', labelleft='off', labelright='on',
+            ax.tick_params(axis='y', labelleft=False, labelright=True,
                            labelsize=6)
             param_hist_axes[i] = ax
 
@@ -743,7 +743,7 @@ class StellarPop_PCA(object):
             # (except in bottom row and left column, respectively)
 
             if i != nparams - 1:
-                ax.tick_params(axis='x', labelbottom='off')
+                ax.tick_params(axis='x', labelbottom=False)
             else:
                 xloc = mticker.MaxNLocator(nbins=5, prune='upper')
                 ax.xaxis.set_major_locator(xloc)
@@ -751,7 +751,7 @@ class StellarPop_PCA(object):
                 ax.set_xlabel('PC{}'.format(j + 1), size=8)
 
             if j != 0:
-                ax.tick_params(axis='y', labelleft='off')
+                ax.tick_params(axis='y', labelleft=False)
             else:
                 yloc = mticker.MaxNLocator(nbins=5, prune='upper')
                 ax.yaxis.set_major_locator(yloc)
@@ -1248,7 +1248,7 @@ class PCA_Result(object):
             linestyle='--', color='salmon', linewidth=0.25, zorder=0)
 
         ax1.tick_params(axis='y', which='major', labelsize=10,
-                        labelbottom='off')
+                        labelbottom=False)
         ax2.tick_params(axis='both', which='major', labelsize=10)
         # force sharing of x axis
         ax1.get_shared_x_axes().join(ax1, ax2)
