@@ -471,7 +471,7 @@ def make_photo_spectro_compare(plateifu, pca_system):
     
     try:
         drp_logcube = m.load_drp_logcube(plate, ifu, mpl_v)
-        dap_maps = m.load_dap_maps(plate, ifu, mpl_v, 'SPX-GAU-MILESHC')
+        dap_maps = m.load_dap_maps(plate, ifu, mpl_v, daptype)
         preimaging = MaNGA_PreImage.from_designid_mangaid(
             drpall_row['designid'], drpall_row['mangaid'])
         res = read_results.PCAOutput.from_plateifu(

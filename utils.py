@@ -5,7 +5,7 @@ import pickle as pkl
 from astropy import units as u, constants as c, table as t
 from astropy.io import fits
 from astropy.stats import sigma_clip
-from extinction import apply as apply_extinction, remove as remove_extinction
+import extinction
 from speclite import redshift as slrs
 from speclite import accumulate as slacc
 
@@ -27,7 +27,6 @@ from importer import *
 import manga_tools as m
 
 ln10 = np.log(10.)
-mpl_v = 'MPL-6'
 
 def gaussian_weightify(vals, mu, sigma=None, ivar=None, soft=1.):
     '''
