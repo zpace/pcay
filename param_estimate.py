@@ -33,6 +33,17 @@ def param_interp_map(v, w, pctl, mask, order=None):
 
     return vals_at_pctls
 
+def estimate_distparams(v, w, dist, nsamp):
+    '''
+    given samples `v` with weights `w`, estimate what parameters of `dist` describes them
+    '''
+    sampledata = np.random.choice(a=v, p=w, replace=True, size=(nsamp, 1000))
+
+    dist_pars = np.stack([dist.fit(d) for d in sampledata], axis=0)
+
+    return np.median(dist_pars, axis=0)
+
+
 class ParamInterpMap(object):
     '''
     interpolator for a parameter based on weights on samples

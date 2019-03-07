@@ -210,6 +210,9 @@ class CMLR_Diag(object):
         self.cmlr_ax.set_xlabel(r'${} - {}$'.format(self.cb1, self.cb2))
         self.cmlr_ax.set_ylabel(r'$\log \Upsilon^*_{}$'.format(self.mlb))
 
+        self.cmlr_ax.set_xlim([-0.15, 1.7])
+        self.cmlr_ax.set_ylim([-1.1, 2.1])
+
     def paramspace_panel(self, p1name, p2name, p1label, p2label,
                          dlogML_fn, fn_label, fn_TeX, bins=15):
         self.p1name, self.p2name = p1name, p2name
@@ -266,7 +269,8 @@ class CMLR_Diag(object):
         self.fig.savefig(
             os.path.join(
                 basedir, 'CMLRDiag_C{}{}ML{}_{}-{}-dev{}.png'.format(
-                    self.mlb, self.cb1, self.cb2, self.p1name, self.p2name, self.fn_label)),
+                    self.cb1, self.cb2, self.mlb, self.p1name,
+                    self.p2name, self.fn_label)).replace(' ', '__'),
             dpi=self.fig.dpi)
 
 class CMLR_Diag_sd(CMLR_Diag):
@@ -288,6 +292,8 @@ class CMLR_Diag_sd(CMLR_Diag):
 
         self.cmlr_ax.set_xlabel(r'${} - {}$'.format(self.cb1, self.cb2))
         self.cmlr_ax.set_ylabel(r'$\log \Upsilon^*_{}$'.format(self.mlb))
+        self.cmlr_ax.set_xlim([-0.15, 1.7])
+        self.cmlr_ax.set_ylim([-1.1, 2.1])
 
     def paramspace_panel(self, p1name, p2name, p1label, p2label,
                          dlogML_fn, fn_label, fn_TeX, bins=15):
@@ -323,7 +329,7 @@ class CMLR_Diag_sd(CMLR_Diag):
             bins=param_edgegrid)
         quantiles = np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1])
         self.kde_contours = self.kde2d.plot_kde_contours(
-            self.paramspace_ax, quantiles=quantiles, colors='k', linewidths=0.5)
+            self.paramspace_ax, quantiles=quantiles, colors='r', linewidths=0.5)
         self.paramspace_ax.clabel(
             self.kde_contours, fontsize='x-small',
             fmt={l: str(q) for l, q in zip(self.kde_contours.levels, quantiles)})
@@ -345,7 +351,7 @@ if __name__ == '__main__':
     cmlr_poly_bell03_MLiCgr = np.array([0.864, -0.222])
     cmlr_poly_bell03_MLiCgi = np.array([0.518, -0.152])
 
-    cmlr_diag_MLi_Cgr = CMLR_Diag_sd(csp_tab, 'i', 'g', 'r')
+    cmlr_diag_MLi_Cgr = CMLR_Diag_sd(csp_tab, mlb='i', cb1='g', cb2='r')
     cmlr_diag_MLi_Cgr.csp_cmlr_plot(cbar_name='logzsol', cbar_label=r'${\rm [Z]}$')
     overplot_cmlr(poly=cmlr_diag_MLi_Cgr.cmlr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=0.,
                   linewidth=0.5, c='r', label='CSP CMLR')
@@ -354,14 +360,14 @@ if __name__ == '__main__':
     cmlr_diag_MLi_Cgr.paramspace_panel(
         'logzsol', 'tau_V mu', r'${\rm [Z]}$', r'$\tau_V \mu$', bins=[50, 50],
         dlogML_fn=np.abs, fn_label='abs', 
-        fn_TeX=r'$|\Delta\log \Upsilon^*|$')
-    cmlr_diag_MLi_Cgr.paramspace_ax.set_ylim([.1, 5.])
+        fn_TeX=r'$|\Delta\log \Upsilon^*_i|$')
+    cmlr_diag_MLi_Cgr.paramspace_ax.set_ylim([0., 5.])
     cmlr_diag_MLi_Cgr.fig.subplots_adjust(left=.1)
     cmlr_diag_MLi_Cgr.save()
 
     #####
 
-    cmlr_diag_MLi_Cgr = CMLR_Diag(csp_tab, 'i', 'g', 'r')
+    cmlr_diag_MLi_Cgr = CMLR_Diag_sd(csp_tab, 'i', 'g', 'r')
     cmlr_diag_MLi_Cgr.csp_cmlr_plot(cbar_name='logzsol', cbar_label=r'${\rm [Z]}$')
     overplot_cmlr(poly=cmlr_diag_MLi_Cgr.cmlr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=0.,
                   linewidth=0.5, c='r', label='CSP CMLR')
@@ -369,35 +375,75 @@ if __name__ == '__main__':
                   linewidth=0.5, c='m', label='Bell et al. (2003) CMLR')
     cmlr_diag_MLi_Cgr.paramspace_panel(
         'logzsol', 'tau_V mu', r'${\rm [Z]}$', r'$\tau_V \mu$', bins=[50, 50],
-        dlogML_fn=partial(med, axis=1), fn_label=med.__name__, 
-        fn_TeX=r'${\rm med}(\Delta\log \Upsilon^*)$')
+        dlogML_fn=lambda x: x, fn_label='', 
+        fn_TeX=r'$\Delta\log \Upsilon^*_i$')
+    cmlr_diag_MLi_Cgr.paramspace_ax.set_ylim([0., 5.])
+    cmlr_diag_MLi_Cgr.fig.subplots_adjust(left=.1)
     cmlr_diag_MLi_Cgr.save()
 
     #####
 
-    cmlr_diag_MLi_Cgr = CMLR_Diag(csp_tab, 'i', 'g', 'r')
-    cmlr_diag_MLi_Cgr.csp_cmlr_plot(cbar_name='nburst', cbar_label=r'\# bursts')
+    cmlr_diag_MLi_Cgr = CMLR_Diag_sd(csp_tab, 'i', 'g', 'r')
+    cmlr_diag_MLi_Cgr.csp_cmlr_plot(cbar_name='logzsol', cbar_label=r'${\rm [Z]}$')
     overplot_cmlr(poly=cmlr_diag_MLi_Cgr.cmlr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=0.,
                   linewidth=0.5, c='r', label='CSP CMLR')
     overplot_cmlr(poly=cmlr_poly_bell03_MLiCgr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=-.15,
                   linewidth=0.5, c='m', label='Bell et al. (2003) CMLR')
     cmlr_diag_MLi_Cgr.paramspace_panel(
-        'nburst', 'd1', r'\# bursts', 'EFTC',
-        bins=[np.array([-.5, .5, 1.5, 2.5, 3.5]), np.linspace(0., 15., 31)],
-        dlogML_fn=partial(medabs, axis=1), fn_label=medabs.__name__, 
-        fn_TeX=r'${\rm med}(|\Delta\log \Upsilon^*|)$')
+        'logzsol', 'tau_V (1 - mu)', r'${\rm [Z]}$', r'$\tau_V (1 - \mu)$', bins=[50, 50],
+        dlogML_fn=np.abs, fn_label='abs', 
+        fn_TeX=r'$|\Delta\log \Upsilon^*_i|$')
+    cmlr_diag_MLi_Cgr.paramspace_ax.set_ylim([0., 5.])
+    cmlr_diag_MLi_Cgr.fig.subplots_adjust(left=.1, wspace=.3)
     cmlr_diag_MLi_Cgr.save()
 
     #####
 
-    cmlr_diag_MLi_Cgr = CMLR_Diag(csp_tab, 'i', 'g', 'r')
-    cmlr_diag_MLi_Cgr.csp_cmlr_plot(cbar_name='MWA', cbar_label='MWA')
+    cmlr_diag_MLi_Cgr = CMLR_Diag_sd(csp_tab, 'i', 'g', 'r')
+    cmlr_diag_MLi_Cgr.csp_cmlr_plot(cbar_name='logzsol', cbar_label=r'${\rm [Z]}$')
     overplot_cmlr(poly=cmlr_diag_MLi_Cgr.cmlr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=0.,
                   linewidth=0.5, c='r', label='CSP CMLR')
     overplot_cmlr(poly=cmlr_poly_bell03_MLiCgr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=-.15,
                   linewidth=0.5, c='m', label='Bell et al. (2003) CMLR')
     cmlr_diag_MLi_Cgr.paramspace_panel(
-        'MWA', 'fbhb', 'MWA', 'FBHB', bins=[50, 50],
-        dlogML_fn=partial(medabs, axis=1), fn_label=medabs.__name__, 
-        fn_TeX=r'${\rm med}(|\Delta\log \Upsilon^*|)$')
+        'logzsol', 'tau_V (1 - mu)', r'${\rm [Z]}$', r'$\tau_V (1 - \mu)$', bins=[50, 50],
+        dlogML_fn=lambda x: x, fn_label='', 
+        fn_TeX=r'$\Delta\log \Upsilon^*_i$')
+    cmlr_diag_MLi_Cgr.paramspace_ax.set_ylim([0., 5.])
+    cmlr_diag_MLi_Cgr.fig.subplots_adjust(left=.1, wspace=.3)
     cmlr_diag_MLi_Cgr.save()
+
+    #####
+
+    cmlr_diag_MLi_Cgr = CMLR_Diag_sd(csp_tab, 'i', 'g', 'r')
+    cmlr_diag_MLi_Cgr.csp_cmlr_plot(cbar_name='sbss', cbar_label='SBSS')
+    overplot_cmlr(poly=cmlr_diag_MLi_Cgr.cmlr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=0.,
+                  linewidth=0.5, c='r', label='CSP CMLR')
+    overplot_cmlr(poly=cmlr_poly_bell03_MLiCgr, ax=cmlr_diag_MLi_Cgr.cmlr_ax, ycorr=-.15,
+                  linewidth=0.5, c='m', label='Bell et al. (2003) CMLR')
+    cmlr_diag_MLi_Cgr.paramspace_panel(
+        'sbss', 'fbhb', 'SBSS', 'FBHB', bins=[50, 50],
+        dlogML_fn=lambda x: x, fn_label='', 
+        fn_TeX=r'$\Delta\log \Upsilon^*_i$')
+    cmlr_diag_MLi_Cgr.fig.subplots_adjust(left=.1)
+    cmlr_diag_MLi_Cgr.save()
+
+    #####
+
+    cmlr_diag_MLi_Cgi = CMLR_Diag_sd(csp_tab, mlb='i', cb1='g', cb2='i')
+    cmlr_diag_MLi_Cgi.csp_cmlr_plot(cbar_name='logzsol', cbar_label=r'${\rm [Z]}$')
+    overplot_cmlr(poly=cmlr_diag_MLi_Cgi.cmlr, ax=cmlr_diag_MLi_Cgi.cmlr_ax, ycorr=0.,
+                  linewidth=0.5, c='r', label='CSP CMLR')
+    overplot_cmlr(poly=cmlr_poly_bell03_MLiCgi, ax=cmlr_diag_MLi_Cgi.cmlr_ax, ycorr=-.15,
+                  linewidth=0.5, c='m', label='Bell et al. (2003) CMLR')
+    overplot_cmlr(poly=cmlr_poly_taylor11_MLiCgi, ax=cmlr_diag_MLi_Cgi.cmlr_ax, ycorr=.05,
+                  linewidth=0.5, c='b', label='Taylor et al. (2011) CMLR')
+    cmlr_diag_MLi_Cgi.paramspace_panel(
+        'logzsol', 'tau_V mu', r'${\rm [Z]}$', r'$\tau_V \mu$', bins=[50, 50],
+        dlogML_fn=lambda x: x, fn_label='',
+        fn_TeX=r'$\Delta\log \Upsilon^*_i$')
+    cmlr_diag_MLi_Cgi.paramspace_ax.set_ylim([0., 5.])
+    cmlr_diag_MLi_Cgi.fig.subplots_adjust(left=.1)
+    cmlr_diag_MLi_Cgi.save()
+
+    #####

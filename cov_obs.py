@@ -33,7 +33,6 @@ from partition import CovWindows
 from contextlib import redirect_stdout
 from functools import lru_cache
 
-mpl_v = 'MPL-6'
 eps = np.finfo(float).eps
 
 # =====

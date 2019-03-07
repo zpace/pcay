@@ -10,17 +10,19 @@ from astropy.cosmology import WMAP9
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
+from matplotlib import gridspec
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 drpall = m.load_drpall(mpl_v, index='plateifu')
 
 dapall = m.load_dapall(mpl_v)
-dapall = dapall[dapall['DAPDONE'] * (dapall['DAPTYPE'] == 'SPX-GAU-MILESHC')]
+dapall = dapall[dapall['DAPDONE'] * (dapall['DAPTYPE'] == daptype)]
 dapall.add_index('PLATEIFU')
 
 pca_system = read_results.PCASystem.fromfile(os.path.join(basedir, 'pc_vecs.fits'))
 
-jhumpa = t.Table.read('/usr/data/minhas/zpace/stellarmass_pca/jhu_mpa_mpl7.fits')
+jhumpa = t.Table.read('/usr/data/minhas/zpace/stellarmass_pca/jhu_mpa_{}.fits'.format(
+    mpl_v.replace('-', '').lower()))
 jhumpa['plateifu'] = [plateifu.strip(' ') for plateifu in jhumpa['PLATEIFU']]
 jhumpa = jhumpa['plateifu', 'LOG_MSTAR']
 
@@ -60,8 +62,8 @@ def update_mass_table(drpall, old_mass_table=None, limit=None):
         res = read_results.PCAOutput.from_fname(res_fname)
         plateifu = res[0].header['PLATEIFU']
         plate, ifu = plateifu.split('-')
-        drp = res.get_drp_logcube('MPL-6')
-        dap = res.get_dap_maps('MPL-6', 'SPX-GAU-MILESHC')
+        drp = res.get_drp_logcube(mpl_v)
+        dap = res.get_dap_maps(mpl_v, daptype)
         totalmass_res = totalmass.estimate_total_stellar_mass(
             res, pca_system, drp, dap,
             drpall.loc[plateifu], dapall.loc[plateifu], WMAP9,
@@ -103,10 +105,6 @@ def update_mass_table(drpall, old_mass_table=None, limit=None):
 
     return mass_table, full_table
 
-mass_table, full_table = update_mass_table(drpall, old_mass_table=None, limit=None)
-mass_deficit_order = np.argsort(
-    full_table['mass_in_ifu'] - (full_table['fluxwt_ml'] * full_table['inner_lum']))[::-1]
-
 def compare_outerml_ring_cmlr(full_table):
     primarysample = m.mask_from_maskbits(full_table['mngtarg1'], [10])
     secondarysample = m.mask_from_maskbits(full_table['mngtarg1'], [11])
@@ -121,7 +119,7 @@ def compare_outerml_ring_cmlr(full_table):
         c='r', marker='o',
         s=8. * (full_table['outer_lum'] / (full_table['inner_lum'] + \
                 full_table['outer_lum']))[primarysample],
-        label='Primary')
+        edgecolor='None', label='Primary')
     ax.scatter(
         x=(full_table['nsa_elpetro_absmag'][:, 3] - \
            full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
@@ -130,7 +128,7 @@ def compare_outerml_ring_cmlr(full_table):
         c='b', marker='D',
         s=8. * (full_table['outer_lum'] / (full_table['inner_lum'] + \
                 full_table['outer_lum']))[secondarysample],
-        label='Secondary')
+        edgecolor='None', label='Secondary')
 
     ax.legend(loc='best', prop={'size': 'xx-small'})
     ax.tick_params(labelsize='xx-small')
@@ -151,13 +149,13 @@ def make_missing_mass_fig(full_table, mltype='ring'):
            full_table['nsa_elpetro_absmag'][:, 4])[primarysample],
         y=(full_table['outer_mass_{}'.format(mltype)] / (full_table['mass_in_ifu'] + \
            full_table['outer_mass_{}'.format(mltype)]))[primarysample],
-        c='r', s=5., marker='o', label='Primary+')
+        c='r', edgecolor='None', s=5., marker='o', label='Primary+')
     ax.scatter(
         x=(full_table['nsa_elpetro_absmag'][:, 3] - \
            full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
         y=(full_table['outer_mass_{}'.format(mltype)] / (full_table['mass_in_ifu'] + \
            full_table['outer_mass_{}'.format(mltype)]))[secondarysample],
-        c='b', s=5., marker='D', label='Secondary')
+        c='b', edgecolor='None', s=5., marker='D', label='Secondary')
 
     ax.legend(loc='best', prop={'size': 'xx-small'})
     ax.tick_params(labelsize='xx-small')
@@ -177,13 +175,13 @@ def make_missing_flux_fig(full_table):
            full_table['nsa_elpetro_absmag'][:, 4])[primarysample],
         y=(full_table['outer_lum'] / (full_table['inner_lum'] + \
            full_table['outer_lum']))[primarysample],
-        c='r', s=5., marker='o', label='Primary+')
+        c='r', edgecolor='None', s=5., marker='o', label='Primary+')
     ax.scatter(
         x=(full_table['nsa_elpetro_absmag'][:, 3] - \
            full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
         y=(full_table['outer_lum'] / (full_table['inner_lum'] + \
            full_table['outer_lum']))[secondarysample],
-        c='b', s=5., marker='D', label='Secondary')
+        c='b', edgecolor='None', s=5., marker='D', label='Secondary')
 
     ax.legend(loc='best', prop={'size': 'xx-small'})
     ax.tick_params(labelsize='xx-small')
@@ -204,19 +202,19 @@ def compare_missing_mass(full_table):
         y=np.log10(
               (full_table['mass_in_ifu'] + full_table['outer_mass_cmlr']) / \
               (full_table['mass_in_ifu'] + full_table['outer_mass_ring']))[primarysample],
-        c='r', s=5., marker='o', label='Primary+')
+        c='r', edgecolor='None', s=2., marker='o', label='Primary+')
     ax.scatter(
         x=(full_table['nsa_elpetro_absmag'][:, 3] - \
            full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
         y=np.log10(
               (full_table['mass_in_ifu'] + full_table['outer_mass_cmlr']) / \
               (full_table['mass_in_ifu'] + full_table['outer_mass_ring']))[secondarysample],
-        c='b', s=5., marker='D', label='Secondary')
+        c='b', edgecolor='None', s=2., marker='D', label='Secondary')
 
     ax.legend(loc='best', prop={'size': 'xx-small'})
     ax.tick_params(labelsize='xx-small')
     ax.set_xlabel(r'$g-r$', size='x-small')
-    ax.set_ylabel(r'$M^{\rm tot}_{\rm CMLR} - M^{\rm tot}_{\rm ring} {\rm [dex]}$',
+    ax.set_ylabel(r'$\log M^{\rm tot}_{\rm CMLR} - \log M^{\rm tot}_{\rm ring} {\rm [dex]}$',
                   size='x-small')
     fig.tight_layout()
     fig.subplots_adjust(top=.95, left=.21, right=.98)
@@ -265,15 +263,43 @@ def compare_mtot_pca_nsa(full_table, jhu_mpa, mltype='ring', nsa_phototype='elpe
     ax.legend(loc='best', prop={'size': 'xx-small'})
     ax.tick_params(labelsize='xx-small')
     ax.set_xlabel(r'$g-r$', size='x-small')
-    ax.set_ylabel(r'$M^*_{\rm PCA} - M^*_{\rm catalog} {\rm [dex]}$',
+    ax.set_ylabel(r'$\log \frac{M^*_{\rm PCA}}{M^*_{\rm catalog}}$',
                   size='x-small')
     fig.tight_layout()
     fig.subplots_adjust(top=.95, left=.21, right=.97)
 
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'dMasses.png'), dpi=fig.dpi)
 
+def make_panel_hcb_hist(figsize=(3, 3), dpi=300, **kwargs):
+    gs_dict = dict(nrows=2, ncols=2, bottom=.125, top=.85, left=.2, right=.95,
+        width_ratios=[6, 1], height_ratios=[1, 12], hspace=0., wspace=0.)
+    gs_dict.update(**kwargs)
+    gs = gridspec.GridSpec(**gs_dict)
+
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    main_ax = fig.add_subplot(gs[1, 0])
+    main_ax.tick_params(labelsize='xx-small')
+    main_ax.set_xscale('log')
+
+    hist_ax = fig.add_subplot(gs[1, 1], sharey=main_ax)
+    hist_ax.tick_params(axis='both', which='both', labelsize='xx-small',
+        left=False, labelleft=False, right=False, labelright=False,
+        bottom=False, labelbottom=False, top=False, labeltop=False)
+    
+    cb_ax = fig.add_subplot(gs[0, :])
+
+    return fig, main_ax, cb_ax, hist_ax
+
+def colorbartop(fig, sc_data, cax):
+    cb = fig.colorbar(sc_data, cax=cax, format='%.1f', orientation='horizontal', extend='both')
+    cb.ax.tick_params(which='both', labelsize='xx-small')
+    cb.ax.xaxis.set_ticks_position('top')
+    cb.ax.xaxis.set_label_position('top')
+
+    return cb
+
 def make_stdtauV_vs_dMass_fig(full_table):
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
+    fig, ax, cax, hist_ax = make_panel_hcb_hist(figsize=(3, 3), dpi=300)
 
     logmass_in_ifu = np.log10(full_table['mass_in_ifu'])
     logmass_in_ifu_lw = np.log10(full_table['fluxwt_ml'] * full_table['inner_lum'])
@@ -282,43 +308,32 @@ def make_stdtauV_vs_dMass_fig(full_table):
 
     sc = ax.scatter(
         x=std_atten_mwtd, y=(logmass_in_ifu - logmass_in_ifu_lw), c=mean_atten_mwtd,
-        edgecolor='k', linewidths=0.25, s=3., cmap='viridis_r', norm=mcolors.LogNorm())
+        edgecolor='k', linewidths=0.25, s=3., cmap='viridis_r',
+        norm=mcolors.LogNorm(), vmin=.5, vmax=10.)
 
-    cb = fig.colorbar(sc, ax=ax, format='%.0f')
-    cb.set_label(r'$\bar{\tau_V}$', size='x-small')
-    cb.ax.tick_params(labelsize='xx-small')
-
-    ax.tick_params(which='major', labelsize='xx-small')
-    ax.tick_params(which='minor', labelbottom=False, labelleft=False)
-    ax.set_xscale('log')
+    cb = colorbartop(fig, sc, cax)
+    cb.set_label(r'$\bar{\tau_V}$', size='x-small', labelpad=0)
 
     ax.set_xlabel(r'$\sigma_{\tau_V}$', size='x-small')
     ax.set_ylabel(r'$\log{ \frac{M^*}{M^*_{\rm LW}} ~ {\rm [dex]} }$', size='x-small')
 
-    hist_ax = ax.twiny()
     hist_ax.hist((logmass_in_ifu - logmass_in_ifu_lw), bins='auto', histtype='step',
                  orientation='horizontal', linewidth=.5, density=True, color='k')
 
-    for yloc, lw, ls in zip(
+    for yloc, lw, ls, c in zip(
         np.percentile((logmass_in_ifu - logmass_in_ifu_lw), [16., 50., 84.]),
-        [.5, 1., .5], ['--', '-', '--']):
+        [.5, 1., .5], ['--', '-', '--'], ['gray', 'k', 'gray']):
 
-        hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color='k')
+        hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color=c)
 
-    hist_ax.tick_params(axis='both', which='both', length=0.,
-                        labelright=False, labeltop=False)
-    hist_ax.set_xlim([0., hist_ax.get_xlim()[1] * 5.])
-
-    fig.tight_layout()
     fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
-    fig.subplots_adjust(left=.175, bottom=.1, right=.85, top=.925)
 
     fig.savefig(
         os.path.join(basedir, 'lib_diags/', 'stdtauV_dMglobloc_meantauV.png'),
         dpi=fig.dpi)
 
 def make_stdtauV_vs_dMass_ba_fig(full_table):
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
+    fig, ax, cax, hist_ax = make_panel_hcb_hist(figsize=(3, 3), dpi=300)
 
     logmass_in_ifu = np.log10(full_table['mass_in_ifu'])
     logmass_in_ifu_lw = np.log10(full_table['fluxwt_ml'] * full_table['inner_lum'])
@@ -328,43 +343,31 @@ def make_stdtauV_vs_dMass_ba_fig(full_table):
     sc = ax.scatter(
         x=std_atten_mwtd, y=(logmass_in_ifu - logmass_in_ifu_lw), c=ba,
         edgecolor='k', linewidths=0.25, s=3., cmap='viridis_r',
-        vmin=0.1, vmax=.9)
+        vmin=.1, vmax=.9)
 
-    cb = fig.colorbar(sc, ax=ax)
-    cb.set_label(r'$(\frac{b}{a})$', size='xx-small')
-    cb.ax.tick_params(labelsize='xx-small')
-
-    ax.tick_params(which='major', labelsize='xx-small')
-    ax.tick_params(which='minor', labelbottom=False, labelleft=False)
-    ax.set_xscale('log')
+    cb = colorbartop(fig, sc, cax)
+    cb.set_label(r'$\frac{b}{a}$', size='x-small', labelpad=0)
 
     ax.set_xlabel(r'$\sigma_{\tau_V}$', size='x-small')
     ax.set_ylabel(r'$\log{ \frac{M^*}{M^*_{\rm LW}} ~ {\rm [dex]} }$', size='x-small')
 
-    hist_ax = ax.twiny()
     hist_ax.hist((logmass_in_ifu - logmass_in_ifu_lw), bins='auto', histtype='step',
                  orientation='horizontal', linewidth=.5, density=True, color='k')
 
-    for yloc, lw, ls in zip(
+    for yloc, lw, ls, c in zip(
         np.percentile((logmass_in_ifu - logmass_in_ifu_lw), [16., 50., 84.]),
-        [.5, 1., .5], ['--', '-', '--']):
+        [.5, 1., .5], ['--', '-', '--'], ['gray', 'k', 'gray']):
 
-        hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color='k')
+        hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color=c)
 
-    hist_ax.tick_params(axis='both', which='both', length=0.,
-                        labelright=False, labeltop=False)
-    hist_ax.set_xlim([0., hist_ax.get_xlim()[1] * 5.])
-
-    fig.tight_layout()
     fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
-    fig.subplots_adjust(left=.175, bottom=.1, right=.925, top=.925)
 
     fig.savefig(
         os.path.join(basedir, 'lib_diags/', 'stdtauV_dMglobloc_ba.png'),
         dpi=fig.dpi)
 
 def make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring'):
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
+    fig, ax, cax, hist_ax = make_panel_hcb_hist(figsize=(3, 3), dpi=300, top=.8)
 
     merge_table = t.join(full_table, sfrsd_tab, 'plateifu')
 
@@ -380,9 +383,8 @@ def make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring'):
         c=np.log10(sfrsd / mass_pca),
         edgecolor='k', linewidths=0.25, s=3., cmap='viridis_r')
 
-    cb = fig.colorbar(sc, ax=ax)
+    cb = colorbartop(fig, sc, cax)
     cb.set_label(r'$\log \frac{{\Sigma}^{\rm SFR}_{R<R_e}}{M^*_{\rm tot}}$', size='xx-small')
-    cb.ax.tick_params(labelsize='xx-small')
 
     ax.tick_params(which='major', labelsize='xx-small')
     ax.tick_params(which='minor', labelbottom=False, labelleft=False)
@@ -391,23 +393,16 @@ def make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring'):
     ax.set_xlabel(r'$\sigma_{\tau_V}$', size='x-small')
     ax.set_ylabel(r'$\log{ \frac{M^*}{M^*_{\rm LW}} ~ {\rm [dex]} }$', size='x-small')
 
-    hist_ax = ax.twiny()
     hist_ax.hist((logmass_in_ifu - logmass_in_ifu_lw), bins='auto', histtype='step',
                  orientation='horizontal', linewidth=.5, density=True, color='k')
 
-    for yloc, lw, ls in zip(
+    for yloc, lw, ls, c in zip(
         np.percentile((logmass_in_ifu - logmass_in_ifu_lw), [16., 50., 84.]),
-        [.5, 1., .5], ['--', '-', '--']):
+        [.5, 1., .5], ['--', '-', '--'], ['gray', 'k', 'gray']):
 
-        hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color='k')
+        hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color=c)
 
-    hist_ax.tick_params(axis='both', which='both', length=0.,
-                        labelright=False, labeltop=False)
-    hist_ax.set_xlim([0., hist_ax.get_xlim()[1] * 5.])
-
-    fig.tight_layout()
     fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
-    fig.subplots_adjust(left=.175, bottom=.1, right=.9, top=.925)
 
     fig.savefig(
         os.path.join(basedir, 'lib_diags/', 'stdtauV_dMglobloc_ssfrsd.png'),
@@ -485,3 +480,22 @@ def make_meantauV_vs_ba_fig(full_table):
         os.path.join(basedir, 'lib_diags/', 'meantauV_ba.png'),
         dpi=fig.dpi)
 
+if __name__ == '__main__':
+    mass_table, full_table = update_mass_table(drpall, old_mass_table=None, limit=None)
+    mass_deficit_order = np.argsort(
+        full_table['mass_in_ifu'] - (full_table['fluxwt_ml'] * full_table['inner_lum']))[::-1]
+
+    compare_outerml_ring_cmlr(full_table)
+    compare_missing_mass(full_table)
+    make_missing_mass_fig(full_table, mltype='ring')
+    make_missing_mass_fig(full_table, mltype='cmlr')
+    make_missing_flux_fig(full_table)
+    compare_mtot_pca_nsa(full_table, jhumpa, mltype='ring', nsa_phototype='elpetro')
+    compare_mtot_pca_nsa(full_table, jhumpa, mltype='cmlr', nsa_phototype='elpetro')
+    make_stdtauV_vs_dMass_ba_fig(full_table)
+    make_stdtauV_vs_dMass_fig(full_table)
+    #make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring')
+    #make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='cmlr')
+    #make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='ring')
+    #make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='cmlr')
+    #make_meantauV_vs_ba_fig(full_table)

@@ -22,8 +22,6 @@ import os
 import sys
 from warnings import warn, filterwarnings, catch_warnings, simplefilter
 from traceback import print_exception
-import multiprocessing as mpc
-import ctypes
 from functools import lru_cache
 import pickle
 
@@ -34,11 +32,6 @@ from scipy.integrate import quad
 from scipy.ndimage.filters import gaussian_filter1d
 from scipy.stats import entropy
 
-# sklearn
-from sklearn.neighbors import KernelDensity
-from sklearn.model_selection import GridSearchCV
-import sklearn.decomposition as decomp
-
 # statsmodels
 from statsmodels.nonparametric.kde import KDEUnivariate
 
@@ -47,14 +40,11 @@ from importer import *
 import csp
 import cov_obs
 import figures_tools
-import radial
 from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
                          Spec2Phot, absmag_sun_band as Msun)
 import utils as ut
 from fakedata import FakeData, SkyContamination
-from partition import CovCalcPartitioner, CovWindows
 from linalg import *
-import solvecube
 from param_estimate import *
 from rectify import MaNGA_deredshift
 
@@ -196,6 +186,7 @@ class StellarPop_PCA(object):
 
         meta['tau_V mu'] = meta['tau_V'] * meta['mu']
         meta['tau_V (1 - mu)'] = meta['tau_V'] * (1. - meta['mu'])
+        meta['QLi'] = 10.**meta['logQHpersolmass'] * meta['MLi']
 
         for k in meta.colnames:
             if len(meta[k].shape) > 1:
@@ -248,6 +239,7 @@ class StellarPop_PCA(object):
         meta['sbss'].meta['TeX'] = r'$S_{\rm BSS}$'
         meta['fbhb'].meta['TeX'] = r'$f_{\rm BHB}$'
         meta['logQHpersolmass'].meta['TeX'] = r'$\log{\frac{Q_H}{M_{\odot}}}$'
+        meta['QLi'].meta['TeX'] = r'$\log \frac{Q_H}{\mathcal{L}_i}$'
         meta['uv_slope'].meta['TeX'] = r'$\beta_{UV}$'
 
         for n in meta.colnames:
@@ -778,7 +770,7 @@ class StellarPop_PCA(object):
             [self.trn_PC_wts,
              np.ones(self.trn_PC_wts.shape[0])])
 
-        X = np.stack([np.linalg.lstsq(a=a_, b=b_[:, i])[0]
+        X = np.stack([np.linalg.lstsq(a=a_, b=b_[:, i], rcond=None)[0]
                       for i in range(b_.shape[-1])])
 
         # X has shape (nparams, q)
@@ -1103,7 +1095,7 @@ class PCA_Result(object):
         '''
         '''
         var_norm = 1. / self.ivar_norm
-        #'''
+        
         solver = PCAProjectionSolver(
             e=self.E, K_inst_cacher=self.K_obs, K_th=self.pca.cov_th, regul=1.0e-2)
 
@@ -1117,13 +1109,6 @@ class PCA_Result(object):
 
         P_PC = np.moveaxis(P_PC, [0, 1, 2, 3], [2, 3, 0, 1]).astype(float)
         A = np.moveaxis(A, -1, 0).astype(float)
-        #'''
-        '''
-        A, P_PC, success = solvecube.solve_cube_gls(
-            e=self.pca.PCs, s=self.S_cens, var=var_norm, mask_cube=self.mask_cube,
-            K_inst=self.K_obs, K_th=self.pca.cov_th, i0=self.i0_map,
-            mask_map=np.logical_or(self.mask_spax, self.nodata))
-        '''
         return A, P_PC, success
 
     def reconstruct(self):
@@ -1317,12 +1302,15 @@ class PCA_Result(object):
         elif logify:
             P50 = np.log10(P50)
             unc = np.log10((u_unc + l_unc) / 2.)
+            sigma_TeX = r'$\sigma~{\rm [dex]}$'
             #med_TeX = ''.join((r'$\log$', med_TeX))
         elif (scale == 'log'):
             unc = (u_unc + l_unc) / 2.
+            sigma_TeX = r'$\sigma~{\rm [dex]}$'
             #med_TeX = ''.join((r'$\log$', med_TeX))
         else:
             unc = (l_unc + u_unc) / 2.
+            sigma_TeX = r'$\sigma$'
 
         mask = self.mask_map
 
@@ -1342,7 +1330,7 @@ class PCA_Result(object):
         mcb.ax.tick_params(labelsize='xx-small')
 
         scb = plt.colorbar(s, ax=ax2, pad=0.025)
-        scb.set_label(r'$\sigma$', size=8)
+        scb.set_label(sigma_TeX, size=8)
         scb.ax.tick_params(labelsize='xx-small')
 
         return m, s, mcb, scb, scale
@@ -1480,32 +1468,6 @@ class PCA_Result(object):
         m, s, mcb, scb, scale = self.qty_map(
             ax1=ax1, ax2=ax2, qty_str=qty, f=f, norm=[None, None],
             logify=logify, TeX_over=TeX_over)
-
-        logmstar_tot = np.log10(np.ma.masked_invalid(np.ma.array(
-            self.Mstar_tot(band=band), mask=self.mask_map)).sum())
-
-        logmstar_allspec = np.log10(self.Mstar_integrated(band))
-
-        try:
-            TeX1 = ''.join((r'$\log{\frac{M_{*}}{M_{\odot}}}$ = ',
-                            '{:.2f}'.format(logmstar_tot)))
-        except TypeError:
-            TeX1 = 'ERROR'
-
-        try:
-            TeX2 = ''.join((r'$\log{\frac{M_{*,add}}{M_{\odot}}}$ = ',
-                            '{:.2f}'.format(logmstar_allspec)))
-        except TypeError:
-            print(self.objname, logmstar_allspec)
-            TeX2 = 'ERROR'
-
-        ax1xlims, ax1ylims = ax1.get_xlim(), ax1.get_ylim()
-
-        ax1.text(x=tr((0, 1), ax1xlims, 0.05),
-                 y=tr((0, 1), ax1ylims, 0.05),
-                 s='; '.join((TeX1, TeX2)),
-                 color='k', bbox=figures_tools.textboxprops,
-                 zorder=100)
 
         return m, s, mcb, scb
 
@@ -1660,7 +1622,7 @@ class PCA_Result(object):
 
             log_ev = np.log10(postgrid / prigrid)
             try:
-                ev_ax_.plot(qgrid, log_ev, color='g', linestyle='--',
+                ev_ax_.plot(qgrid, lfog_ev, color='g', linestyle='--',
                             label='log-odds-ratio')
             except ValueError:
                 pass
@@ -1755,7 +1717,7 @@ class PCA_Result(object):
     def __setup_qty_fig__(self):
         fig = plt.figure(figsize=(9, 4), dpi=300)
 
-        gs = gridspec.GridSpec(1, 2, wspace=.175, left=.075, right=.975,
+        gs = gridspec.GridSpec(1, 2, wspace=.2, left=.085, right=.975,
                                bottom=.11, top=.9)
         ax1 = fig.add_subplot(gs[0], projection=self.wcs_header)
         ax2 = fig.add_subplot(gs[1], projection=self.wcs_header)
@@ -1883,90 +1845,6 @@ class PCA_Result(object):
         plt.suptitle('{0}: ({1[0]}-{1[1]})'.format(self.objname, ix_))
 
         fname = '{0}_fulldiag_{1[0]}-{1[1]}.png'.format(self.objname, ix_)
-        self.savefig(fig, fname, self.figdir, dpi=300)
-
-    def radial_gp_plot(self, qty, TeX_over=None, f=None, ax=None,
-                       q_bdy=None, logify=False):
-        '''
-        make a radial plot of a quantity + uncertainties using GP regression
-        '''
-
-        if ax is None:
-            ax = plt.gca()
-
-        q, l_unc, u_unc, scale = self.pca.param_cred_intvl(
-            qty=qty, factor=f, W=self.w)
-
-        q_unc = np.abs(l_unc + u_unc) / 2.
-
-        if not TeX_over:
-            qty_tex = self.pca.metadata[qty].meta.get('TeX', qty)
-        else:
-            qty_tex = TeX_over
-
-        if scale == 'log':
-            pass
-            #qty_tex = ''.join((r'$\log$', qty_tex))
-
-        # throw out spaxels at large Re
-        # in future, should evaluate spectrum uncertainties directly
-        rlarge = self.dered.Reff > 3.5
-        r = np.ma.array(self.dered.Reff,
-                        mask=(rlarge | self.mask_map | self.badPDF))
-
-        try:
-            # radial gaussian process from sklearn (v0.18 or later)
-            gp = radial.radial_gp(r=r, q=q, q_unc=q_unc, q_bdy=q_bdy,
-                                  scale=scale)
-        except radial.GPFitError:
-            # sometimes it fails when solution space is too sparse
-            print('GP regr. failed: {}'.format(qty))
-        except:
-            raise
-        else:
-            r_pred = np.atleast_2d(np.linspace(0., r.max(), 100)).T
-            q_pred, sigma2 = gp.predict(r_pred, return_std=True)
-            if scale == 'log':
-                (q_pred, sigma) = (np.log10(q_pred),
-                                   np.log10(q_pred + np.sqrt(sigma2)) - \
-                                       np.log10(q_pred))
-            else:
-                sigma = np.sqrt(sigma2)
-            # plot allowed range
-            ax.plot(r_pred, q_pred, c='b', label='Prediction')
-            ax.fill(np.concatenate([r_pred, r_pred[::-1]]),
-                    np.concatenate([(q_pred - 1.9600 * sigma),
-                                    (q_pred + 1.9600 * sigma)[::-1]]),
-                    alpha=.3, facecolor='b', edgecolor='None', label='95\% CI')
-
-        # plot data
-        sorter = np.argsort(r.flatten())
-        ax.errorbar(x=r.flatten()[sorter], y=q.flatten()[sorter],
-                    yerr=np.row_stack([l_unc.flatten()[sorter],
-                                       u_unc.flatten()[sorter]]),
-                    label='PCA Results', linestyle='None', marker='o',
-                    markersize=2, c='k', alpha=0.2, capsize=1.5,
-                    markevery=10, errorevery=10)
-
-        ax.legend(loc='best', prop={'size': 6})
-        ax.set_xlabel(r'$\frac{R}{R_e}$')
-        ax.set_ylabel(qty_tex)
-
-        ax.set_ylim([-1., 1.5])
-
-        return ax
-
-    def make_radial_gp_fig(self, qty,TeX_over=None, q_bdy=[-np.inf, np.inf]):
-        fig = plt.figure(figsize=(4, 4), dpi=300)
-
-        ax = fig.add_subplot(111)
-
-        self.radial_gp_plot(qty=qty, TeX_over=None, ax=ax,
-                            q_bdy=q_bdy)
-        ax.set_title(self.objname)
-        plt.tight_layout()
-
-        fname = '{}-{}_radGP.png'.format(self.objname, qty)
         self.savefig(fig, fname, self.figdir, dpi=300)
 
     def color_ML_plot(self, mlb='i', b1='g', b2='r', ax=None, ptcol='r', lab=None):
@@ -2476,21 +2354,26 @@ class PCA_Result(object):
             qtys = self.pca.confident_params
 
         for qty in qtys:
-            # retrieve results
-            P50, l_unc, u_unc, scale = self.param_cred_intvl(qty=qty)
-            qty_hdu = fits.ImageHDU(np.stack([P50, l_unc, u_unc]))
-            qty_hdu.header['LOGSCALE'] = (scale == 'log')
-            qty_hdu.header['CHANNEL0'] = 'median'
-            qty_hdu.header['CHANNEL1'] = 'lower uncertainty'
-            qty_hdu.header['CHANNEL2'] = 'upper uncertainty'
-            qty_hdu.header['QTYNAME'] = qty
-            qty_hdu.header['EXTNAME'] = qty
+            try:
+                # retrieve results
+                P50, l_unc, u_unc, scale = self.param_cred_intvl(qty=qty)
+                qty_hdu = fits.ImageHDU(np.stack([P50, l_unc, u_unc]))
+                qty_hdu.header['LOGSCALE'] = (scale == 'log')
+                qty_hdu.header['CHANNEL0'] = 'median'
+                qty_hdu.header['CHANNEL1'] = 'lower uncertainty'
+                qty_hdu.header['CHANNEL2'] = 'upper uncertainty'
+                qty_hdu.header['QTYNAME'] = qty
+                qty_hdu.header['EXTNAME'] = qty
 
-            # if ground-truth is available, list it
-            if self.truth is not None:
-                qty_hdu.header['TRUTH'] = self.truth[qty]
-
-            hdulist.append(qty_hdu)
+                # if ground-truth is available, list it
+                if self.truth is not None:
+                    qty_hdu.header['TRUTH'] = self.truth[qty]
+            except ValueError:
+                raise ValueError(
+                    'Something wrong with output {} (true value: {})'.format(
+                        qty, self.truth[qty]))
+            else:
+                hdulist.append(qty_hdu)
 
         logQH_hdu = self.make_logQH_hdu()
         logQH_hdu.header['EXTNAME'] = 'logQH'
@@ -2641,9 +2524,8 @@ def setup_fake(row, pca, K_obs, dered_method='nearest', dered_kwargs={},
     truth_sfh = truth_sfh[mocksfh_ix, :]
 
     data = FakeData.from_FSPS(
-        fname=mockspec_fullpath, i=mockspec_ix,
-        plateifu_base=plateifu, pca=pca, row=row,
-        K_obs=K_obs, mpl_v=mpl_v, sky=sky)
+        fname=mockspec_fullpath, i=mockspec_ix, plateifu_base=plateifu, pca=pca, row=row,
+        K_obs=K_obs, mpl_v=mpl_v, sky=sky, kind=daptype)
 
     data.write(fakedata_basedir)
 
@@ -2706,10 +2588,10 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
 
         pca_res.make_qty_fig(qty_str='MLi')
 
-        pca_res.make_qty_fig(qty_str='uv_slope')
+        #pca_res.make_qty_fig(qty_str='uv_slope')
 
         #pca_res.make_Mstar_fig(band='r')
-        pca_res.make_Mstar_fig(band='i')
+        #pca_res.make_Mstar_fig(band='i')
         #pca_res.make_Mstar_fig(band='z')
 
     # reset redshift to original value
@@ -2732,7 +2614,7 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     return pca_res
 
 if __name__ == '__main__':
-    howmany = 50
+    howmany = 150
     cosmo = WMAP9
     warn_behav = 'ignore'
     dered_method = 'drizzle'
@@ -2762,6 +2644,7 @@ if __name__ == '__main__':
 
     #'''
     drpall = drpall[drpall['ifudesignsize'] > 0.]
+    #drpall = drpall[m.mask_from_maskbits(drpall['mngtarg3'], [16])]
     #drpall = drpall[np.where([pi in ['8624-12703'] for pi in drpall['plateifu']])]
     #drpall = drpall[drpall['ifudesignsize'] == 19]
     #drpall = drpall[drpall['nsa_elpetro_ba'] >= 0.5]
@@ -2794,7 +2677,7 @@ if __name__ == '__main__':
                     pca_res.write_results('confident')
                     #'''
 
-                    #'''
+                    '''
                     pca_res_f = run_object(
                         basedir=CSPs_dir,
                         row=row, pca=pca, force_redo=False, fake=True, vdisp_wt=False,
@@ -2804,7 +2687,7 @@ if __name__ == '__main__':
                         mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits',
                         sky=skymodel)
                     pca_res_f.write_results()
-                    #'''
+                    '''
             except Exception:
                 exc_info = sys.exc_info()
                 print('ERROR: {}'.format(plateifu))

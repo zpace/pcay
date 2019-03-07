@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 
 from astropy.io import fits
 from astropy import units as u, constants as c, table as t
+import extinction
 
 from scipy.interpolate import interp1d
 from scipy.signal import medfilt
@@ -123,9 +124,20 @@ class FakeData(object):
             z_in=0., z_out=z_obs)
 
         '''STEP 3'''
-        spec_model_mwred, ivar_model_mwred = ut.extinction_atten(
-            lam_model_z * u.AA, f=spec_model_z, ivar=ivar_model_z,
-            EBV=drp_base[0].header['EBVGAL'])
+        # figure out attenuation
+        # there are issues with extinction library's handling of multidim arrays
+        # so we'll interpolate
+        atten_l = np.linspace(3000., 20000., 10000)
+        r_v = 3.1
+        ext_mag_interp = interp1d(
+            x=atten_l,
+            y=extinction.fitzpatrick99(
+                atten_l, r_v=r_v, a_v=drp_base[0].header['EBVGAL'] * r_v),
+            fill_value='extrapolate', bounds_error=False)
+        ext_mag = ext_mag_interp(lam_model_z)
+        atten_factor = 2.5**-ext_mag
+        spec_model_mwred = spec_model_z * atten_factor
+        ivar_model_mwred = ivar_model_z / atten_factor**2.
 
         '''STEP 4'''
         # specres of observed cube at model wavelengths
@@ -233,6 +245,7 @@ class FakeData(object):
 
         models_meta = t.Table(models_hdulist['meta'].data)
         models_meta['tau_V mu'] = models_meta['tau_V'] * models_meta['mu']
+        models_meta['tau_V (1 - mu)'] = models_meta['tau_V'] * (1. - models_meta['mu'])
 
         models_meta.keep_columns(pca.metadata.colnames)
 

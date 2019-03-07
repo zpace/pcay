@@ -145,16 +145,18 @@ if __name__ == '__main__':
 
     pca_system = read_results.PCASystem.fromfile(os.path.join(basedir, 'pc_vecs.fits'))
     drpall = m.load_drpall(mpl_v, index='plateifu')
+    all_dms_galaxies = drpall[m.mask_from_maskbits(drpall['mngtarg3'], [16])]
     h_dms = 0.7
 
-    fig, (ax1, ax2, ax3) = plt.subplots(nrows=3, ncols=1, figsize=(3.5, 8))
+    fig, (ax1, ax2, ax3, ax4, ax5, _) = plt.subplots(
+        nrows=2, ncols=3, figsize=(7, 8), sharex=True, sharey=True)
     for plateifu, dms_name, ax, Rbulge, F, incl in zip(
-        ['8566-12705', '8567-12701', '8939-12704'],
-        ['UGC3997', 'UGC4107', 'UGC4368'],
-        [ax1, ax2, ax3],
-        [1.97, 1.18, 2.23],
-        [.48, .56, .72],
-        np.array([26.2, 24.1, 45.3]) * u.deg):
+        ['8566-12705', '8567-12701', '8939-12704', '10494-12705', '10510-12704'],
+        ['UGC3997', 'UGC4107', 'UGC4368', 'UGC4380', 'UGC6918'],
+        [ax1, ax2, ax3, ax4, ax5],
+        [1.97, 1.18, 2.23, 2.44, 0.655],
+        [.48, .56, .72, .46, .64],
+        np.array([26.2, 24.1, 45.3, 14.2, 38.0]) * u.deg):
 
         ugc_num = dms_name[3:]
         dms_fname = \

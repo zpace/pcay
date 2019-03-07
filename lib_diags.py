@@ -15,6 +15,8 @@ import manga_tools as m
 
 import read_results
 
+import warnings
+
 def results_list(basedir):
     return glob(os.path.join(basedir, '*/*_res.fits'))
 
@@ -97,6 +99,36 @@ def make_binlabel(bin_bds, i, varname):
 
     return label
 
+def make_binlimtext(bin_bds, i):
+    if i == 0:
+        # left-most bin
+        binlimtext = [r'$-\infty$', bin_bds[0]]
+    elif i == len(bin_bds):
+        # right-most bin
+        binlimtext = [bin_bds[-1], r'$\infty$']
+    else:
+        binlimtext = [bin_bds[i - 1], bin_bds[i]]
+
+    return binlimtext
+
+def sgn_fr_exp10(x):
+    exp = int(np.floor(np.log10(abs(x))))
+    if np.sign(x) < 0:
+        sgn = '-'
+    else:
+        sgn = ''
+    return sgn, x / 10**exp, exp
+
+def latex_sgn_fr_exp10_format(x):
+    if not np.isfinite(x):
+        tex = r'---'
+    elif x == 0:
+        tex = r'$0$'
+    else:
+        tex = r'${}{:.2f} \times 10^{{{:d}}}$'.format(*sgn_fr_exp10(x))
+    
+    return tex
+
 def make_binned_hist_fig(results_fnames, pca_system,
                          histdatatype, histname, histlabel, histlims,
                          bin1datatype, bin1name, bin1label, bin1bds,
@@ -107,11 +139,16 @@ def make_binned_hist_fig(results_fnames, pca_system,
         subplots, and bin2bds defines how points are apportioned to histograms within
         a given subplot
     '''
+    print(bin1datatype, bin1name)
+    print(bin2datatype, bin2name)
     print(histdatatype, histname)
+    print('Is Mock?', mock)
+    print('|  Bin 1 lims  |  Bin 2 lims  |  P50  |  P50 - P16  |  P84 - P50  |')
+
     nbin1s = len(bin1bds) + 1
     nbin2s = len(bin2bds) + 1
 
-    fig = plt.figure(figsize=(3, 4))
+    fig = plt.figure(figsize=(3, 4), dpi=300)
     gs = gridspec.GridSpec(nrows=nbin1s, ncols=1, hspace=0., top=0.85)
     axs = [None, ] * (len(bin1bds) + 1)
     for i in reversed(range(nbin1s)):
@@ -151,13 +188,27 @@ def make_binned_hist_fig(results_fnames, pca_system,
                        s=str(len(histdata[in_2d_bin].compressed())),
                        fontsize='xx-small', color=b2_color,
                        transform=b1_ax.transAxes)
+            '''
             print('\t', b1label_i, b2label_i)
             _, _, mean, var, skew, kurt = stats.describe(
                 histdata[in_2d_bin].compressed(), nan_policy='omit')
             print('\t', 'mean = {:.2e}'.format(mean))
             print('\t', 'var  = {:.2e}'.format(var))
             print('\t', 'skew = {:.2e}'.format(skew))
-            print('\t', 'kurt = {:.2e}'.format(kurt))
+            print('\t', 'kurt = {:.2e}'.format(kurt))\
+            '''
+            try:
+                pctl_16, pctl_50, pctl_84 = np.percentile(
+                    a=histdata[in_2d_bin].compressed(), q=[16., 50., 84.])
+            except IndexError:
+                pctl_16 = pctl_50 = pctl_84 = np.nan
+
+            print(
+                r'[{}, {}] & [{}, {}] & {} & {} & {} \\ \hline'.format(
+                    *make_binlimtext(bin1bds, b1_i), *make_binlimtext(bin2bds, b2_i),
+                    latex_sgn_fr_exp10_format(pctl_50), 
+                    latex_sgn_fr_exp10_format(pctl_50 - pctl_16), 
+                    latex_sgn_fr_exp10_format(pctl_84 - pctl_50)))
 
         b1_ax.set_yticks([])
 
@@ -177,6 +228,8 @@ def make_binned_hist_fig(results_fnames, pca_system,
             b1_ax.set_xlim(axs[-1].get_xlim())
             b1_ax.tick_params(labelbottom=False)
 
+    print('-----')
+
     if mock:
         titletype = 'Mocks'
     else:
@@ -184,108 +237,6 @@ def make_binned_hist_fig(results_fnames, pca_system,
 
     fig.suptitle('{}: {} fit diagnostics'.format(titletype, histlabel),
                  size='x-small')
-    return fig
-
-def make_fitdiag_fig(results_fnames, pca_system, xdatatype, xname, xlabel,
-                     ydatatype, yname, ylabel, ptcolordatatype, ptcolorname, colorbarlabel,
-                     xlims, ylims, clims, colorbar_log=False, mock=False):
-    '''
-    make a fit-diagnostic figure
-    '''
-
-    # munge data into correct form
-    if (ptcolordatatype == None) or (ptcolorname == None):
-        # no color
-        colorbar = False
-        types = [xdatatype, ydatatype]
-        names = [xname, yname]
-
-        xdata, ydata = concatenate_zipped(
-            [harvest_from_result(fn, pca_system, types, names, mock) for fn in results_fnames])
-        norm = None
-        nfigcols = 2
-
-    else:
-        # color
-        colorbar = True
-        types = [xdatatype, ydatatype, ptcolordatatype]
-        names = [xname, yname, ptcolorname]
-
-        xdata, ydata, colordata = concatenate_zipped(
-            [harvest_from_result(fn, pca_system, types, names, mock) for fn in results_fnames])
-
-        norm = colors.LogNorm() if colorbar_log else colors.Normalize()
-        nfigcols = 3
-
-    # init figure
-    fig = plt.figure(figsize=(3, 4))
-    gs = gridspec.GridSpec(
-        nrows=2, ncols=nfigcols, width_ratios=[1, 4, .5][:nfigcols], height_ratios=[4, 1],
-        wspace=.05, hspace=.05, left=.175, right=.825, top=.95)
-
-    if colorbar:
-        # color ==> scatterplot + colorbar
-        ax = plt.subplot(gs[0, 1])
-        cax = plt.subplot(gs[:, 2])
-
-        sc = ax.scatter(xdata, ydata, c=colordata, vmin=clims[0], vmax=clims[-1],
-                        s=.25, edgecolor='None', norm=norm)
-        cb = fig.colorbar(sc, cax=cax)
-
-        cb.set_label(colorbarlabel, size='x-small')
-        cb.ax.tick_params(labelsize='xx-small')
-
-    else:
-        # no color ==> scatter-density
-        ax = fig.add_subplot(gs[0, 1], projection='scatter_density')
-        sc = ax.scatter_density(xdata.compressed(), ydata.compressed(), color='k')
-
-    xhist_ax = plt.subplot(gs[1, 1], sharex=ax)
-    yhist_ax = plt.subplot(gs[0, 0], sharey=ax)
-
-    ax.tick_params(labelbottom=False, labelleft=False)
-
-    # place histograms on x and y axis
-    xhist = xhist_ax.hist(
-        xdata.compressed(), bins=40, range=xlims, density=True, histtype='step',
-        linewidth=.5)
-
-    yhist = yhist_ax.hist(
-        ydata.compressed(), bins=40, range=ylims, density=True, histtype='step',
-        orientation='horizontal', linewidth=.5)
-
-    # place lines
-
-    for v, ls in zip(np.percentile(xdata.compressed(), [16., 50, 84.]), ['--', '-', '--']):
-        xhist_ax.axvline(v, linestyle=ls, c='k')
-
-    for v, ls in zip(np.percentile(ydata.compressed(), [16., 50, 84.]), ['--', '-', '--']):
-        yhist_ax.axhline(v, linestyle=ls, c='k')
-
-    # suppress tick labels on primary axes
-
-    xhist_ax.set_yticks([])
-    xhist_ax.tick_params(labelsize='xx-small')
-
-    yhist_ax.set_xticks([])
-    yhist_ax.tick_params(labelsize='xx-small')
-
-    # fix up the figure
-    xhist_ax.set_xlabel(xlabel, size='x-small')
-    yhist_ax.set_ylabel(ylabel, size='x-small')
-    ax.set_xlim(xlims)
-    ax.set_ylim(ylims)
-
-    if mock:
-        titletype = 'Mocks'
-    else:
-        titletype = 'Obs'
-
-    fig.suptitle('{}: Fit diagnostics ({} galaxies, {} spaxels)'.format(
-                     titletype, len(results_fnames), xdata.count()),
-                 size='x-small')
-    fig.tight_layout()
-
     return fig
 
 def get_res_PC_rep(results_fname, mock=False):
@@ -342,15 +293,26 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
     mocks_res = glob(os.path.join(basedir, 'fakedata/results/*/*_res.fits'))
     obs_res = glob(os.path.join(basedir, 'results/*/*_res.fits'))
 
+    colorbins = [0.35, 0.7]
+    snrbins = [2., 10., 20.]
+    zbins = [-.5, 0.]
+    taubins = [1., 2.5]
+
     # COLOR
     plt.close('all')
     fig = make_binned_hist_fig(
         mocks_res, pca_system,
         histdatatype='dev-wid', histname='MLi', histlims=[-4., 4.],
         histlabel=r'$\frac{\Delta \log \Upsilon^*_i}{\sigma_{\log \Upsilon^*_i}}$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='color', bin2name='gr', bin2bds=[0.35, 0.7],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='color', bin2name='gr', bin2bds=colorbins,
         bin2label=r'$g - r$', bin2colors=['b', 'g', 'r'], mock=True)
+    for ax in fig.axes:
+        ax_ = ax.twinx()
+        xs = np.linspace(-5., 5., 201)
+        gau = lambda x: np.exp(-0.5 * x**2.)
+        ax_.plot(xs, gau(xs), linestyle='--')
+        ax_.set_yticks([])
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_color_hist_devwidMLi.png'))
 
@@ -359,8 +321,8 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='param-wid', histname='MLi', histlims=[-.02, .6],
         histlabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='color', bin2name='gr', bin2bds=[0.35, 0.7],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='color', bin2name='gr', bin2bds=colorbins,
         bin2label=r'$g - r$', bin2colors=['b', 'g', 'r'], mock=True)
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_color_hist_widMLi.png'))
@@ -370,8 +332,8 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='dev', histname='MLi', histlims=[-.6, .6],
         histlabel=r'$\Delta \log \Upsilon^*_i$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='color', bin2name='gr', bin2bds=[0.35, 0.7],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='color', bin2name='gr', bin2bds=colorbins,
         bin2label=r'$g - r$', bin2colors=['b', 'g', 'r'], mock=True)
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_color_hist_devMLi.png'))
@@ -381,8 +343,8 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         obs_res, pca_system,
         histdatatype='param-wid', histname='MLi', histlims=[-.02, .6],
         histlabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='color', bin2name='gr', bin2bds=[0.35, 0.7],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='color', bin2name='gr', bin2bds=colorbins,
         bin2label=r'$g - r$', bin2colors=['b', 'g', 'r'], mock=False)
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'obs_snr_color_hist_widMLi.png'))
@@ -393,9 +355,15 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='dev-wid', histname='MLi', histlims=[-4., 4.],
         histlabel=r'$\frac{\Delta \log \Upsilon^*_i}{\sigma_{\log \Upsilon^*_i}}$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='truth', bin2name='logzsol', bin2bds=[-.5, 0.],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='truth', bin2name='logzsol', bin2bds=zbins,
         bin2label=r'${\rm [Z]}_0$', bin2colors=['b', 'g', 'r'], mock=True)
+    for ax in fig.axes:
+        ax_ = ax.twinx()
+        xs = np.linspace(-5., 5., 201)
+        gau = lambda x: np.exp(-0.5 * x**2.)
+        ax_.plot(xs, gau(xs), linestyle='--')
+        ax_.set_yticks([])
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_Z_hist_devwidMLi.png'))
 
@@ -404,8 +372,8 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='param-wid', histname='MLi', histlims=[-.02, .6],
         histlabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='truth', bin2name='logzsol', bin2bds=[-.5, 0.],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='truth', bin2name='logzsol', bin2bds=zbins,
         bin2label=r'${\rm [Z]}_0$', bin2colors=['b', 'g', 'r'], mock=True)
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_Z_hist_widMLi.png'))
@@ -415,8 +383,8 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='dev', histname='MLi', histlims=[-.6, .6],
         histlabel=r'$\Delta \log \Upsilon^*_i$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='truth', bin2name='logzsol', bin2bds=[-.5, 0.],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='truth', bin2name='logzsol', bin2bds=zbins,
         bin2label=r'${\rm [Z]}_0$', bin2colors=['b', 'g', 'r'], mock=True)
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_Z_hist_devMLi.png'))
@@ -427,9 +395,15 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='dev-wid', histname='MLi', histlims=[-4., 4.],
         histlabel=r'$\frac{\Delta \log \Upsilon^*_i}{\sigma_{\log \Upsilon^*_i}}$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='truth', bin2name='tau_V', bin2bds=[1., 2.5],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='truth', bin2name='tau_V', bin2bds=taubins,
         bin2label=r'$(\tau_V)_0$', bin2colors=['b', 'g', 'r'], mock=True)
+    for ax in fig.axes:
+        ax_ = ax.twinx()
+        xs = np.linspace(-5., 5., 201)
+        gau = lambda x: np.exp(-0.5 * x**2.)
+        ax_.plot(xs, gau(xs), linestyle='--')
+        ax_.set_yticks([])
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_tauV_hist_devwidMLi.png'))
 
@@ -438,8 +412,8 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='param-wid', histname='MLi', histlims=[-.02, .6],
         histlabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='truth', bin2name='tau_V', bin2bds=[1., 2.5],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='truth', bin2name='tau_V', bin2bds=taubins,
         bin2label=r'$(\tau_V)_0$', bin2colors=['b', 'g', 'r'], mock=True)
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_tauV_hist_widMLi.png'))
@@ -449,132 +423,15 @@ def make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir):
         mocks_res, pca_system,
         histdatatype='dev', histname='MLi', histlims=[-.6, .6],
         histlabel=r'$\Delta \log \Upsilon^*_i$',
-        bin1datatype='map', bin1name='SNRMED', bin1bds=[2., 10., 20.], bin1label=r'${\rm SNR}$',
-        bin2datatype='truth', bin2name='tau_V', bin2bds=[1., 2.5],
+        bin1datatype='map', bin1name='SNRMED', bin1bds=snrbins, bin1label=r'${\rm SNR}$',
+        bin2datatype='truth', bin2name='tau_V', bin2bds=taubins,
         bin2label=r'$(\tau_V)_0$', bin2colors=['b', 'g', 'r'], mock=True)
     fig.savefig(os.path.join(basedir, lib_diags_subdir,
                 'mocks_snr_tauV_hist_devMLi.png'))
 
-def make_paper_lib_diags(basedir, pca_system, lib_diags_subdir):
-
-    # search for all results files
-    mocks_res = glob(os.path.join(basedir, 'fakedata/results/*/*_res.fits'))
-    obs_res = glob(os.path.join(basedir, 'results/*/*_res.fits'))
-    # MOCKS
-    ## wid
-    plt.close()
-    fig = make_fitdiag_fig(
-        mocks_res, pca_system,
-        ydatatype='param-wid', yname='MLi', ylabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        xdatatype='color', xname='gr', xlabel=r'$C_{gr}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-.1, 1.5], ylims=[0., .6], clims=[.1, 30.],
-        mock=True, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'mocks_Cgr_widMLi_SNR.png'))
-    ## dev
-    ### Cgr-dev MLi-dev SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        mocks_res, pca_system,
-        ydatatype='dev', yname='MLi', ylabel=r'$\Delta \log \Upsilon^*_i$',
-        xdatatype='color', xname='gr', xlabel=r'$C_{gr}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-.1, 1.5], ylims=[-.5, .5], clims=[.1, 30.],
-        mock=True, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'mocks_Cgr_devMLi_SNR.png'))
-    ### tau_V*mu-dev MLi-dev SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        mocks_res, pca_system,
-        ydatatype='dev', yname='MLi', ylabel=r'$\Delta \log \Upsilon^*_i$',
-        xdatatype='dev', xname='tau_V mu', xlabel=r'$\Delta (\tau_V \mu)$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-2.5, 2.5], ylims=[-.5, .5], clims=[.1, 30.],
-        mock=True, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'mocks_devtauVmu_devMLi_SNR.png'))
-    ### logzsol-dev MLi-dev SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        mocks_res, pca_system,
-        ydatatype='dev', yname='MLi', ylabel=r'$\Delta \log \Upsilon^*_i$',
-        xdatatype='dev', xname='logzsol', xlabel=r'$\Delta \rm [Z]$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-1.5, 1.5], ylims=[-.5, .5], clims=[.1, 30.],
-        mock=True, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'mocks_devZ_devMLi_SNR.png'))
-    ## devwid
-    plt.close()
-    fig = make_fitdiag_fig(
-        mocks_res, pca_system,
-        ydatatype='dev-wid', yname='MLi',
-        ylabel=r'$\frac{\Delta \log \Upsilon^*_i}{\sigma_{\log \Upsilon^*_i}}$',
-        xdatatype='color', xname='gr', xlabel=r'$C_{gr}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-.1, 1.5], ylims=[-4., 4.], clims=[.1, 30.],
-        mock=True, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'mocks_Cgr_devwidMLi_SNR.png'))
-    ### tau_V*mu-dev MLi-dev SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        mocks_res, pca_system,
-        ydatatype='dev-wid', yname='MLi',
-        ylabel=r'$\frac{\Delta \log \Upsilon^*_i}{\sigma_{\log \Upsilon^*_i}}$',
-        xdatatype='dev', xname='tau_V mu',
-        xlabel=r'$\frac{\Delta (\tau_V \mu)}{\sigma_{\tau_V \mu}}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-1.75, 1.75], ylims=[-4., 4.], clims=[.1, 30.],
-        mock=True, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'mocks_devwidtauVmu_devwidMLi_SNR.png'))
-    ### logzsol-dev MLi-dev SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        mocks_res, pca_system,
-        ydatatype='dev-wid', yname='MLi',
-        ylabel=r'$\frac{\Delta \log \Upsilon^*_i}{\sigma_{\log \Upsilon^*_i}}$',
-        xdatatype='dev', xname='logzsol',
-        xlabel=r'$\frac{\Delta \rm [Z]}{\sigma_{\rm [Z]}}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-1.75, 1.75], ylims=[-4., 4.], clims=[.1, 30.],
-        mock=True, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'mocks_devwidZ_devwidMLi_SNR.png'))
-
-    # OBS
-    ## wid
-    ### Cgr-wid MLi-wid SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        obs_res, pca_system,
-        ydatatype='param-wid', yname='MLi', ylabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        xdatatype='color', xname='gr', xlabel=r'$C_{gr}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-.1, 1.6], ylims=[0., 1.], clims=[.1, 30.],
-        mock=False, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'obs_Cgr_widMLi_SNR.png'))
-    ### tau_V*mu-wid MLi-wid SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        obs_res, pca_system,
-        ydatatype='param-wid', yname='MLi', ylabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        xdatatype='param-wid', xname='tau_V mu', xlabel=r'$\sigma_{\tau_V \mu}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-.05, 2.5], ylims=[0., 1.], clims=[.1, 30.],
-        mock=False, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'obs_widtauVmu_widMLi_SNR.png'))
-    ### logzsol-wid MLi-wid SNR
-    plt.close()
-    fig = make_fitdiag_fig(
-        obs_res, pca_system,
-        ydatatype='param-wid', yname='MLi', ylabel=r'$\sigma_{\log \Upsilon^*_i}$',
-        xdatatype='param-wid', xname='logzsol', xlabel=r'$\sigma_{\rm [Z]}$',
-        ptcolordatatype='map', ptcolorname='SNRMED', colorbarlabel=r'SNR',
-        xlims=[-.05, 1.5], ylims=[0., 1.], clims=[.1, 30.],
-        mock=False, colorbar_log=True)
-    fig.savefig(os.path.join(basedir, lib_diags_subdir, 'obs_widlogzsol_widMLi_SNR.png'))
-
-def example():
-    fig = make_fitdiag_fig(
-        results_files[:150], pca_system, ydatatype='dev', yname='MLi',
-        xdatatype='color', xname='gr', ptcolordatatype='color', ptcolorname='ri',
-        ylabel=r'$\Delta \log \Upsilon^*_i$', xlabel=r'$C_{gr}$', colorbarlabel=r'$C_{ri}$',
-        xlims=[-.1, 2.2], ylims=[-.5, .5], clims=[-.1, 1.5], mock=True)
-    return fig
+if __name__ == '__main__':
+    pca_system = read_results.PCASystem.fromfile(os.path.join(basedir, 'pc_vecs.fits'))
+    lib_diags_subdir = 'lib_diags/'
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        make_paper_libdiag_hists(basedir, pca_system, lib_diags_subdir)
