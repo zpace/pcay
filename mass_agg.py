@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import totalmass
 import read_results
 import os
@@ -105,119 +107,144 @@ def update_mass_table(drpall, old_mass_table=None, limit=None):
 
     return mass_table, full_table
 
+def make_panel_hist(figsize=(3, 3), dpi=300, **kwargs):
+    gs_dict = dict(nrows=1, ncols=2, bottom=.125, top=.85, left=.2, right=.95,
+        width_ratios=[6, 1], hspace=0., wspace=0.)
+    gs_dict.update(**kwargs)
+    gs = gridspec.GridSpec(**gs_dict)
+
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    main_ax = fig.add_subplot(gs[0, 0])
+    main_ax.tick_params(labelsize='xx-small')
+
+    hist_ax = fig.add_subplot(gs[0, 1], sharey=main_ax)
+    hist_ax.tick_params(axis='both', which='both', labelsize='xx-small',
+        left=False, labelleft=False, right=False, labelright=False,
+        bottom=False, labelbottom=False, top=False, labeltop=False)
+
+    return fig, main_ax, hist_ax
+
 def compare_outerml_ring_cmlr(full_table):
     primarysample = m.mask_from_maskbits(full_table['mngtarg1'], [10])
     secondarysample = m.mask_from_maskbits(full_table['mngtarg1'], [11])
 
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
+    fig, main_ax, hist_ax = make_panel_hist(top=0.875)
 
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[primarysample],
-        y=np.log10(full_table['outer_ml_cmlr'] / \
-                   full_table['outer_ml_ring'])[primarysample],
-        c='r', marker='o',
-        s=8. * (full_table['outer_lum'] / (full_table['inner_lum'] + \
-                full_table['outer_lum']))[primarysample],
-        edgecolor='None', label='Primary')
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
-        y=np.log10(full_table['outer_ml_cmlr'] / \
-                   full_table['outer_ml_ring'])[secondarysample],
-        c='b', marker='D',
-        s=8. * (full_table['outer_lum'] / (full_table['inner_lum'] + \
-                full_table['outer_lum']))[secondarysample],
-        edgecolor='None', label='Secondary')
+    broadband_color = (full_table['nsa_elpetro_absmag'][:, 3] - \
+                       full_table['nsa_elpetro_absmag'][:, 4])
+    ml_cmlr_ring = np.log10(full_table['outer_ml_cmlr'] / full_table['outer_ml_ring'])
+    lum_frac_outer = (full_table['outer_lum'] / (full_table['inner_lum'] + \
+                                                 full_table['outer_lum']))
+    valid = np.isfinite(ml_cmlr_ring)
 
-    ax.legend(loc='best', prop={'size': 'xx-small'})
-    ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'$g-r$', size='x-small')
-    ax.set_ylabel(r'$\log{\frac{\Upsilon^*_{\rm CMLR}}{\Upsilon^*_{\rm ring}}}$',
-                  size='x-small')
-    fig.tight_layout()
-    fig.subplots_adjust(top=.95, left=.21, right=.98)
+    for selection, label, marker, color in zip(
+        [primarysample, secondarysample], ['Primary', 'Secondary'],
+        ['o', 'D'], ['r', 'b']):
+        
+        main_ax.scatter(x=broadband_color[selection * valid], y=ml_cmlr_ring[selection * valid],
+                       c=color, marker=marker, s=8. * lum_frac_outer[selection * valid],
+                       edgecolor='None', label=label)
+
+        hist_ax.hist(ml_cmlr_ring[selection * valid], color=color, density=True, bins='auto',
+                     histtype='step', orientation='horizontal', linewidth=0.75)
+
+    main_ax.legend(loc='best', prop={'size': 'xx-small'})
+    main_ax.tick_params(labelsize='xx-small')
+    main_ax.set_xlabel(r'$g-r$', size='x-small')
+    main_ax.set_ylabel(r'$\log{\frac{\Upsilon^*_{\rm CMLR}}{\Upsilon^*_{\rm ring}}}$',
+                       size='x-small')
+    fig.suptitle(r'$\Upsilon^*_{\rm CMLR}$ vs $\Upsilon^*_{\rm ring}$', size='small')
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'outer_ml.png'))
 
 def make_missing_mass_fig(full_table, mltype='ring'):
     primarysample = m.mask_from_maskbits(full_table['mngtarg1'], [10])
     secondarysample = m.mask_from_maskbits(full_table['mngtarg1'], [11])
 
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[primarysample],
-        y=(full_table['outer_mass_{}'.format(mltype)] / (full_table['mass_in_ifu'] + \
-           full_table['outer_mass_{}'.format(mltype)]))[primarysample],
-        c='r', edgecolor='None', s=5., marker='o', label='Primary+')
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
-        y=(full_table['outer_mass_{}'.format(mltype)] / (full_table['mass_in_ifu'] + \
-           full_table['outer_mass_{}'.format(mltype)]))[secondarysample],
-        c='b', edgecolor='None', s=5., marker='D', label='Secondary')
+    fig, main_ax, hist_ax = make_panel_hist(top=0.875)
 
-    ax.legend(loc='best', prop={'size': 'xx-small'})
-    ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'$g-r$', size='x-small')
-    ax.set_ylabel('Stellar-mass fraction outside IFU', size='x-small')
-    fig.tight_layout()
-    fig.subplots_adjust(top=.95, left=.21, right=.98)
+    broadband_color = (full_table['nsa_elpetro_absmag'][:, 3] - \
+                       full_table['nsa_elpetro_absmag'][:, 4])
+    outermass_frac = (full_table['outer_mass_{}'.format(mltype)] / 
+                      (full_table['mass_in_ifu'] + full_table['outer_mass_{}'.format(mltype)]))
+
+    for selection, label, marker, color in zip(
+        [primarysample, secondarysample], ['Primary', 'Secondary'],
+        ['o', 'D'], ['r', 'b']):
+    
+        main_ax.scatter(
+            x=broadband_color[selection], y=outermass_frac[selection],
+            c=color, edgecolor='None', s=5., marker=marker, label=label)
+
+        hist_ax.hist(outermass_frac[selection], color=color, density=True, bins='auto',
+                     histtype='step', orientation='horizontal', linewidth=0.75)
+
+    main_ax.legend(loc='best', prop={'size': 'xx-small'})
+    main_ax.tick_params(labelsize='xx-small')
+    main_ax.set_xlabel(r'$g-r$', size='x-small')
+    main_ax.set_ylabel('Stellar-mass fraction outside IFU', size='x-small')
+    fig.suptitle('Inferred mass fraction outside IFU', size='small')
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'mass_outside_ifu_{}.png'.format(mltype)))
 
 def make_missing_flux_fig(full_table):
     primarysample = m.mask_from_maskbits(full_table['mngtarg1'], [10])
     secondarysample = m.mask_from_maskbits(full_table['mngtarg1'], [11])
 
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[primarysample],
-        y=(full_table['outer_lum'] / (full_table['inner_lum'] + \
-           full_table['outer_lum']))[primarysample],
-        c='r', edgecolor='None', s=5., marker='o', label='Primary+')
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
-        y=(full_table['outer_lum'] / (full_table['inner_lum'] + \
-           full_table['outer_lum']))[secondarysample],
-        c='b', edgecolor='None', s=5., marker='D', label='Secondary')
+    fig, main_ax, hist_ax = make_panel_hist(top=0.875)
 
-    ax.legend(loc='best', prop={'size': 'xx-small'})
-    ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'$g-r$', size='x-small')
-    ax.set_ylabel('Flux fraction outside IFU', size='x-small')
-    fig.tight_layout()
-    fig.subplots_adjust(top=.95, left=.21, right=.98)
+    broadband_color = (full_table['nsa_elpetro_absmag'][:, 3] - \
+                       full_table['nsa_elpetro_absmag'][:, 4])
+    lum_frac_outer = (full_table['outer_lum'] / (full_table['inner_lum'] + \
+                                                 full_table['outer_lum']))
+
+    for selection, label, marker, color in zip(
+        [primarysample, secondarysample], ['Primary', 'Secondary'],
+        ['o', 'D'], ['r', 'b']):
+    
+        main_ax.scatter(
+            x=broadband_color[selection], y=lum_frac_outer[selection],
+            c=color, edgecolor='None', s=5., marker=marker, label=label)
+
+        hist_ax.hist(lum_frac_outer[selection], color=color, density=True, bins='auto',
+                     histtype='step', orientation='horizontal', linewidth=0.75)
+
+    main_ax.legend(loc='best', prop={'size': 'xx-small'})
+    main_ax.tick_params(labelsize='xx-small')
+    main_ax.set_xlabel(r'$g-r$', size='x-small')
+    main_ax.set_ylabel('Flux fraction outside IFU', size='x-small')
+    fig.suptitle('Flux fraction outside IFU', size='small')
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'flux_outside_ifu.png'))
 
 def compare_missing_mass(full_table):
     primarysample = m.mask_from_maskbits(full_table['mngtarg1'], [10])
     secondarysample = m.mask_from_maskbits(full_table['mngtarg1'], [11])
 
-    fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[primarysample],
-        y=np.log10(
-              (full_table['mass_in_ifu'] + full_table['outer_mass_cmlr']) / \
-              (full_table['mass_in_ifu'] + full_table['outer_mass_ring']))[primarysample],
-        c='r', edgecolor='None', s=2., marker='o', label='Primary+')
-    ax.scatter(
-        x=(full_table['nsa_elpetro_absmag'][:, 3] - \
-           full_table['nsa_elpetro_absmag'][:, 4])[secondarysample],
-        y=np.log10(
-              (full_table['mass_in_ifu'] + full_table['outer_mass_cmlr']) / \
-              (full_table['mass_in_ifu'] + full_table['outer_mass_ring']))[secondarysample],
-        c='b', edgecolor='None', s=2., marker='D', label='Secondary')
+    fig, main_ax, hist_ax = make_panel_hist(top=0.9, left=.225)
 
-    ax.legend(loc='best', prop={'size': 'xx-small'})
-    ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'$g-r$', size='x-small')
-    ax.set_ylabel(r'$\log M^{\rm tot}_{\rm CMLR} - \log M^{\rm tot}_{\rm ring} {\rm [dex]}$',
+    broadband_color = (full_table['nsa_elpetro_absmag'][:, 3] - \
+                       full_table['nsa_elpetro_absmag'][:, 4])
+    dlogmass_cmlr_ring = np.log10(
+        (full_table['mass_in_ifu'] + full_table['outer_mass_cmlr']) / \
+        (full_table['mass_in_ifu'] + full_table['outer_mass_ring']))
+
+    valid = np.isfinite(dlogmass_cmlr_ring)
+
+    for selection, label, marker, color in zip(
+        [primarysample, secondarysample], ['Primary', 'Secondary'],
+        ['o', 'D'], ['r', 'b']):
+    
+        main_ax.scatter(
+            x=broadband_color[selection * valid], y=dlogmass_cmlr_ring[selection * valid],
+            c=color, edgecolor='None', s=5., marker=marker, label=label)
+
+        hist_ax.hist(dlogmass_cmlr_ring[selection * valid], color=color, density=True, bins='auto',
+                     histtype='step', orientation='horizontal', linewidth=0.75)
+
+    main_ax.legend(loc='best', prop={'size': 'xx-small'})
+    main_ax.tick_params(labelsize='xx-small')
+    main_ax.set_xlabel(r'$g-r$', size='x-small')
+    main_ax.set_ylabel(r'$\log \frac{M^{\rm tot}_{\rm CMLR}}{M^{\rm tot}_{\rm ring}}$',
                   size='x-small')
-    fig.tight_layout()
-    fig.subplots_adjust(top=.95, left=.21, right=.98)
+    fig.suptitle(r'Impact of aperture-correction on $M^{\rm tot}$', size='small')
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'mtot_compare_cmlr_ring.png'))
 
 def compare_mtot_pca_nsa(full_table, jhu_mpa, mltype='ring', nsa_phototype='elpetro'):
@@ -494,8 +521,9 @@ if __name__ == '__main__':
     compare_mtot_pca_nsa(full_table, jhumpa, mltype='cmlr', nsa_phototype='elpetro')
     make_stdtauV_vs_dMass_ba_fig(full_table)
     make_stdtauV_vs_dMass_fig(full_table)
-    #make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring')
-    #make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='cmlr')
-    #make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='ring')
-    #make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='cmlr')
-    #make_meantauV_vs_ba_fig(full_table)
+    
+    make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring')
+    make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='cmlr')
+    make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='ring')
+    make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='cmlr')
+    make_meantauV_vs_ba_fig(full_table)

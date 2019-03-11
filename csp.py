@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 '''
 tools for working with FSPS stellar population synthesis library
     (and its python bindings)
@@ -1136,21 +1138,6 @@ def random_SFH_plots(n=10, save=False, sfh=None):
 
     return sfh
 
-test_dicts = {
-    '1':   {'tf': 1., 'd1': 2., 'tt': 13.7,
-            'nburst': 0, 'gamma': 0., 'mu': np.array([.2]), 'tau_V': np.array([1.]),
-            'sigma': np.array([250.]), 'logzsol': -1., 'fbhb': .1, 'sbss': 1.,
-            'A': np.zeros(5), 'dtb': np.zeros(5), 'tb': np.zeros(5)},
-}
-
-def make_tailored_tests(dicts, sfh, *args, **kwargs):
-    for k in sorted(dicts):
-        print('Test SFH', k)
-        make_spectral_library(
-            spec_fname='TestSpecs-{}'.format(k), sfh=sfh,
-            sfh_fname='TestSFH-{}'.format(k),
-            override=dicts[k], *args, **kwargs)
-
 # my hobby: needlessly subclassing exceptions
 
 class TemplateError(Exception):
@@ -1209,11 +1196,3 @@ if __name__ == '__main__':
         nsfhper=2 * nper, nsubper=Nsubsample,
         lllim=3500., lulim=10000.)
     #'''
-
-    '''
-    print('Making tailored tests...')
-    sfh.Nsubsample = 1
-    sfh = make_tailored_tests(
-        dicts=test_dicts, sfh=sfh, loc=CSPs_dir,
-        nsfhper=nper, nsubper=1, lllim=3500., lulim=10000.)
-    '''
