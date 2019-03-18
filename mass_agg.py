@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
 from matplotlib import gridspec
 from statsmodels.nonparametric.smoothers_lowess import lowess
+from statsmodels.regression.linear_model import OLS
+from statsmodels.tools.tools import add_constant as sm_add_constant
 
 drpall = m.load_drpall(mpl_v, index='plateifu')
 
@@ -318,7 +320,7 @@ def make_panel_hcb_hist(figsize=(3, 3), dpi=300, **kwargs):
     return fig, main_ax, cb_ax, hist_ax
 
 def colorbartop(fig, sc_data, cax):
-    cb = fig.colorbar(sc_data, cax=cax, format='%.1f', orientation='horizontal', extend='both')
+    cb = fig.colorbar(sc_data, cax=cax, orientation='horizontal', extend='both')
     cb.ax.tick_params(which='both', labelsize='xx-small')
     cb.ax.xaxis.set_ticks_position('top')
     cb.ax.xaxis.set_label_position('top')
@@ -344,11 +346,13 @@ def make_stdtauV_vs_dMass_fig(full_table):
     ax.set_xlabel(r'$\sigma_{\tau_V}$', size='x-small')
     ax.set_ylabel(r'$\log{ \frac{M^*}{M^*_{\rm LW}} ~ {\rm [dex]} }$', size='x-small')
 
-    hist_ax.hist((logmass_in_ifu - logmass_in_ifu_lw), bins='auto', histtype='step',
-                 orientation='horizontal', linewidth=.5, density=True, color='k')
+    hist_ax.hist(np.ma.masked_invalid(logmass_in_ifu - logmass_in_ifu_lw).compressed(),
+                 bins='auto', histtype='step', orientation='horizontal', linewidth=.5,
+                 density=True, color='k')
 
     for yloc, lw, ls, c in zip(
-        np.percentile((logmass_in_ifu - logmass_in_ifu_lw), [16., 50., 84.]),
+        np.percentile(np.ma.masked_invalid(logmass_in_ifu - logmass_in_ifu_lw).compressed(),
+                      [16., 50., 84.]),
         [.5, 1., .5], ['--', '-', '--'], ['gray', 'k', 'gray']):
 
         hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color=c)
@@ -378,11 +382,13 @@ def make_stdtauV_vs_dMass_ba_fig(full_table):
     ax.set_xlabel(r'$\sigma_{\tau_V}$', size='x-small')
     ax.set_ylabel(r'$\log{ \frac{M^*}{M^*_{\rm LW}} ~ {\rm [dex]} }$', size='x-small')
 
-    hist_ax.hist((logmass_in_ifu - logmass_in_ifu_lw), bins='auto', histtype='step',
-                 orientation='horizontal', linewidth=.5, density=True, color='k')
+    hist_ax.hist(np.ma.masked_invalid(logmass_in_ifu - logmass_in_ifu_lw).compressed(),
+                 bins='auto', histtype='step', orientation='horizontal', linewidth=.5,
+                 density=True, color='k')
 
     for yloc, lw, ls, c in zip(
-        np.percentile((logmass_in_ifu - logmass_in_ifu_lw), [16., 50., 84.]),
+        np.percentile(np.ma.masked_invalid(logmass_in_ifu - logmass_in_ifu_lw).compressed(),
+                      [16., 50., 84.]),
         [.5, 1., .5], ['--', '-', '--'], ['gray', 'k', 'gray']):
 
         hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color=c)
@@ -391,6 +397,39 @@ def make_stdtauV_vs_dMass_ba_fig(full_table):
 
     fig.savefig(
         os.path.join(basedir, 'lib_diags/', 'stdtauV_dMglobloc_ba.png'),
+        dpi=fig.dpi)
+
+def make_meanstdtauV_vs_dMass_fig(full_table):
+    fig, ax, cax, hist_ax = make_panel_hcb_hist(figsize=(3, 3), dpi=300)
+
+    logmass_in_ifu = np.log10(full_table['mass_in_ifu'])
+    logmass_in_ifu_lw = np.log10(full_table['fluxwt_ml'] * full_table['inner_lum'])
+    std_atten_mwtd = full_table['std_atten_mwtd']
+    mean_atten_mwtd = full_table['mean_atten_mwtd']
+
+    sc = ax.scatter(
+        y=std_atten_mwtd, x=mean_atten_mwtd, c=(logmass_in_ifu - logmass_in_ifu_lw),
+        edgecolor='k', linewidths=0.25, s=2., cmap='viridis_r')
+
+    cb = colorbartop(fig, sc, cax)
+    cb.set_label(r'$\log \frac{M^*}{M_{\rm LW}}$', size='x-small', labelpad=0)
+
+    ax.set_ylabel(r'$\sigma_{\tau_V}$', size='x-small')
+    ax.set_xlabel(r'$\bar{\tau_V}$', size='x-small')
+
+    hist_ax.hist(std_atten_mwtd, bins='auto', histtype='step', range=[0.1, 1.5],
+                 orientation='horizontal', linewidth=.5, density=True, color='k')
+
+    for yloc, lw, ls, c in zip(
+        np.percentile(std_atten_mwtd[np.isfinite(std_atten_mwtd)], [16., 50., 84.]),
+        [.5, 1., .5], ['--', '-', '--'], ['gray', 'k', 'gray']):
+
+        hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color=c)
+
+    fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
+
+    fig.savefig(
+        os.path.join(basedir, 'lib_diags/', 'mean+stdtauV_dMglobloc.png'),
         dpi=fig.dpi)
 
 def make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring'):
@@ -420,11 +459,13 @@ def make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring'):
     ax.set_xlabel(r'$\sigma_{\tau_V}$', size='x-small')
     ax.set_ylabel(r'$\log{ \frac{M^*}{M^*_{\rm LW}} ~ {\rm [dex]} }$', size='x-small')
 
-    hist_ax.hist((logmass_in_ifu - logmass_in_ifu_lw), bins='auto', histtype='step',
-                 orientation='horizontal', linewidth=.5, density=True, color='k')
+    hist_ax.hist(np.ma.masked_invalid(logmass_in_ifu - logmass_in_ifu_lw).compressed(),
+                 bins='auto', histtype='step', orientation='horizontal', linewidth=.5,
+                 density=True, color='k')
 
     for yloc, lw, ls, c in zip(
-        np.percentile((logmass_in_ifu - logmass_in_ifu_lw), [16., 50., 84.]),
+        np.percentile(np.ma.masked_invalid(logmass_in_ifu - logmass_in_ifu_lw).compressed(),
+                      [16., 50., 84.]),
         [.5, 1., .5], ['--', '-', '--'], ['gray', 'k', 'gray']):
 
         hist_ax.axhline(yloc, linestyle=ls, linewidth=lw, color=c)
@@ -438,13 +479,13 @@ def make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring'):
 def make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='ring'):
     fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
 
-    std_atten_mwtd = full_table['std_atten_mwtd']
-    logmass_in_ifu = np.log10(full_table['mass_in_ifu'])
-    logmass_in_ifu_lw = np.log10(full_table['fluxwt_ml'] * full_table['inner_lum'])
-    sfrsd = np.array([sfrsd_tab.loc[plateifu]['sigma_sfr']
-                      for plateifu in full_table['plateifu']])
+    merge_table = t.join(full_table, sfrsd_tab, 'plateifu')
+    sfrsd = merge_table['sigma_sfr']
+    std_atten_mwtd = merge_table['std_atten_mwtd']
+    logmass_in_ifu = np.log10(merge_table['mass_in_ifu'])
+    logmass_in_ifu_lw = np.log10(merge_table['fluxwt_ml'] * merge_table['inner_lum'])
 
-    mass_pca = full_table['mass_in_ifu'] + full_table['outer_mass_{}'.format(mltype)]
+    mass_pca = merge_table['mass_in_ifu'] + merge_table['outer_mass_{}'.format(mltype)]
 
     sc = ax.scatter(
         x=np.log10(std_atten_mwtd), c=(logmass_in_ifu - logmass_in_ifu_lw),
@@ -507,6 +548,30 @@ def make_meantauV_vs_ba_fig(full_table):
         os.path.join(basedir, 'lib_diags/', 'meantauV_ba.png'),
         dpi=fig.dpi)
 
+def fit_dlogM_mw(full_table, sfrsd_tab):
+    merge_table = t.join(full_table, sfrsd_tab, 'plateifu')
+
+    merge_table['logmass_in_ifu'] = np.log10(merge_table['mass_in_ifu'])
+    merge_table['logmass_in_ifu_lw'] = np.log10(merge_table['fluxwt_ml'] * merge_table['inner_lum'])
+    merge_table['dlogm_lw'] = merge_table['logmass_in_ifu'] - merge_table['logmass_in_ifu_lw']
+    ha_corr = np.exp(merge_table['mean_atten_mwtd'] * (6563 / 5500)**-1.3)
+    merge_table['log_ssfrsd'] = np.log10(
+        merge_table['sigma_sfr'] * ha_corr / \
+        (merge_table['mass_in_ifu'] + merge_table['outer_mass_cmlr']))
+    merge_table['log_ssfrsd'][~np.isfinite(merge_table['log_ssfrsd'])] = np.nan
+
+    ols = OLS(
+        endog=np.array(merge_table['dlogm_lw']),
+        exog=sm_add_constant(
+            merge_table['mean_atten_mwtd', 'std_atten_mwtd', 'log_ssfrsd'].to_pandas(),
+            prepend=False),
+        hasconst=True, missing='drop')
+
+    olsfit = ols.fit()
+
+    return olsfit
+
+
 if __name__ == '__main__':
     mass_table, full_table = update_mass_table(drpall, old_mass_table=None, limit=None)
     mass_deficit_order = np.argsort(
@@ -519,6 +584,7 @@ if __name__ == '__main__':
     make_missing_flux_fig(full_table)
     compare_mtot_pca_nsa(full_table, jhumpa, mltype='ring', nsa_phototype='elpetro')
     compare_mtot_pca_nsa(full_table, jhumpa, mltype='cmlr', nsa_phototype='elpetro')
+    make_meanstdtauV_vs_dMass_fig(full_table)
     make_stdtauV_vs_dMass_ba_fig(full_table)
     make_stdtauV_vs_dMass_fig(full_table)
     
@@ -527,3 +593,6 @@ if __name__ == '__main__':
     make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='ring')
     make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='cmlr')
     make_meantauV_vs_ba_fig(full_table)
+
+    lwmass_olsfit = fit_dlogM_mw(full_table, sfrsd_tab)
+    lwmass_olsfit.summary()
