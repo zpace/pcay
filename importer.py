@@ -9,10 +9,6 @@ import mangarc
 if mangarc.tools_loc not in sys.path:
     sys.path.append(mangarc.tools_loc)
 
-fsps_loc = '/usr/data/minhas/zpace/.fsps/python-fsps'
-if fsps_loc not in sys.path:
-    sys.path.append(fsps_loc)
-
 mpl_v = 'MPL-8'
 daptype = 'SPX-MILESHC-MILESHC'
 basedir = '/usr/data/minhas2/zpace/CSPs/CSPs_CKC14_MaNGA_20190215-1/'
