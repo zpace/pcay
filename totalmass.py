@@ -1,6 +1,9 @@
 import numpy as np
+from scipy.special import expit
+from scipy.optimize import curve_fit
 
 from warnings import warn, filterwarnings, catch_warnings, simplefilter
+from functools import lru_cache
 
 # plotting
 import matplotlib.pyplot as plt
@@ -39,106 +42,244 @@ m_to_l_unit = 1. * u.Msun / bandpass_sol_l_unit
 
 band_ix = dict(zip('FNugriz', range(len('FNugriz'))))
 
-def infer_masked(ml, ml_mask, interior_mask):
+sdss_bands = 'ugriz'
+nsa_bands = 'FNugriz'
+
+class Sigmoid(object):
+    p0 = [70., .1, -5., 20.]
+
+    def __init__(self, vscale, hscale, xoffset, yoffset):
+        self.vscale, self.hscale = vscale, hscale
+        self.xoffset, self.yoffset = xoffset, yoffset
+
+    @staticmethod
+    def sigmoid(x, vscale, hscale, xoffset, yoffset):
+        return vscale * expit(x / hscale + xoffset) + yoffset
+
+    @classmethod
+    def from_points(cls, x, y):
+        params, *_ = curve_fit(f=Sigmoid.sigmoid, xdata=x, ydata=y, 
+                                p0=Sigmoid.p0)
+        return cls(*params)
+
+    def __call__(self, x):
+        return self.sigmoid(x, self.vscale, self.hscale, self.xoffset, self.yoffset)
+
+    def __repr__(self):
+        return 'Sigmoid function: \
+                <vscale = {:.02e}, hscale = {:.02e}, xoffset = {:.02e}, yoffset = {:.02e}>'.format(
+                    self.vscale, self.hscale, self.xoffset, self.yoffset)
+
+ba_to_majaxis_angle = Sigmoid.from_points(
+    [-1000., 0.2, 0.45, 0.65, 0.9, 1000.], [20., 30., 50., 70., 90., 100.])
+
+def infer_masked(q_trn, bad_trn, infer_here):
     '''
     infer the masked values in the interior of an IFU (foreground stars, dropped fibers)
     '''
 
-    ml_final = 1. * ml
+    q_final = 1. * q_trn
 
     # coordinate arrays
-    II, JJ = np.meshgrid(*list(map(np.arange, ml.shape)), indexing='ij')
+    II, JJ = np.meshgrid(*list(map(np.arange, q_trn.shape)), indexing='ij')
 
     # set up KNN regressor
-    knn = knn_regr(trn_coords=[II, JJ], trn_vals=ml, good_trn=~ml_mask)
-    ml_final[interior_mask] = infer_from_knn(knn=knn, coords=(II, JJ))[interior_mask]
+    knn = knn_regr(trn_coords=[II, JJ], trn_vals=q_trn, good_trn=~bad_trn)
+    q_final[infer_here] = infer_from_knn(knn=knn, coords=(II, JJ))[infer_here]
 
-    return ml_final
+    return q_final
 
-
-def estimate_total_stellar_mass(results, pca_system, drp, dap, drpall_row, dapall_row,
-                                cosmo, band='i', missing_mass_kwargs={}):
+def ifu_bandmag(s2p, b, low_or_no_cov, drp3dmask_interior):
     '''
-    find the total stellar mass of a galaxy with incomplete measurements
+    flux in bandpass, inferring at masked spaxels
     '''
+    mag_band = s2p.ABmags['sdss2010-{}'.format(b)]
+    nolight = ~np.isfinite(mag_band)
+    # "interpolate" over spaxels with foreground stars or other non-inference-related masks
+    mag_band = infer_masked(
+        q_trn=mag_band, bad_trn=np.logical_or.reduce((low_or_no_cov, drp3dmask_interior, nolight)),
+        infer_here=drp3dmask_interior)
+    mag_band[nolight] = np.inf
+    return mag_band
 
-    # stellar mass to light ratio
-    ml = results.cubechannel('ML{}'.format(band), 0)
-    badpdf = results.cubechannel('GOODFRAC', 2) < 1.0e-4
-    ml_mask = np.logical_or.reduce((results.mask, badpdf))
+def bandpass_flux_to_solarunits(sun_flux_band):
+    '''
+    equivalency for bandpass fluxes and solar units
+    '''
+    sun_flux_band_Mgy = sun_flux_band.to(m.Mgy).value
+    def convert_flux_to_solar(f):
+        s = f / sun_flux_band_Mgy
+        return s
 
-    # infer values in interior spaxels affected by one of the following:
-    # bad PDF, foreground star, dead fiber
-    interior_mask = np.logical_or.reduce((
-        badpdf, (m.mask_from_maskbits(drp['MASK'].data, [3]).sum(axis=0) > 0),
-        (m.mask_from_maskbits(drp['MASK'].data, [2]).sum(axis=0) > 0)))
+    def convert_solar_to_flux(s):
+        f = s * sun_flux_band_Mgy
+        return f
 
-    ml_final = infer_masked(ml, ml_mask, interior_mask)
+    return [(m.Mgy, m.bandpass_sol_l_unit, convert_flux_to_solar, convert_solar_to_flux)]
 
-    # convert spectroscopy to photometry
-    results.setup_photometry(pca_system)
-    s2p = results.spec2phot
-    mag_band = s2p.ABmags['sdss2010-{}'.format(band)] * u.ABmag
-    distmod = cosmo.distmod(drpall_row['nsa_zdist'])
-    absmag_sun_band = spectrophot.absmag_sun_band[band] * u.ABmag
-    bandpass_solLum = 10.**(
-        -0.4 * (mag_band - distmod - absmag_sun_band).value) * \
-        m.bandpass_sol_l_unit
+class StellarMass(object):
+    '''
+    calculating galaxy stellar mass with incomplete measurements
+    '''
+    bands = 'griz'
+    bands_ixs = dict(zip(bands, range(len(bands))))
+    absmag_sun = np.array([spectrophot.absmag_sun_band[b] for b in bands]) * u.ABmag
 
-    # figure out flux deficit in stated bandpass
-    # first figure out cosmological correction for H0
-    nsa_h = 1.0
-    cosmocorr_mag = -5. * np.log10(nsa_h / cosmo.h) * u.mag
-    nsa_elpetro_absmag_k = np.array(
-        [nsa_absmag(drpall_row, band, 'elpetro') for band in 'FNugriz']) * u.ABmag + \
-        cosmocorr_mag
-    # then turn into app mag and flux
-    nsa_elpetro_appmag_k = nsa_elpetro_absmag_k + distmod
-    nsa_elpetro_fnu_k = nsa_elpetro_appmag_k.to(m.Mgy)
-    nsa_elpetro_fnu_k_band = nsa_elpetro_appmag_k.to(m.Mgy)[band_ix[band]]
+    def __init__(self, results, pca_system, drp, dap, drpall_row, cosmo, mlband='i'):
+        self.results = results
+        self.pca_system = pca_system
+        self.drp = drp
+        self.dap = dap
+        self.drpall_row = drpall_row
+        self.cosmo = cosmo
+        self.mlband = mlband
 
-    # tabulate flux
-    obs_bandpass_fnu = mag_band.to(m.Mgy)
-    inf_ABmag = ~np.isfinite(mag_band)
-    exterior_mask = np.logical_or(ml_mask, inf_ABmag) * (~interior_mask)
-    flux_in_ifu = obs_bandpass_fnu[~exterior_mask].sum()
-    # find missing flux (if any)
-    missing_bandpass_fnu = nsa_elpetro_fnu_k_band - flux_in_ifu
+        with catch_warnings():
+            simplefilter('ignore')
+            self.results.setup_photometry(pca_system)
 
-    mass_in_ifu = (10.**ml_final * m.m_to_l_unit * bandpass_solLum)[~exterior_mask].sum()
+        self.s2p = results.spec2phot
 
-    # calculate luminosity-weighted mass-to-light
-    logml_fnuwt = np.average(
-        ml_final[~exterior_mask], weights=obs_bandpass_fnu[~exterior_mask])
-    ifu_lum = bandpass_solLum[~exterior_mask].sum()
+        # stellar mass to light ratio
+        self.ml0 = results.cubechannel('ML{}'.format(mlband), 0)
+        self.badpdf = results.cubechannel('GOODFRAC', 2) < 1.0e-4
+        self.ml_mask = np.logical_or.reduce((self.results.mask, self.badpdf))
 
-    # if there's no (or negative) missing flux, just return coadded IFU
-    if missing_bandpass_fnu <= 0. * m.Mgy:
-        outer_logml_ring = -np.inf
-        outer_logml_cmlr = -np.inf
-        missing_bandpass_solLum = 0. * m.bandpass_sol_l_unit
+        # infer values in interior spaxels affected by one of the following:
+        # bad PDF, foreground star, dead fiber
+        self.low_or_no_cov = m.mask_from_maskbits(
+            self.drp['MASK'].data, [0, 1]).mean(axis=0) > .3
+        self.drp3dmask_interior = m.mask_from_maskbits(
+            self.drp['MASK'].data, [2, 3]).mean(axis=0) > .3
+        self.interior_mask = np.logical_or.reduce((self.badpdf, self.drp3dmask_interior))
 
-    else:
-        # missing flux in one band, to mag, to sol units
-        missing_bandpass_mag = missing_bandpass_fnu.to(u.ABmag)
-        missing_bandpass_solLum = 10.**(
-            -0.4 * (missing_bandpass_mag - distmod - absmag_sun_band).value) * \
-            m.bandpass_sol_l_unit
+        self.logml_final = infer_masked(
+            q_trn=self.ml0, bad_trn=self.ml_mask,
+            infer_here=self.interior_mask) * u.dex(m.m_to_l_unit)
 
-        # assume missing mass has M/L equal to average of outermost 0.5 Re
-        # now find the median of the outer unmasked .5 Re
-        reff = np.ma.array(dap['SPX_ELLCOO'].data[1], mask=ml_mask)
-        outer_ring = np.logical_and((reff <= reff.max()), (reff >= reff.max() - .5))
-        outer_logml_ring = np.median(ml[~ml_mask * outer_ring])
+    @property
+    @lru_cache(maxsize=128)
+    def distmod(self):
+        return self.cosmo.distmod(self.drpall_row['nsa_zdist'])
 
-        # apply cmlr
-        outer_logml_cmlr = apply_cmlr(
-            ifu_s2p=s2p, f_tot=nsa_elpetro_fnu_k, fluxes_keys='FNugriz',
-            mlrb=band, exterior_mask=exterior_mask, **missing_mass_kwargs)
+    @property
+    @lru_cache(maxsize=128)
+    def nsa_absmags(self):
+        absmags = np.array([nsa_absmag(self.drpall_row, band, kind='elpetro')
+                            for band in self.bands]) * (u.ABmag - u.MagUnit(u.littleh**2))
+        return absmags
 
-    return (mass_in_ifu, 10.**logml_fnuwt, ifu_lum.value,
-            10.**outer_logml_ring, 10.**outer_logml_cmlr, missing_bandpass_solLum.value)
+    @property
+    @lru_cache(maxsize=128)
+    def nsa_absmags_cosmocorr(self):
+        return self.nsa_absmags.to(u.ABmag, u.with_H0(self.cosmo.H0))
 
+    @property
+    @lru_cache(maxsize=128)
+    def mag_bands(self):
+        return np.array([ifu_bandmag(self.s2p, b, self.low_or_no_cov, self.drp3dmask_interior)
+                         for b in self.bands]) * u.ABmag
+
+    @property
+    @lru_cache(maxsize=128)
+    def flux_bands(self):
+        return self.mag_bands.to(m.Mgy)
+
+    @property
+    @lru_cache(maxsize=128)
+    def absmag_bands(self):
+        return self.mag_bands - self.distmod
+
+    @property
+    @lru_cache(maxsize=128)
+    def ifu_flux_bands(self):
+        return self.flux_bands.sum(axis=(1, 2))
+
+    @property
+    @lru_cache(maxsize=128)
+    def ifu_mag_bands(self):
+        return self.ifu_flux_bands.to(u.ABmag)
+
+    @property
+    @lru_cache(maxsize=128)
+    def sollum_bands(self):
+        return self.absmag_bands.to(
+            u.dex(m.bandpass_sol_l_unit),
+            bandpass_flux_to_solarunits(self.absmag_sun[..., None, None]))
+
+    @property
+    @lru_cache(maxsize=128)
+    def logml_fnuwt(self):
+        return np.average(
+            self.logml_final.value,
+            weights=self.flux_bands[self.bands_ixs[self.mlband]].value) * self.logml_final.unit
+
+    @property
+    @lru_cache(maxsize=128)
+    def mstar(self):
+        return (self.sollum_bands + self.logml_final).to(u.Msun)
+
+    @property
+    @lru_cache(maxsize=128)
+    def mstar_in_ifu(self):
+        return self.mstar.sum(axis=(1, 2))
+
+    def to_table(self):
+        '''
+        make table of stellar-mass results
+
+        [plateifu, [flux_ifusummed_band1, flux_ifusummed_band2], ...,
+         [flux_nsa_band1, flux_nsa_band2], ...,
+         [dflux_(nsa-ifu)_band1, dflux_(nsa-ifu)_band2], ...,
+         mass_in_ifu, logml_apercorr_ring, logml_apercorr_cmlr, logml_fluxwtd]
+        '''
+
+        tab = t.Table()
+        tab['plateifu'] = [self.drpall_row['plateifu']]
+
+        # tabulate mass in IFU
+        tab['mass_in_ifu'] = self.mstar_in_ifu[None, ...]
+        
+
+        # calculate and store missing luminosities in solar units
+        flux_outside_ifu = (self.nsa_absmags_cosmocorr + self.distmod).to(m.Mgy) - self.ifu_flux_bands
+        mag_outside_ifu = flux_outside_ifu.to(u.ABmag)
+        absmag_outside_ifu = mag_outside_ifu - self.distmod
+        sollum_outside_ifu = absmag_outside_ifu.to(
+            u.dex(m.bandpass_sol_l_unit), bandpass_flux_to_solarunits(self.absmag_sun))
+        tab['missing_lum'] = sollum_outside_ifu[None, ...]
+        tab['missing_lum'].meta['band'] = self.bands
+
+        tab['ml_ring'] = self.ml_ring
+
+        tab['ml_fluxwt'] = self.logml_fnuwt
+        tab['ml_fluxwt'].meta['band'] = self.mlband
+        
+        tab['ifu_lum'] = (self.ifu_mag_bands - self.distmod).to(
+            u.dex(m.bandpass_sol_l_unit), bandpass_flux_to_solarunits(self.absmag_sun))[None, ...]
+        tab['ifu_lum'].meta['band'] = self.mlband
+
+        return tab
+
+    @property
+    @lru_cache(maxsize=128)
+    def ml_ring(self):
+        '''
+        "ring" aperture-correction
+        '''
+        phi = self.dap['SPX_ELLCOO'].data[2, ...]
+        angle_from_majoraxis = np.minimum.reduce(
+            (np.abs(phi), np.abs(180. - phi), np.abs(360. - phi)))
+        # how close to major axis must a spaxel be in order to consider it?
+        close_to_majaxis = (angle_from_majoraxis <= ba_to_majaxis_angle(
+            self.drpall_row['nsa_elpetro_ba']))
+        reff = np.ma.array(
+            self.dap['SPX_ELLCOO'].data[1], mask=np.logical_or(self.ml_mask, ~close_to_majaxis))
+        outer_ring = np.logical_and.reduce((
+            (reff <= reff.max()), (reff >= reff.max() - .5)))
+        outer_logml_ring = np.median(self.ml0[~self.ml_mask * outer_ring]) * self.logml_final.unit
+
+        return outer_logml_ring
 
 def knn_regr(trn_coords, trn_vals, good_trn, k=8):
     '''
