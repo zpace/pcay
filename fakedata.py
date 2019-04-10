@@ -117,7 +117,10 @@ class FakeData(object):
         z_obs = (1. + z_cosm) * (1. + z_pec) - 1.
 
         # create a placeholder model cube since flexible broadcasting is hard
-        spec_model_cube = np.tile(spec_model[:, None, None], (1, ) + mapshape)
+        if specmodel.ndim == 3:
+            spec_model_cube = specmodel
+        else:
+            spec_model_cube = np.tile(spec_model[:, None, None], (1, ) + mapshape)
         ivar_model_cube = np.ones_like(spec_model_cube)
         lam_model_z, spec_model_z, ivar_model_z = ut.redshift(
             l=lam_model, f=spec_model_cube, ivar=ivar_model_cube,
@@ -229,7 +232,7 @@ class FakeData(object):
 
     @classmethod
     def from_FSPS(cls, fname, i, plateifu_base, pca, row, K_obs,
-                  mpl_v='MPL-5', kind='SPX-GAU-MILESHC', sky=None):
+                  mpl_v, kind, sky=None):
 
         # load models
         models_hdulist = fits.open(fname)
@@ -271,6 +274,18 @@ class FakeData(object):
         return cls(lam_model=models_lam, spec_model=model_spec,
                    meta_model=model_meta, row=row, plateifu_base=plateifu_base,
                    drp_base=drp_base, dap_base=dap_base, model_ix=i,
+                   Kspec_obs=K_obs, sky=None)
+
+    @classmethod
+    def from_pca_fit(cls, pca_res, row, K_obs):
+
+        spec_model = pca_res.pca.reconstruct_full(pca_res.A)
+        drp_base = m.load_drp_logcube(plate, ifu, mpl_v)
+        dap_base = m.load_dap_maps(plate, ifu, mpl_v, kind)
+
+        return cls(lam_model=pca_res.l, spec_model=spec_model, 
+                   meta_model=[], row=row, plateifu_base=row['plateifu'],
+                   drp_base=drp_base, dap_base=dap_base, model_ix='None',
                    Kspec_obs=K_obs, sky=None)
 
     def resample_spaxel(self, logl_in, flam_in, logl_out):

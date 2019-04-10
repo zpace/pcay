@@ -316,7 +316,8 @@ class CMLR_Diag_sd(CMLR_Diag):
         param_edgefullgrid = np.meshgrid(*param_edgegrid, indexing='ij')
         
         self.fn_im = self.paramspace_ax.scatter_density(
-            self.csp_tab[p1name], self.csp_tab[p2name], c=dlogML_fn(dlogML), dpi=50)
+            self.csp_tab[p1name], self.csp_tab[p2name], c=dlogML_fn(dlogML), dpi=50,
+            cmap='Greens')
         self.fn_im_cb = plt.colorbar(
             self.fn_im, ax=self.paramspace_ax, orientation='vertical', pad=0.)
         self.fn_im_cb.set_label(fn_TeX)
@@ -329,7 +330,7 @@ class CMLR_Diag_sd(CMLR_Diag):
             bins=param_edgegrid)
         quantiles = np.array([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1])
         self.kde_contours = self.kde2d.plot_kde_contours(
-            self.paramspace_ax, quantiles=quantiles, colors='r', linewidths=0.5)
+            self.paramspace_ax, quantiles=quantiles, colors='gray', linewidths=0.5)
         self.paramspace_ax.clabel(
             self.kde_contours, fontsize='x-small',
             fmt={l: str(q) for l, q in zip(self.kde_contours.levels, quantiles)})

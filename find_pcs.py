@@ -999,7 +999,7 @@ class PCA_Result(object):
         self.O, self.ivar, self.mask_spax = dered.correct_and_match(
             template_logl=pca.logl, template_dlogl=pca.dlogl,
             method=dered_method, dered_kwargs=dered_kwargs)
-
+ 
         # compute starting index of obs cov for each spaxel
         self.i0_map = self.pca._compute_i0_map(self.K_obs.logl, self.dered.z_map)
 
@@ -2608,6 +2608,56 @@ def add_bool_arg(parser, name, default, help_string):
                        help='do not {}'.format(help_string))
     parser.set_defaults(**{name: default})
 
+def run_ew_comparison(drpall, howmany):
+    import maskdiag
+
+    index_name = 'H_beta'
+
+    sample = m.shuffle_table(drpall)[:howmany]
+
+    with ProgressBar(howmany) as bar:
+        for i, row in enumerate(sample):
+            plateifu = row['plateifu']
+
+            try:
+                with catch_warnings():
+                    simplefilter(warn_behav)
+                    pca_res_orig = run_object(
+                        basedir=CSPs_dir, row=row, pca=pca, force_redo=True,
+                        fake=False, vdisp_wt=False, dered_method=dered_method,
+                        dered_kwargs=dered_kwargs, pc_cov_method=pc_cov_method,
+                        K_obs=K_obs, mpl_v=mpl_v, makefigs=False)
+
+                    pca_res_redo_w = maskdiag.redo_pca_analysis(
+                        pca_res_orig, replace_type='wtdmean')
+                    pca_res_redo_z = maskdiag.redo_pca_analysis(
+                        pca_res_orig, replace_type='zero')
+
+                    redo_w_tab_ = maskdiag.index_vs_dap_qtys(
+                        pca_res_orig, pca_res_redo_w, index_name)
+                    redo_z_tab_ = maskdiag.index_vs_dap_qtys(
+                        pca_res_orig, pca_res_redo_z, index_name)
+
+            except Exception:
+                exc_info = sys.exc_info()
+                print('ERROR: {}'.format(plateifu))
+                print_exception(*exc_info)
+                continue
+            else:
+                if i == 0:
+                    redo_w_tab, redo_z_tab = redo_w_tab_, redo_z_tab_
+                else:
+                    redo_w_tab = t.vstack([redo_w_tab, redo_w_tab_])
+                    redo_z_tab = t.vstack([redo_z_tab, redo_z_tab_])
+            finally:
+                bar.update()
+                redo_w_tab.write(os.path.join(basedir, 'redo_w.tab'),
+                                 format='ascii.ecsv', overwrite=True)
+                redo_z_tab.write(os.path.join(basedir, 'redo_z.tab'),
+                                 format='ascii.ecsv', overwrite=True)
+
+        return redo_w_tab, redo_z_tab
+
 
 if __name__ == '__main__':
     import argparse
@@ -2621,18 +2671,20 @@ if __name__ == '__main__':
     add_bool_arg(parser, 'manga', default=True, help_string='run MaNGA galax(y/ies)')
     add_bool_arg(parser, 'clobbermanga', default=False,
                  help_string='re-run MaNGA galax(y/ies) where applicable')
+    add_bool_arg(parser, 'ensurenew', default=True, 
+                 help_string='ensure all galaxies run are new')
 
     add_bool_arg(parser, 'mock', default=False, help_string='run mock(s)')
     add_bool_arg(parser, 'clobbermock', default=False,
                  help_string='re-run mock(s) where applicable')
 
+    add_bool_arg(parser, 'mockfromresults', default=False,
+                 help_string='use results from obs to construct mock')
+
     rungroup = parser.add_mutually_exclusive_group(required=False)
     rungroup.add_argument('--plateifus', '-p', nargs='+', type=str,
                           help='plateifu designations of galaxies to run')
     rungroup.add_argument('--nrun', '-n', help='number of galaxies to run', type=int)
-
-    parser.add_argument('--ensurenew', '-e', type=bool, default=True, 
-                        help='ensure all galaxies run are new')
 
     argsparsed = parser.parse_args()
 
@@ -2673,8 +2725,8 @@ if __name__ == '__main__':
         skymodel = SkyContamination.from_mpl_v(mpl_v)
 
     if argsparsed.plateifus:
-        drpall = drpall.loc[plateifus]
-        howmany = None
+        drpall = drpall.loc[argsparsed.plateifus]
+        howmany = len(drpall)
     elif argsparsed.nrun:
         howmany = argsparsed.nrun
 
@@ -2706,6 +2758,8 @@ if __name__ == '__main__':
                         pca_res.write_results('confident')
 
                     if argsparsed.mock:
+                        if argsparsed.mockfromresults:
+                            pass
                         pca_res_f = run_object(
                             basedir=CSPs_dir,
                             row=row, pca=pca, force_redo=argsparsed.clobbermock,
