@@ -17,6 +17,7 @@ from astropy.io import fits
 from astropy import wcs
 from astropy import coordinates as coord
 from astropy.wcs.utils import pixel_to_skycoord
+from astropy.utils.decorators import lazyproperty
 
 import os
 import sys
@@ -117,6 +118,21 @@ def bandpass_flux_to_solarunits(sun_flux_band):
 
     return [(m.Mgy, m.bandpass_sol_l_unit, convert_flux_to_solar, convert_solar_to_flux)]
 
+cmlr_kwargs = {
+    'cb1': 'g', 'cb2': 'r',
+    'cmlr_poly': np.array([ 1.15614812, -0.48479653])}
+
+def cmlr_equivalency(slope, intecept):
+    '''
+    '''
+    def color_to_logml(c):
+        return slope * c + intercept
+
+    def logml_to_color(logml):
+        return (logml - intercept) / slope
+
+    return [(u.mag, u.dex(m.m_to_l_unit), color_to_logml, logml_to_color)]
+
 class StellarMass(object):
     '''
     calculating galaxy stellar mass with incomplete measurements
@@ -157,70 +173,61 @@ class StellarMass(object):
             q_trn=self.ml0, bad_trn=self.ml_mask,
             infer_here=self.interior_mask) * u.dex(m.m_to_l_unit)
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def distmod(self):
         return self.cosmo.distmod(self.drpall_row['nsa_zdist'])
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def nsa_absmags(self):
         absmags = np.array([nsa_absmag(self.drpall_row, band, kind='elpetro')
                             for band in self.bands]) * (u.ABmag - u.MagUnit(u.littleh**2))
         return absmags
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def nsa_absmags_cosmocorr(self):
         return self.nsa_absmags.to(u.ABmag, u.with_H0(self.cosmo.H0))
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def mag_bands(self):
         return np.array([ifu_bandmag(self.s2p, b, self.low_or_no_cov, self.drp3dmask_interior)
                          for b in self.bands]) * u.ABmag
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def flux_bands(self):
         return self.mag_bands.to(m.Mgy)
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def absmag_bands(self):
         return self.mag_bands - self.distmod
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def ifu_flux_bands(self):
         return self.flux_bands.sum(axis=(1, 2))
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def ifu_mag_bands(self):
         return self.ifu_flux_bands.to(u.ABmag)
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def sollum_bands(self):
-        return self.absmag_bands.to(
-            u.dex(m.bandpass_sol_l_unit),
-            bandpass_flux_to_solarunits(self.absmag_sun[..., None, None]))
+        with catch_warnings():
+            simplefilter('ignore', category=RuntimeWarning)
+            sollum = self.absmag_bands.to(
+                u.dex(m.bandpass_sol_l_unit),
+                bandpass_flux_to_solarunits(self.absmag_sun[..., None, None]))
+        return sollum
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def logml_fnuwt(self):
         return np.average(
             self.logml_final.value,
             weights=self.flux_bands[self.bands_ixs[self.mlband]].value) * self.logml_final.unit
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def mstar(self):
         return (self.sollum_bands + self.logml_final).to(u.Msun)
 
-    @property
-    @lru_cache(maxsize=128)
+    @lazyproperty
     def mstar_in_ifu(self):
         return self.mstar.sum(axis=(1, 2))
 
@@ -234,45 +241,46 @@ class StellarMass(object):
          mass_in_ifu, logml_apercorr_ring, logml_apercorr_cmlr, logml_fluxwtd]
         '''
 
-        tab = t.Table()
+        tab = t.QTable()
         tab['plateifu'] = [self.drpall_row['plateifu']]
 
         # tabulate mass in IFU
-        tab['mass_in_ifu'] = self.mstar_in_ifu[None, ...]
-        
+        tab['mass_in_ifu'] = self.mstar_in_ifu[None, ...][:, self.bands_ixs[self.mlband]]
+        tab['nsa_absmag'] = self.nsa_absmags_cosmocorr[None, ...]
+        #tab['nsa_absmag'].meta['bands'] = self.bands
+        tab['ifu_absmag'] = (self.ifu_flux_bands.to(u.ABmag) - self.distmod)[None, ...]
+        #tab['ifu_absmag'].meta['bands'] = self.bands
 
-        # calculate and store missing luminosities in solar units
-        flux_outside_ifu = (self.nsa_absmags_cosmocorr + self.distmod).to(m.Mgy) - self.ifu_flux_bands
-        mag_outside_ifu = flux_outside_ifu.to(u.ABmag)
-        absmag_outside_ifu = mag_outside_ifu - self.distmod
-        sollum_outside_ifu = absmag_outside_ifu.to(
-            u.dex(m.bandpass_sol_l_unit), bandpass_flux_to_solarunits(self.absmag_sun))
-        tab['missing_lum'] = sollum_outside_ifu[None, ...]
-        tab['missing_lum'].meta['band'] = self.bands
-
-        tab['ml_ring'] = self.ml_ring
+        tab['outer_ml_ring'] = self.ml_ring()
+        #tab['outer_ml_ring'].meta['band'] = self.mlband
 
         tab['ml_fluxwt'] = self.logml_fnuwt
-        tab['ml_fluxwt'].meta['band'] = self.mlband
-        
-        tab['ifu_lum'] = (self.ifu_mag_bands - self.distmod).to(
-            u.dex(m.bandpass_sol_l_unit), bandpass_flux_to_solarunits(self.absmag_sun))[None, ...]
-        tab['ifu_lum'].meta['band'] = self.mlband
+        #tab['ml_fluxwt'].meta['band'] = self.mlband
+
+        tab['distmod'] = self.distmod[None, ...]
 
         return tab
 
-    @property
-    @lru_cache(maxsize=128)
-    def ml_ring(self):
+    def ml_ring(self, azi_selection={'ba_th': .35, 'azi_th': 30. * u.deg}):
         '''
         "ring" aperture-correction
         '''
-        phi = self.dap['SPX_ELLCOO'].data[2, ...]
+        phi = self.dap['SPX_ELLCOO'].data[2, ...] * u.deg
         angle_from_majoraxis = np.minimum.reduce(
-            (np.abs(phi), np.abs(180. - phi), np.abs(360. - phi)))
+            (np.abs(phi), np.abs(180. * u.deg - phi), np.abs(360. * u.deg - phi))) * phi.unit
+
         # how close to major axis must a spaxel be in order to consider it?
-        close_to_majaxis = (angle_from_majoraxis <= ba_to_majaxis_angle(
-            self.drpall_row['nsa_elpetro_ba']))
+        # case: galaxies below b/a threshold  ==> azimuthal angle threshold
+        if type(azi_selection) is dict:
+            if self.drpall_row['nsa_elpetro_ba'] > azi_selection['ba_th']:
+                close_to_majaxis = np.ones_like(angle_from_majoraxis.value).astype(bool)
+            else:
+                close_to_majaxis = (angle_from_majoraxis < azi_selection['azi_th'])
+        # case: b/a determines azimuthal angle threshold based on sigmoid function
+        elif isinstance(azi_selection, Sigmoid):
+            close_to_majaxis = (angle_from_majoraxis <= ba_to_majaxis_angle(
+                self.drpall_row['nsa_elpetro_ba']))
+
         reff = np.ma.array(
             self.dap['SPX_ELLCOO'].data[1], mask=np.logical_or(self.ml_mask, ~close_to_majaxis))
         outer_ring = np.logical_and.reduce((
