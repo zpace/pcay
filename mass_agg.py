@@ -37,6 +37,7 @@ jhumpa = t.Table.read('/usr/data/minhas/zpace/stellarmass_pca/jhu_mpa_{}.fits'.f
     mpl_v.replace('-', '').lower()))
 jhumpa['plateifu'] = [plateifu.strip(' ') for plateifu in jhumpa['PLATEIFU']]
 jhumpa = jhumpa['plateifu', 'LOG_MSTAR']
+jhumpa = jhumpa[jhumpa['LOG_MSTAR'] > 0.]
 
 sfrsd_tab = t.Table.read('/usr/data/minhas/zpace/stellarmass_pca/sigma_sfr.fits')
 sfrsd_tab['plateifu'] = sfrsd_tab['names']
@@ -179,7 +180,7 @@ def compare_outerml_ring_cmlr(tab, mlb='i', cb1='g', cb2='r'):
 
     main_ax.legend(loc='best', prop={'size': 'xx-small'})
     main_ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
+    main_ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
     main_ax.set_ylabel(r'$\log{\frac{\Upsilon^*_{\rm CMLR}}{\Upsilon^*_{\rm ring}}}$',
                        size='x-small')
     main_ax.set_ylim(np.percentile(ml_cmlr_ring[valid], [1., 99.]))
@@ -218,7 +219,7 @@ def make_missing_mass_fig(tab, mltype='ring', mlb='i', cb1='g', cb2='r'):
 
     main_ax.legend(loc='best', prop={'size': 'xx-small'})
     main_ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
+    main_ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
     main_ax.set_ylabel('Stellar-mass fraction outside IFU', size='x-small')
     fig.suptitle('Inferred mass fraction outside IFU', size='small')
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'mass_outside_ifu_{}.png'.format(mltype)))
@@ -254,7 +255,7 @@ def make_missing_flux_fig(tab, mlb='i', cb1='g', cb2='r'):
 
     main_ax.legend(loc='best', prop={'size': 'xx-small'})
     main_ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
+    main_ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
     main_ax.set_ylabel('Flux fraction outside IFU', size='x-small')
     fig.suptitle('Flux fraction outside IFU', size='small')
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'flux_outside_ifu.png'))
@@ -295,11 +296,25 @@ def compare_missing_mass(tab, mlb='i', cb1='g', cb2='r'):
 
     main_ax.legend(loc='best', prop={'size': 'xx-small'})
     main_ax.tick_params(labelsize='xx-small')
-    ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
+    main_ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
     main_ax.set_ylabel(r'$\log \frac{M^{\rm tot}_{\rm CMLR}}{M^{\rm tot}_{\rm ring}}$',
                   size='x-small')
     fig.suptitle(r'Impact of aperture-correction on $M^{\rm tot}$', size='small')
     fig.savefig(os.path.join(basedir, 'lib_diags/', 'mtot_compare_cmlr_ring.png'))
+
+def smooth(x, y, xgrid, bw):
+    '''
+    '''
+    good = np.isfinite(y)
+    x, y = x[good], y[good]
+
+    w = np.exp(-0.5 * (xgrid[None, ...] - x[..., None])**2. / bw**2.)
+    w[w == 0] = np.min(w[w > 0])
+    y_avg, sum_of_weights = np.average(
+        np.tile(y[:, None], [1, len(xgrid)]), weights=w, axis=0, returned=True)
+
+    return y_avg, sum_of_weights
+
 
 def compare_mtot_pca_nsa(tab, jhu_mpa, mltype='ring', mlb='i', cb1='g', cb2='r'):
     jointab = t.join(tab, jhu_mpa, 'plateifu')
@@ -322,22 +337,31 @@ def compare_mtot_pca_nsa(tab, jhu_mpa, mltype='ring', mlb='i', cb1='g', cb2='r')
     mass_jhumpa = (10.**(jointab['LOG_MSTAR'] + chabrier_to_kroupa_dex) * \
                    u.Msun * (jhumpa_h * u.littleh)**-2.).to(u.Msun, u.with_H0(cosmo.H0))
 
-    lowess_pca_nsa = lowess(endog=np.log10(mass_pca / mass_nsa), exog=broadband_color,
-                            is_sorted=False, delta=.005, it=15, frac=.2,
-                            return_sorted=True)
-    lowess_pca_jhumpa = lowess(endog=np.log10(mass_pca / mass_jhumpa), exog=broadband_color,
-                               is_sorted=False, delta=.005, it=15, frac=.2,
-                               return_sorted=True)
+    lowess_grid = np.linspace(broadband_color.min(), broadband_color.max(), 100).value
+    lowess_pca_nsa, swt_nsa = smooth(
+        x=broadband_color.value, y=np.log10(mass_pca / mass_nsa).value,
+        xgrid=lowess_grid, bw=.01)
+    print(lowess_pca_nsa)
+    print(swt_nsa)
+    lowess_pca_jhumpa, swt_jhumpa = smooth(
+        x=broadband_color.value, y=np.log10(mass_pca / mass_jhumpa).value,
+        xgrid=lowess_grid, bw=.01)
+    print(lowess_pca_jhumpa)
+    print(swt_jhumpa)
+    swt_th = .2 * swt_nsa.max()
+    good_lowess_nsa = (swt_nsa >= swt_th)
+    good_lowess_jhumpa = (swt_jhumpa >= swt_th)
 
     fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
 
     ax.scatter(broadband_color, np.log10(mass_pca / mass_nsa),
-               s=3., edgecolor='None', c='C0', label='NSA')
-    ax.plot(lowess_pca_nsa[:, 0], lowess_pca_nsa[:, 1], linewidth=0.5, c='C0')
+               s=2., edgecolor='None', c='C0', label='NSA')
+    ax.plot(lowess_grid[good_lowess_nsa], lowess_pca_nsa[good_lowess_nsa], linewidth=0.5, c='k', linestyle='-')
 
     ax.scatter(broadband_color, np.log10(mass_pca / mass_jhumpa),
-               s=3., edgecolor='None', c='C1', label='JHU-MPA')
-    ax.plot(lowess_pca_jhumpa[:, 0], lowess_pca_jhumpa[:, 1], linewidth=0.5, c='C1')
+               s=2., edgecolor='None', c='C1', label='JHU-MPA')
+    ax.plot(lowess_grid[good_lowess_jhumpa], lowess_pca_jhumpa[good_lowess_jhumpa],
+            linewidth=0.5, c='k', linestyle='--')
 
     ax.set_ylim([-.2, .5]);
     ax.set_xlim([-.1, 1.])
@@ -632,6 +656,7 @@ def make_meantauV_vs_ba_fig(tab):
 
 def fit_dlogM_mw(tab, sfrsd_tab, mltype='ring', mlb='i'):
     merge_tab = t.join(tab, sfrsd_tab, 'plateifu')
+    is_agn = m.mask_from_maskbits(merge_tab['mngtarg3'], [1, 2, 3, 4])
 
     mlb_ix = totalmass.StellarMass.bands_ixs[mlb]
     absmag_sun_mlb = totalmass.StellarMass.absmag_sun[mlb_ix]
@@ -648,9 +673,9 @@ def fit_dlogM_mw(tab, sfrsd_tab, mltype='ring', mlb='i'):
     merge_tab['log_ssfrsd'][~np.isfinite(merge_tab['log_ssfrsd'])] = np.nan * merge_tab['log_ssfrsd'].unit
 
     ols = OLS(
-        endog=np.array(merge_tab['dlogmass_lw']),
+        endog=np.array(merge_tab['dlogmass_lw'][~is_agn]),
         exog=sm_add_constant(
-            t.Table(merge_tab['mean_atten_mwtd', 'std_atten_mwtd', 'log_ssfrsd']).to_pandas(),
+            t.Table(merge_tab['mean_atten_mwtd', 'std_atten_mwtd', 'log_ssfrsd'])[~is_agn].to_pandas(),
             prepend=False),
         hasconst=True, missing='drop')
 
@@ -670,29 +695,29 @@ if __name__ == '__main__':
     
     mlband_ix = totalmass.StellarMass.bands_ixs[mlband]
     mlband_absmag_sun = totalmass.StellarMass.absmag_sun[mlband_ix]
-    mass_deficit = mass_table['mass_in_ifu'].to(u.dex(u.Msun)) - \
-        (mass_table['ml_fluxwt'] + mass_table['ifu_absmag'][:, mlband_ix].to(
+    mass_deficit = full_table['mass_in_ifu'].to(u.dex(u.Msun)) - \
+        (full_table['ml_fluxwt'] + full_table['ifu_absmag'][:, mlband_ix].to(
              u.dex(m.bandpass_sol_l_unit), totalmass.bandpass_flux_to_solarunits(
                  mlband_absmag_sun)))
     mass_deficit_order = np.argsort(mass_deficit)[::-1]
 
 
     compare_outerml_ring_cmlr(full_table)
-    compare_missing_mass(mass_table)
-    make_missing_mass_fig(mass_table, mltype='ring')
-    make_missing_mass_fig(mass_table, mltype='cmlr')
-    make_missing_flux_fig(mass_table)
-    compare_mtot_pca_nsa(mass_table, jhumpa, mltype='ring', nsa_phototype='elpetro')
-    compare_mtot_pca_nsa(mass_table, jhumpa, mltype='cmlr', nsa_phototype='elpetro')
-    make_meanstdtauV_vs_dMass_fig(mass_table)
-    make_stdtauV_vs_dMass_ba_fig(mass_table)
-    make_stdtauV_vs_dMass_fig(mass_table)
+    compare_missing_mass(full_table)
+    make_missing_mass_fig(full_table, mltype='ring')
+    make_missing_mass_fig(full_table, mltype='cmlr')
+    make_missing_flux_fig(full_table)
+    compare_mtot_pca_nsa(full_table, jhumpa, mltype='ring')
+    #compare_mtot_pca_nsa(full_table, jhumpa, mltype='cmlr')
+    make_meanstdtauV_vs_dMass_fig(full_table)
+    make_stdtauV_vs_dMass_ba_fig(full_table)
+    make_stdtauV_vs_dMass_fig(full_table)
     
-    make_stdtauV_vs_dMass_ssfrsd_fig(mass_table, sfrsd_tab, mltype='ring')
-    make_stdtauV_vs_dMass_ssfrsd_fig(mass_table, sfrsd_tab, mltype='cmlr')
-    make_stdtauV_vs_ssfrsd_dMass_fig(mass_table, sfrsd_tab, mltype='ring')
-    make_stdtauV_vs_ssfrsd_dMass_fig(mass_table, sfrsd_tab, mltype='cmlr')
-    make_meantauV_vs_ba_fig(mass_table)
+    make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='ring')
+    make_stdtauV_vs_dMass_ssfrsd_fig(full_table, sfrsd_tab, mltype='cmlr')
+    make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='ring')
+    make_stdtauV_vs_ssfrsd_dMass_fig(full_table, sfrsd_tab, mltype='cmlr')
+    make_meantauV_vs_ba_fig(full_table)
 
-    lwmass_olsfit = fit_dlogM_mw(mass_table, sfrsd_tab)
+    lwmass_olsfit = fit_dlogM_mw(full_table, sfrsd_tab)
     lwmass_olsfit.summary()

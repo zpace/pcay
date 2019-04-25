@@ -173,6 +173,17 @@ class StellarMass(object):
             q_trn=self.ml0, bad_trn=self.ml_mask,
             infer_here=self.interior_mask) * u.dex(m.m_to_l_unit)
 
+    @classmethod
+    def from_plateifu(cls, plateifu, res_basedir, pca_system, cosmo=cosmo, mlband='i'):
+        plate, ifu = plateifu.split('-')
+        results = read_results.PCAOutput.from_plateifu(basedir=res_basedir, plate=plate, ifu=ifu)
+        drp = m.load_drp_logcube(plate, ifu, mpl_v)
+        dap = m.load_dap_maps(plate, ifu, mpl_v, daptype)
+        drpall = m.load_drpall(mpl_v, 'plateifu')
+        drpall_row = drpall.loc['{}-{}'.format(plate, ifu)]
+
+        return cls(results, pca_system, drp, dap, drpall_row, cosmo, mlband)
+
     @lazyproperty
     def distmod(self):
         return self.cosmo.distmod(self.drpall_row['nsa_zdist'])
@@ -219,9 +230,11 @@ class StellarMass(object):
 
     @lazyproperty
     def logml_fnuwt(self):
+        mask = np.logical_or(self.ml_mask, self.badpdf)
         return np.average(
             self.logml_final.value,
-            weights=self.flux_bands[self.bands_ixs[self.mlband]].value) * self.logml_final.unit
+            weights=(self.flux_bands[self.bands_ixs[self.mlband]].value * ~mask)) * \
+                     self.logml_final.unit
 
     @lazyproperty
     def mstar(self):
@@ -288,6 +301,11 @@ class StellarMass(object):
         outer_logml_ring = np.median(self.ml0[~self.ml_mask * outer_ring]) * self.logml_final.unit
 
         return outer_logml_ring
+
+    def close(self):
+        self.results.close()
+        self.drp.close()
+        self.dap.close()
 
 def knn_regr(trn_coords, trn_vals, good_trn, k=8):
     '''

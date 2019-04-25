@@ -339,10 +339,11 @@ def overplot_spectroscopic(res, drp_logcube, drpall_row, mass_ax, ml_ax, f_ax,
 
     mass_ax.scatter(x=res_Re.max() - .1,
                     y=mass_within_nRe[-1] * u.Msun + missing_mass_cmlr,
-                    marker='s', c='C1', edgecolor='k', zorder=3)
+                    marker='s', c='C1', edgecolor='k', zorder=3, label='+AC(CMLR)')
     mass_ax.scatter(x=res_Re.max(),
                     y=mass_within_nRe[-1] * u.Msun + missing_mass_ring,
-                    marker='x', c='C1', edgecolor='k', zorder=3)
+                    marker='x', c='C1', edgecolor='k', zorder=3, label='+AC(RING)')
+    mass_ax.legend(loc='best', prop={'size': 'x-small'})
 
     summed_flux = np.array([sum_within_nRe(arr=res_flux, Re_a=res_Re, nRe=n)
                             for n in nRe_to_plot])
@@ -488,7 +489,7 @@ def make_photo_spectro_compare(plateifu, pca_system):
         ax1.axhline(
             (drpall_row['nsa_elpetro_mass'] * u.Msun * u.littleh**-2).to(
                  u.Msun, u.with_H0(cosmo.H0)).value,
-            c='k', linestyle='--')
+            c='k', linestyle='-', alpha=0.5)
         overplot_cmlr_ml_Re(
             preimaging, drpall_row, drp_logcube, dap_maps, ax1, ax2, Cgr_i_cmlr,
             target_snr=20., 
@@ -510,10 +511,10 @@ def make_photo_spectro_compare(plateifu, pca_system):
         plt.close('all')
 
 if __name__ == '__main__':
-    plateifu = '8335-9102'
+    plateifu = '7957-12704'
     drpall = m.load_drpall(mpl_v, index='plateifu')
     pca_system = read_results.PCASystem.fromfile(os.path.join(basedir, 'pc_vecs.fits'))
-    #'''
+    '''
     results_fnames = glob.glob(os.path.join(basedir, 'results/*-*/*-*_res.fits'))
     results_plateifus = [fn.split('/')[-2] for fn in results_fnames]
     with warnings.catch_warnings():
@@ -523,5 +524,5 @@ if __name__ == '__main__':
                 make_photo_spectro_compare(plateifu, pca_system)
             except:
                 pass
-    #'''
-    #make_photo_spectro_compare(plateifu, pca_system)
+    '''
+    make_photo_spectro_compare(plateifu, pca_system)
