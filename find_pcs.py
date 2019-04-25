@@ -9,8 +9,6 @@ from matplotlib import gridspec
 import matplotlib.ticker as mticker
 from cycler import cycler
 
-from corner import corner
-
 # astropy ecosystem
 from astropy import constants as c, units as u, table as t
 from astropy.io import fits
@@ -52,7 +50,6 @@ from rectify import MaNGA_deredshift
 
 # personal
 import manga_tools as m
-import spec_tools
 
 eps = np.finfo(float).eps
 
@@ -2250,30 +2247,6 @@ class PCA_Result(object):
         fig.tight_layout()
 
         fname = '{}_allSFHs_{}-{}.png'.format(self.objname, ix[0], ix[1])
-        self.savefig(fig, fname, self.figdir, dpi=300)
-
-    def cornerplot(self, ix=None):
-        '''
-        make spaxel parameter corner plot
-        '''
-
-        if ix is None:
-            ix = self.ifu_ctr_ix
-
-        w_spax = self.w[:, ix[0], ix[1]]
-
-        if self.truth is not None:
-            truth = [self.truth[n] for n in self.pca.metadata.colnames]
-        else:
-            truth = None
-
-        fig = corner(xs=self.pca.metadata_a, weights=w_spax,
-                     labels=self.pca.metadata_TeX,
-                     truths=truth, truth_color='r')
-
-        fig.tight_layout()
-
-        fname = '{}_cornerplot_{}-{}.png'.format(self.objname, ix[0], ix[1])
         self.savefig(fig, fname, self.figdir, dpi=300)
 
     @property
