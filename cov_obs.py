@@ -20,17 +20,10 @@ from glob import glob
 from importer import *
 
 import manga_tools as m
-from spec_tools import air2vac, vac2air
-
-if mangarc.voronoi_loc not in sys.path:
-    sys.path.append(mangarc.voronoi_loc)
-
-import voronoi_2d_binning as voronoi2d
 
 import utils as ut
 from partition import CovWindows
 
-from contextlib import redirect_stdout
 from functools import lru_cache
 
 eps = np.finfo(float).eps
