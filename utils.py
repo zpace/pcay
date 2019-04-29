@@ -13,9 +13,6 @@ from scipy.ndimage.filters import gaussian_filter1d as gf
 from scipy.interpolate import interp1d
 from scipy.spatial.distance import pdist, squareform
 
-import multiprocessing as mpc
-import ctypes
-
 import os
 import sys
 from copy import copy

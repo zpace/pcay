@@ -2347,9 +2347,10 @@ class PCA_Result(object):
             else:
                 hdulist.append(qty_hdu)
 
-        logQH_hdu = self.make_logQH_hdu()
-        logQH_hdu.header['EXTNAME'] = 'logQH'
-        hdulist.append(logQH_hdu)
+        # luminosity HDU
+        lum_hdu = fits.ImageHDU(np.log10(self.lum(band='i')))
+        lum_hdu.header['EXTNAME'] = 'LOG_LUM_I'
+        hdulist.append(lum_hdu)
 
         # make extension with median spectral SNR
         snr_hdu = fits.ImageHDU(self.SNR_med)
@@ -2511,8 +2512,8 @@ def setup_fake(row, pca, K_obs, dered_method='nearest', dered_kwargs={},
     return dered, data, truth, truth_sfh
 
 def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
-               dered_method='nearest', dered_kwargs={}, mockspec_ix=None, z_new=None,
-               basedir='.', mockspec_fname='CSPs_test.fits',
+               dered_method='nearest', dered_kwargs={}, mockspec_ix=None,
+               results_basedir='.', CSPs_basedir='.', mockspec_fname='CSPs_test.fits',
                mocksfh_fname='SFHs_test.fits', vdisp_wt=False,
                pc_cov_method='full_iter', makefigs=True, mpl_v='MPL-7', sky=None):
 
@@ -2525,18 +2526,17 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
     plate, ifu = plateifu.split('-')
 
     if fake:
-        fakedata_basedir = os.path.join(basedir, 'fakedata')
         dered, data, truth, truth_sfh = setup_fake(
             row, pca, K_obs, dered_method=dered_method, dered_kwargs=dered_kwargs,
-            mockspec_ix=mockspec_ix, CSPs_dir=basedir, fakedata_basedir=fakedata_basedir,
+            mockspec_ix=mockspec_ix, CSPs_dir=CSPs_basedir, fakedata_basedir=results_basedir,
             mockspec_fname=mockspec_fname, mocksfh_fname=mocksfh_fname, mpl_v=mpl_v,
             sky=sky)
-        figdir = os.path.join(fakedata_basedir, 'results', plateifu)
+        figdir = os.path.join(results_basedir, 'results', plateifu)
 
     else:
         dered = MaNGA_deredshift.from_plateifu(
             plate=int(plate), ifu=int(ifu), MPL_v=mpl_v, row=row, kind=daptype)
-        figdir = os.path.join(basedir, 'results', plateifu)
+        figdir = os.path.join(results_basedir, 'results', plateifu)
         truth_sfh = None
         truth = None
 
@@ -2553,12 +2553,6 @@ def run_object(row, pca, K_obs, force_redo=False, fake=False, redo_fake=False,
         pca_res.make_full_QA_fig(kde=(False, False))
         pca_res.make_sample_diag_fig()
         pca_res.make_qty_fig(qty_str='MLi')
-
-    # reset redshift to original value
-    if not z_new:
-        pass
-    else:
-        row['nsa_z'], row['nsa_zdist'] = z_orig, zdist_orig
 
     if fake:
         # delete intermediate files
@@ -2638,6 +2632,8 @@ if __name__ == '__main__':
     #'''
     # parse arguments
     parser = argparse.ArgumentParser(description='Run PCA analysis on MaNGA galaxies')
+    parser.add_argument('--csp_basedir', default=csp_basedir, required=False,
+                        help='where CSPs live')
     # what types of data to run, and whether to make figs or simply output fit
     add_bool_arg(parser, 'figs', default=True, help_string='make figs')
 
@@ -2646,10 +2642,14 @@ if __name__ == '__main__':
                  help_string='re-run MaNGA galax(y/ies) where applicable')
     add_bool_arg(parser, 'ensurenew', default=True, 
                  help_string='ensure all galaxies run are new')
+    parser.add_argument('--mangaresultsdest', default=manga_results_basedir, required=False,
+                        help='destination for MaNGA results')
 
     add_bool_arg(parser, 'mock', default=False, help_string='run mock(s)')
     add_bool_arg(parser, 'clobbermock', default=False,
                  help_string='re-run mock(s) where applicable')
+    parser.add_argument('--mockresultsdest', default=mocks_results_basedir, required=False,
+                        help='destination for mocks results')
 
     add_bool_arg(parser, 'mockfromresults', default=False,
                  help_string='use results from obs to construct mock')
@@ -2672,8 +2672,6 @@ if __name__ == '__main__':
     dered_kwargs = {'nper': 10}
     pc_cov_method = 'precomp'
 
-    CSPs_dir = basedir
-
     drpall = m.load_drpall(mpl_v, index='plateifu')
     drpall = drpall[drpall['nsa_z'] != -9999]
     drpall = drpall[drpall['ifudesignsize'] > 0.]
@@ -2683,9 +2681,9 @@ if __name__ == '__main__':
         pca_kwargs = {'lllim': 3700. * u.AA, 'lulim': 8800. * u.AA,
                       'lsf': lsf, 'z0_': .04}
 
-        pca_pkl_fname = os.path.join(CSPs_dir, 'pca.pkl')
+        pca_pkl_fname = os.path.join(csp_basedir, 'pca.pkl')
         pca, K_obs = setup_pca(
-            fname=pca_pkl_fname, base_dir=CSPs_dir, base_fname='CSPs',
+            fname=pca_pkl_fname, base_dir=argsparsed.csp_basedir, base_fname='CSPs',
             redo=False, pkl=True, q=6, fre_target=.005, nfiles=40,
             pca_kwargs=pca_kwargs, makefigs=True)
 
@@ -2703,14 +2701,17 @@ if __name__ == '__main__':
     elif argsparsed.nrun:
         howmany = argsparsed.nrun
 
+    '''
     # which galaxies have been run before? eliminate them from contention
     if argsparsed.ensurenew:
-        already_run = np.array([os.path.exists(
-                                    os.path.join(
-                                        basedir, 'res', plateifu,
-                                        '{}_res.fits'.format(plateifu)))
-                                for plateifu in drpall['plateifu']])
+        already_run = np.array(
+            [os.path.exists(
+                os.path.join(
+                    argsparsed.mangaresultsdest, 'results', plateifu,
+                    '{}_res.fits'.format(plateifu)))
+             for plateifu in drpall['plateifu']])
         drpall = drpall[~already_run]
+    '''
 
     with ProgressBar(howmany) as bar:
         for i, row in enumerate(m.shuffle_table(drpall)[:howmany]):
@@ -2722,26 +2723,26 @@ if __name__ == '__main__':
 
                     if argsparsed.manga:
                         pca_res = run_object(
-                            basedir=CSPs_dir,
-                            row=row, pca=pca, force_redo=argsparsed.clobbermanga,
-                            fake=False, vdisp_wt=False,
-                            dered_method=dered_method, dered_kwargs=dered_kwargs,
-                            pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v,
+                            row=row, pca=pca, K_obs=K_obs, force_redo=argsparsed.clobbermanga,
+                            fake=False, redo_fake=False, dered_method=dered_method,
+                            dered_kwargs=dered_kwargs,
+                            results_basedir=argsparsed.mangaresultsdest,
+                            CSPs_basedir=csp_basedir, vdisp_wt=False,
+                            pc_cov_method=pc_cov_method, mpl_v=mpl_v,
                             makefigs=argsparsed.figs)
-                        pca_res.write_results('confident')
+                        pca_res.write_results(['MLi'])
 
                     if argsparsed.mock:
                         if argsparsed.mockfromresults:
                             pass
-                        pca_res_f = run_object(
-                            basedir=CSPs_dir,
-                            row=row, pca=pca, force_redo=argsparsed.clobbermock,
-                            fake=True, vdisp_wt=False,
+                        pca_res = run_object(
+                            row=row, pca=pca, K_obs=K_obs, force_redo=argsparsed.clobbermock,
+                            fake=False, redo_fake=argsparsed.clobbermock,
                             dered_method=dered_method, dered_kwargs=dered_kwargs,
-                            pc_cov_method=pc_cov_method, K_obs=K_obs, mpl_v=mpl_v,
-                            redo_fake=argsparsed.clobbermock, mockspec_ix=None,
-                            mockspec_fname='CSPs_test.fits', mocksfh_fname='SFHs_test.fits',
-                            sky=skymodel, makefigs=argsparsed.figs)
+                            results_basedir=argsparsed.mockresultsdest,
+                            CSPs_basedir=csp_basedir, vdisp_wt=False,
+                            pc_cov_method=pc_cov_method, mpl_v=mpl_v,
+                            makefigs=argsparsed.figs, sky=skymodel)
                         pca_res_f.write_results('confident')
 
             except Exception:

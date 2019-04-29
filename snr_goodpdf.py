@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import mpl_scatter_density
 import astropy.table as t
 from astropy.io import fits
 

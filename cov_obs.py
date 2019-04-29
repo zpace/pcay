@@ -30,8 +30,8 @@ eps = np.finfo(float).eps
 
 # =====
 
-print('MaNGA data-product info:', mpl_v, '({})'.format(m.MPL_versions[mpl_v]))
-print('MaNGA data location:', mangarc.manga_data_loc[mpl_v])
+print('MaNGA data-product info:', mpl_v, '({})'.format(m.DRP_MPL_versions[mpl_v]))
+print('MaNGA data location:', os.environ['SAS_BASE_DIR'])
 
 
 class Cov_Obs(object):
