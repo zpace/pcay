@@ -110,7 +110,6 @@ class StellarPop_PCA(object):
         metadata_a = metadata_a.view((metadata_a.dtype[0],
                                       len(metadata_a.dtype.names)))
         self.metadata_a = metadata_a[:, metadata_incl]
-        self.gen_dicts = gen_dicts
 
         self.src = src
 
@@ -156,14 +155,12 @@ class StellarPop_PCA(object):
         from utils import pickle_loader, add_losvds
         from itertools import chain
 
-        d_names = glob(os.path.join(base_dir,'CSPs_*.pkl'))
         csp_fnames = glob(os.path.join(base_dir,'CSPs_*.fits'))
         sfh_fnames = glob(os.path.join(base_dir,'SFHs_*.fits'))
         print('Building training library in directory: {}'.format(base_dir))
         print('CSP files used: {}'.format(' '.join(tuple(csp_fnames))))
 
         if nfiles is not None:
-            d_names = d_names[:nfiles]
             csp_fnames = csp_fnames[:nfiles]
             sfh_fnames = sfh_fnames[:nfiles]
 
@@ -250,9 +247,6 @@ class StellarPop_PCA(object):
                 if 'ML' in n:
                     meta[n].meta['unc_incr'] = .008
 
-        dicts = list(chain.from_iterable(
-            [pickle_loader(f) for (i, f) in enumerate(d_names)]))
-
         #spec, meta = spec[models_good, :], meta[models_good]
 
         # convolve spectra with instrument LSF
@@ -274,7 +268,7 @@ class StellarPop_PCA(object):
             meta[k] = meta[k].astype(np.float32)
 
         return cls(l=l_final * l.unit, trn_spectra=spec_lores,
-                   gen_dicts=dicts, metadata=meta, sfh_fnames=sfh_fnames,
+                   gen_dicts=None, metadata=meta, sfh_fnames=sfh_fnames,
                    K_obs=K_obs, dlogl=None, src='FSPS',
                    nsubpersfh=Nsubsample, nsfhperfile=Nsfhper, basedir=base_dir,
                    **kwargs)
