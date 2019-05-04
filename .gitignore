@@ -1,1 +1,3 @@
 *.fits
+tremonti_cov/*
+__pycache__/*
