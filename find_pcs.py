@@ -159,6 +159,8 @@ class StellarPop_PCA(object):
         d_names = glob(os.path.join(base_dir,'CSPs_*.pkl'))
         csp_fnames = glob(os.path.join(base_dir,'CSPs_*.fits'))
         sfh_fnames = glob(os.path.join(base_dir,'SFHs_*.fits'))
+        print('Building training library in directory: {}'.format(base_dir))
+        print('CSP files used: {}'.format(' '.join(tuple(csp_fnames))))
 
         if nfiles is not None:
             d_names = d_names[:nfiles]
