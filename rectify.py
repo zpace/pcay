@@ -12,6 +12,9 @@ import manga_tools as m
 from manga_elines import get_emline_qty
 import spec_tools
 
+from elines import (balmer_low, balmer_high, helium, bright_metal, faint_metal)
+from itertools import chain
+
 class MaNGA_deredshift(object):
     '''
     class to deredshift reduced MaNGA data based on velocity info from DAP
@@ -168,9 +171,6 @@ class MaNGA_deredshift(object):
     def compute_eline_mask(self, template_logl, template_dlogl=None, ix_eline=7,
                            half_dv=300. * u.Unit('km/s')):
 
-        from elines import (balmer_low, balmer_high, helium,
-                            bright_metal, faint_metal)
-        from itertools import chain
         el_l_air = [balmer_low, balmer_high, helium, bright_metal, faint_metal]
 
         # find mask width for all spaxels
