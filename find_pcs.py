@@ -47,6 +47,7 @@ from fakedata import FakeData, SkyContamination
 from linalg import *
 from param_estimate import *
 from rectify import MaNGA_deredshift
+import pca_status
 
 # personal
 import manga_tools as m
@@ -2411,7 +2412,8 @@ def setup_pca(base_dir, base_fname, fname=None,
     else:
         run_pca = False
 
-    kspec_fname = 'tremonti_cov/manga_covar_matrix.fit'
+    kspec_fname = os.path.join(
+        os.environ['STELLARMASS_PCA_DIR'], 'tremonti_cov/manga_covar_matrix.fit')
     # shrink covariance matrix based on
     K_obs = cov_obs.ShrunkenCov.from_tremonti(kspec_fname, shrinkage=.005)
 
@@ -2696,25 +2698,16 @@ if __name__ == '__main__':
         skymodel = SkyContamination.from_mpl_v(mpl_v)
 
     if argsparsed.plateifus:
-        drpall = drpall.loc[argsparsed.plateifus]
-        howmany = len(drpall)
+        howmany = len(argsparsed.plateifus)
+        plateifus = argsparsed.plateifus
     elif argsparsed.nrun:
         howmany = argsparsed.nrun
+        plateifus = np.random.permutation(list(drpall['plateifu']))
 
-    '''
-    # which galaxies have been run before? eliminate them from contention
-    if argsparsed.ensurenew:
-        already_run = np.array(
-            [os.path.exists(
-                os.path.join(
-                    argsparsed.mangaresultsdest, 'results', plateifu,
-                    '{}_res.fits'.format(plateifu)))
-             for plateifu in drpall['plateifu']])
-        drpall = drpall[~already_run]
-    '''
+    valid_plateifus = plateifus[:howmany]    
 
-    for i, row in enumerate(m.shuffle_table(drpall)[:howmany]):
-        plateifu = row['plateifu']
+    for plateifu in valid_plateifus:
+        row = drpall.loc[plateifu]
 
         try:
             with catch_warnings():
@@ -2744,13 +2737,15 @@ if __name__ == '__main__':
                     pca_res_f.write_results('confident')
                 '''
 
-        except Exception:
+        except Exception as e:
             exc_info = sys.exc_info()
             print('ERROR: {}'.format(plateifu))
             print_exception(*exc_info)
+            pca_status.write_log_file(plateifu, repr(e))
             continue
         else:
             print('{} completed successfully'.format(plateifu))
+            pca_status.write_log_file(plateifu, 'SUCCESS')
         finally:
             pass
     #'''
