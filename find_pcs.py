@@ -2713,43 +2713,44 @@ if __name__ == '__main__':
         drpall = drpall[~already_run]
     '''
 
-    with ProgressBar(howmany) as bar:
-        for i, row in enumerate(m.shuffle_table(drpall)[:howmany]):
-            plateifu = row['plateifu']
+    for i, row in enumerate(m.shuffle_table(drpall)[:howmany]):
+        plateifu = row['plateifu']
 
-            try:
-                with catch_warnings():
-                    simplefilter(warn_behav)
+        try:
+            with catch_warnings():
+                simplefilter(warn_behav)
 
-                    if argsparsed.manga:
-                        pca_res = run_object(
-                            row=row, pca=pca, K_obs=K_obs, force_redo=argsparsed.clobbermanga,
-                            fake=False, redo_fake=False, dered_method=dered_method,
-                            dered_kwargs=dered_kwargs,
-                            results_basedir=argsparsed.mangaresultsdest,
-                            CSPs_basedir=csp_basedir, vdisp_wt=False,
-                            pc_cov_method=pc_cov_method, mpl_v=mpl_v,
-                            makefigs=argsparsed.figs)
-                        pca_res.write_results(['MLi'])
+                if argsparsed.manga:
+                    pca_res = run_object(
+                        row=row, pca=pca, K_obs=K_obs, force_redo=argsparsed.clobbermanga,
+                        fake=False, redo_fake=False, dered_method=dered_method,
+                        dered_kwargs=dered_kwargs,
+                        results_basedir=argsparsed.mangaresultsdest,
+                        CSPs_basedir=csp_basedir, vdisp_wt=False,
+                        pc_cov_method=pc_cov_method, mpl_v=mpl_v,
+                        makefigs=argsparsed.figs)
+                    pca_res.write_results(['MLi'])
 
-                    if argsparsed.mock:
-                        if argsparsed.mockfromresults:
-                            pass
-                        pca_res = run_object(
-                            row=row, pca=pca, K_obs=K_obs, force_redo=argsparsed.clobbermock,
-                            fake=False, redo_fake=argsparsed.clobbermock,
-                            dered_method=dered_method, dered_kwargs=dered_kwargs,
-                            results_basedir=argsparsed.mockresultsdest,
-                            CSPs_basedir=csp_basedir, vdisp_wt=False,
-                            pc_cov_method=pc_cov_method, mpl_v=mpl_v,
-                            makefigs=argsparsed.figs, sky=skymodel)
-                        pca_res_f.write_results('confident')
+                '''
+                if argsparsed.mock:
+                    pca_res = run_object(
+                        row=row, pca=pca, K_obs=K_obs, force_redo=argsparsed.clobbermock,
+                        fake=False, redo_fake=argsparsed.clobbermock,
+                        dered_method=dered_method, dered_kwargs=dered_kwargs,
+                        results_basedir=argsparsed.mockresultsdest,
+                        CSPs_basedir=csp_basedir, vdisp_wt=False,
+                        pc_cov_method=pc_cov_method, mpl_v=mpl_v,
+                        makefigs=argsparsed.figs, sky=skymodel)
+                    pca_res_f.write_results('confident')
+                '''
 
-            except Exception:
-                exc_info = sys.exc_info()
-                print('ERROR: {}'.format(plateifu))
-                print_exception(*exc_info)
-                continue
-            finally:
-                bar.update()
+        except Exception:
+            exc_info = sys.exc_info()
+            print('ERROR: {}'.format(plateifu))
+            print_exception(*exc_info)
+            continue
+        else:
+            print('{} completed successfully'.format(plateifu))
+        finally:
+            pass
     #'''
