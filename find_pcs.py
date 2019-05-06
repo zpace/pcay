@@ -2700,7 +2700,7 @@ if __name__ == '__main__':
         howmany = argsparsed.nrun
         plateifus = np.random.permutation(list(drpall['plateifu']))  
 
-    while i < howmany
+    while i < howmany:
         plateifu = plateifus[i]
         row = drpall.loc[plateifu]
 
