@@ -2698,12 +2698,20 @@ if __name__ == '__main__':
         plateifus = argsparsed.plateifus
     elif argsparsed.nrun:
         howmany = argsparsed.nrun
-        plateifus = np.random.permutation(list(drpall['plateifu']))
+        plateifus = np.random.permutation(list(drpall['plateifu']))  
 
-    valid_plateifus = plateifus[:howmany]    
-
-    for plateifu in valid_plateifus:
+    while i < howmany
+        plateifu = plateifus[i]
         row = drpall.loc[plateifu]
+
+        if pca_status.log_file_exists(plateifu):
+            if ~argsparsed.ensurenew:
+                continue
+            else:
+                i += 1
+        else:
+            i += 1
+
 
         try:
             with catch_warnings():
