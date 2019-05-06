@@ -7,8 +7,7 @@ def log_file_exists(plateifu):
         os.environ['STELLARMASS_PCA_RESULTSDIR'], 'results',
         plateifu)
 
-    if os.path.exists(os.path.join(status_file_dir, '{}.log'.format(plateifu))):
-        return True
+    return os.path.exists(os.path.join(status_file_dir, '{}.log'.format(plateifu)))
 
 def write_log_file(plateifu, msg):
     '''write a log file
