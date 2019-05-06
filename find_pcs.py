@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
 
+# local
+from importer import *
+import csp
+import cov_obs
+import figures_tools
+from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
+                         Spec2Phot, absmag_sun_band as Msun)
+import utils as ut
+from fakedata import FakeData, SkyContamination
+from linalg import *
+from param_estimate import *
+from rectify import MaNGA_deredshift
+import pca_status
+
+# personal
+import manga_tools as m
+
 import numpy as np
 
 # plotting
@@ -34,23 +51,6 @@ from scipy.stats import entropy
 
 # statsmodels
 from statsmodels.nonparametric.kde import KDEUnivariate
-
-# local
-from importer import *
-import csp
-import cov_obs
-import figures_tools
-from spectrophot import (lumspec2lsun, color, C_ML_conv_t as CML,
-                         Spec2Phot, absmag_sun_band as Msun)
-import utils as ut
-from fakedata import FakeData, SkyContamination
-from linalg import *
-from param_estimate import *
-from rectify import MaNGA_deredshift
-import pca_status
-
-# personal
-import manga_tools as m
 
 eps = np.finfo(float).eps
 
@@ -2700,6 +2700,7 @@ if __name__ == '__main__':
         howmany = argsparsed.nrun
         plateifus = np.random.permutation(list(drpall['plateifu']))  
 
+    i = 0
     while i < howmany:
         plateifu = plateifus[i]
         row = drpall.loc[plateifu]
