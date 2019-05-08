@@ -1,6 +1,7 @@
 from importer import *
 
 import os
+import numpy as np
 
 def log_file_exists(plateifu):
     status_file_dir = os.path.join(
