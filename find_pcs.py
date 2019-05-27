@@ -2307,7 +2307,7 @@ class PCA_Result(object):
 
         return P50, l_unc, u_unc, scale
 
-    def write_results(self, qtys='important', pc_info=True):
+    def write_results(self, qtys='important', pc_info=True, model_like=False):
 
         # initialize FITS hdulist
         # PrimaryHDU is identical to DRP 0th HDU
@@ -2657,6 +2657,9 @@ if __name__ == '__main__':
                           help='plateifu designations of galaxies to run')
     rungroup.add_argument('--nrun', '-n', help='number of galaxies to run', type=int)
 
+    parser.add_argument('--paramsreturned', type=list, required=False,
+                        default=['MLi'])
+
     argsparsed = parser.parse_args()
 
     print(argsparsed)
@@ -2727,7 +2730,7 @@ if __name__ == '__main__':
                         CSPs_basedir=csp_basedir, vdisp_wt=False,
                         pc_cov_method=pc_cov_method, mpl_v=mpl_v,
                         makefigs=argsparsed.figs)
-                    pca_res.write_results(['MLi'])
+                    pca_res.write_results(argsparsed.paramsreturned)
 
                 '''
                 if argsparsed.mock:
