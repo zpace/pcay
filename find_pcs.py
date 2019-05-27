@@ -2735,7 +2735,7 @@ if __name__ == '__main__':
                               'tau_V', 'mu', 'tau_V mu',  'tau_V (1 - mu)',
                               'Dn4000', 'Hdelta_A', 'Mg_b', 'Ca_HK',
                               'F_1G', 'F_200M', 'F_100M',
-                              'logQHpersolmass', 'uv_slope'
+                              'logQHpersolmass', 'uv_slope',
                               'tf', 'd1', 'tt'],
                         title='zpres')
 
