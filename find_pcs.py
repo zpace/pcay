@@ -2307,7 +2307,7 @@ class PCA_Result(object):
 
         return P50, l_unc, u_unc, scale
 
-    def write_results(self, qtys='important', pc_info=True, model_like=False):
+    def write_results(self, qtys='important', pc_info=True, title='res'):
 
         # initialize FITS hdulist
         # PrimaryHDU is identical to DRP 0th HDU
@@ -2394,7 +2394,7 @@ class PCA_Result(object):
         kld_hdu.header['EXTNAME'] = 'KLD'
         hdulist.append(kld_hdu)
 
-        fname = os.path.join(self.figdir, '{}_res.fits'.format(self.objname))
+        fname = os.path.join(self.figdir, '{}_{}.fits'.format(self.objname, title))
 
         hdulist.writeto(fname, overwrite=True)
 
@@ -2657,9 +2657,6 @@ if __name__ == '__main__':
                           help='plateifu designations of galaxies to run')
     rungroup.add_argument('--nrun', '-n', help='number of galaxies to run', type=int)
 
-    parser.add_argument('--paramsreturned', type=list, required=False,
-                        default=['MLi'])
-
     argsparsed = parser.parse_args()
 
     print(argsparsed)
@@ -2730,7 +2727,18 @@ if __name__ == '__main__':
                         CSPs_basedir=csp_basedir, vdisp_wt=False,
                         pc_cov_method=pc_cov_method, mpl_v=mpl_v,
                         makefigs=argsparsed.figs)
-                    pca_res.write_results(argsparsed.paramsreturned)
+                    # write results for general consumption
+                    pca_res.write_results(['MLi'])
+                    # write results for me ("Kyle files")
+                    pca_res.write_results(
+                        qtys=['MLi', 'MWA', 'sigma', 'logzsol', 
+                              'tau_V', 'mu', 'tau_V mu',  'tau_V (1 - mu)',
+                              'Dn4000', 'Hdelta_A', 'Mg_b', 'Ca_HK',
+                              'F_1G', 'F_200M', 'F_100M',
+                              'logQHpersolmass', 'uv_slope'
+                              'tf', 'd1', 'tt'],
+                        title='zpres')
+
 
                 '''
                 if argsparsed.mock:
