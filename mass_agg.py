@@ -31,7 +31,7 @@ dapall = m.load_dapall(mpl_v)
 dapall = dapall[dapall['DAPDONE'] * (dapall['DAPTYPE'] == daptype)]
 dapall.add_index('PLATEIFU')
 
-pca_system = read_results.PCASystem.fromfile(os.path.join(basedir, 'pc_vecs.fits'))
+pca_system = read_results.PCASystem.fromfile(os.path.join(csp_basedir, 'pc_vecs.fits'))
 
 jhumpa = t.Table.read('/usr/data/minhas/zpace/stellarmass_pca/jhu_mpa_{}.fits'.format(
     mpl_v.replace('-', '').lower()))
@@ -185,7 +185,7 @@ def compare_outerml_ring_cmlr(tab, mlb='i', cb1='g', cb2='r'):
                        size='x-small')
     main_ax.set_ylim(np.percentile(ml_cmlr_ring[valid], [1., 99.]))
     fig.suptitle(r'$\Upsilon^*_{\rm CMLR}$ vs $\Upsilon^*_{\rm ring}$', size='small')
-    fig.savefig(os.path.join(basedir, 'lib_diags/', 'outer_ml.png'))
+    fig.savefig(os.path.join(csp_basedir, 'lib_diags/', 'outer_ml.png'))
 
 def make_missing_mass_fig(tab, mltype='ring', mlb='i', cb1='g', cb2='r'):
     mlb_ix = totalmass.StellarMass.bands_ixs[mlb]
@@ -222,7 +222,7 @@ def make_missing_mass_fig(tab, mltype='ring', mlb='i', cb1='g', cb2='r'):
     main_ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
     main_ax.set_ylabel('Stellar-mass fraction outside IFU', size='x-small')
     fig.suptitle('Inferred mass fraction outside IFU', size='small')
-    fig.savefig(os.path.join(basedir, 'lib_diags/', 'mass_outside_ifu_{}.png'.format(mltype)))
+    fig.savefig(os.path.join(csp_basedir, 'lib_diags/', 'mass_outside_ifu_{}.png'.format(mltype)))
 
 def make_missing_flux_fig(tab, mlb='i', cb1='g', cb2='r'):
     mlb_ix = totalmass.StellarMass.bands_ixs[mlb]
@@ -258,7 +258,7 @@ def make_missing_flux_fig(tab, mlb='i', cb1='g', cb2='r'):
     main_ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
     main_ax.set_ylabel('Flux fraction outside IFU', size='x-small')
     fig.suptitle('Flux fraction outside IFU', size='small')
-    fig.savefig(os.path.join(basedir, 'lib_diags/', 'flux_outside_ifu.png'))
+    fig.savefig(os.path.join(csp_basedir, 'lib_diags/', 'flux_outside_ifu.png'))
 
 def compare_missing_mass(tab, mlb='i', cb1='g', cb2='r'):
     mlb_ix = totalmass.StellarMass.bands_ixs[mlb]
@@ -300,7 +300,7 @@ def compare_missing_mass(tab, mlb='i', cb1='g', cb2='r'):
     main_ax.set_ylabel(r'$\log \frac{M^{\rm tot}_{\rm CMLR}}{M^{\rm tot}_{\rm ring}}$',
                   size='x-small')
     fig.suptitle(r'Impact of aperture-correction on $M^{\rm tot}$', size='small')
-    fig.savefig(os.path.join(basedir, 'lib_diags/', 'mtot_compare_cmlr_ring.png'))
+    fig.savefig(os.path.join(csp_basedir, 'lib_diags/', 'mtot_compare_cmlr_ring.png'))
 
 def smooth(x, y, xgrid, bw):
     '''
@@ -374,7 +374,7 @@ def compare_mtot_pca_nsa(tab, jhu_mpa, mltype='ring', mlb='i', cb1='g', cb2='r')
     fig.tight_layout()
     fig.subplots_adjust(top=.95, left=.21, right=.97)
 
-    fig.savefig(os.path.join(basedir, 'lib_diags/', 'dMasses.png'), dpi=fig.dpi)
+    fig.savefig(os.path.join(csp_basedir, 'lib_diags/', 'dMasses.png'), dpi=fig.dpi)
 
 def make_panel_hcb_hist(figsize=(3, 3), dpi=300, **kwargs):
     gs_dict = dict(nrows=2, ncols=2, bottom=.125, top=.85, left=.2, right=.95,
@@ -441,7 +441,7 @@ def make_stdtauV_vs_dMass_fig(tab, mlb='i'):
     fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
 
     fig.savefig(
-        os.path.join(basedir, 'lib_diags/', 'stdtauV_dMglobloc_meantauV.png'),
+        os.path.join(csp_basedir, 'lib_diags/', 'stdtauV_dMglobloc_meantauV.png'),
         dpi=fig.dpi)
 
 def make_stdtauV_vs_dMass_ba_fig(tab, mlb='i'):
@@ -482,7 +482,7 @@ def make_stdtauV_vs_dMass_ba_fig(tab, mlb='i'):
     fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
 
     fig.savefig(
-        os.path.join(basedir, 'lib_diags/', 'stdtauV_dMglobloc_ba.png'),
+        os.path.join(csp_basedir, 'lib_diags/', 'stdtauV_dMglobloc_ba.png'),
         dpi=fig.dpi)
 
 def make_meanstdtauV_vs_dMass_fig(tab, mlb='i'):
@@ -520,7 +520,7 @@ def make_meanstdtauV_vs_dMass_fig(tab, mlb='i'):
     fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
 
     fig.savefig(
-        os.path.join(basedir, 'lib_diags/', 'mean+stdtauV_dMglobloc.png'),
+        os.path.join(csp_basedir, 'lib_diags/', 'mean+stdtauV_dMglobloc.png'),
         dpi=fig.dpi)
 
 def make_stdtauV_vs_dMass_ssfrsd_fig(tab, sfrsd_tab, mltype='ring', mlb='i'):
@@ -571,7 +571,7 @@ def make_stdtauV_vs_dMass_ssfrsd_fig(tab, sfrsd_tab, mltype='ring', mlb='i'):
     fig.suptitle('Mass excess from luminosity-weighting', size='x-small')
 
     fig.savefig(
-        os.path.join(basedir, 'lib_diags/', 'stdtauV_dMglobloc_ssfrsd.png'),
+        os.path.join(csp_basedir, 'lib_diags/', 'stdtauV_dMglobloc_ssfrsd.png'),
         dpi=fig.dpi)
 
 def make_stdtauV_vs_ssfrsd_dMass_fig(tab, sfrsd_tab, mltype='ring', mlb='i'):
@@ -613,7 +613,7 @@ def make_stdtauV_vs_ssfrsd_dMass_fig(tab, sfrsd_tab, mltype='ring', mlb='i'):
     fig.subplots_adjust(left=.2, bottom=.125, right=.9, top=.925)
 
     fig.savefig(
-        os.path.join(basedir, 'lib_diags/', 'stdtauV_ssfrsd_dMglobloc.png'),
+        os.path.join(csp_basedir, 'lib_diags/', 'stdtauV_ssfrsd_dMglobloc.png'),
         dpi=fig.dpi)
 
 def make_meantauV_vs_ba_fig(tab):
@@ -651,7 +651,7 @@ def make_meantauV_vs_ba_fig(tab):
     fig.subplots_adjust(left=.175, bottom=.125, right=.95, top=.925)
 
     fig.savefig(
-        os.path.join(basedir, 'lib_diags/', 'meantauV_ba.png'),
+        os.path.join(csp_basedir, 'lib_diags/', 'meantauV_ba.png'),
         dpi=fig.dpi)
 
 def fit_dlogM_mw(tab, sfrsd_tab, mltype='ring', mlb='i'):
@@ -688,7 +688,7 @@ if __name__ == '__main__':
     mlband = 'i'
 
     mass_table = update_mass_table(drpall, mass_table_old=None, limit=None, mlband=mlband)
-    mass_table.write(os.path.join(manga_results_basedir, 'mass_table.fits'), format='fits')
+    mass_table.write(os.path.join(csp_basedir, 'mass_table.fits'), format='fits')
     drpall.keep_columns(['plateifu', 'mangaid', 'objra', 'objdec', 'ebvgal', 
                          'mngtarg1', 'mngtarg2', 'mngtarg3', 'nsa_iauname', 'ifudesignsize',
                          'nsa_z', 'nsa_zdist', 'nsa_nsaid', 'nsa_elpetro_ba', 'nsa_elpetro_mass'])
