@@ -688,6 +688,7 @@ if __name__ == '__main__':
     mlband = 'i'
 
     mass_table = update_mass_table(drpall, mass_table_old=None, limit=None, mlband=mlband)
+    mass_table.write(os.path.join(manga_results_basedir, 'mass_table.fits'), format='fits')
     drpall.keep_columns(['plateifu', 'mangaid', 'objra', 'objdec', 'ebvgal', 
                          'mngtarg1', 'mngtarg2', 'mngtarg3', 'nsa_iauname', 'ifudesignsize',
                          'nsa_z', 'nsa_zdist', 'nsa_nsaid', 'nsa_elpetro_ba', 'nsa_elpetro_mass'])
