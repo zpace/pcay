@@ -83,7 +83,7 @@ def update_mass_table(drpall, mass_table_old=None, limit=None, mlband='i'):
     '''
     
     # what galaxies are available to aggregate?
-    res_fnames = glob(os.path.join(basedir, 'results/*-*/*-*_res.fits'))[:limit]
+    res_fnames = glob(os.path.join(csp_basedir, 'results/*-*/*-*_res.fits'))[:limit]
 
     # filter out whose that have not been done
     if mass_table_old is None:
