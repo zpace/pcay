@@ -2336,8 +2336,8 @@ class PCA_Result(object):
                 quit(0)
             except:
                 P50, l_unc, u_unc, scale = \
-                    np.full(self.map_shape, 0.), np.full(self.map_shape, -np.inf), 
-                    np.full(self.map_shape, np.inf), 'None'
+                    (np.full(self.map_shape, 0.), np.full(self.map_shape, -np.inf), \
+                     np.full(self.map_shape, np.inf), 'None')
                 goodparam = False
             else:
                 goodparam = True
