@@ -2330,8 +2330,10 @@ class PCA_Result(object):
                 # if ground-truth is available, list it
                 if self.truth is not None:
                     qty_hdu.header['TRUTH'] = self.truth[qty]
-            except KeyboardInterrupt, SystemExit:
-                raise
+            except (KeyboardInterrupt, SystemExit) as e:
+                print(e)
+                print(e.args)
+                quit(0)
             except:
                 P50, l_unc, u_unc, scale = \
                     np.full(self.map_shape, 0.), np.full(self.map_shape, -np.inf), 
