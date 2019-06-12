@@ -2325,6 +2325,7 @@ class PCA_Result(object):
         for qty in qtys:
             try:
                 # retrieve results
+                print('starting {}'.format(qty))
                 P50, l_unc, u_unc, scale = self.param_cred_intvl(qty=qty)
 
                 # if ground-truth is available, list it
@@ -2740,7 +2741,7 @@ if __name__ == '__main__':
                     # write results for me ("Kyle files")
                     pca_res.write_results(
                         qtys=['MLi', 'MWA', 'sigma', 'logzsol', 
-                              'tau_V', 'mu', 'tau_V mu',  'tau_V (1 - mu)',
+                              'tau_V mu',  'tau_V (1 - mu)',
                               'Dn4000', 'Hdelta_A', 'Mg_b', 'Ca_HK',
                               'F_1G', 'F_200M', 'F_100M',
                               'logQHpersolmass', 'uv_slope',
