@@ -435,7 +435,7 @@ class StellarPop_PCA(object):
         pc_hdu.header['EXTNAME'] = 'EVECS'
         hdulist.append(pc_hdu)
 
-        hdulist.writeto(os.path.join(self.basedir, 'pc_vecs.fits'), overwrite=False)
+        hdulist.writeto(os.path.join(self.basedir, 'pc_vecs.fits'), overwrite=True)
 
     def reconstruct_normed(self, A):
         '''
