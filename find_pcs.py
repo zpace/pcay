@@ -435,7 +435,7 @@ class StellarPop_PCA(object):
         pc_hdu.header['EXTNAME'] = 'EVECS'
         hdulist.append(pc_hdu)
 
-        hdulist.writeto(os.path.join(self.basedir, 'pc_vecs.fits'), overwrite=True)
+        hdulist.writeto(os.path.join(self.basedir, 'pc_vecs.fits'), overwrite=False)
 
     def reconstruct_normed(self, A):
         '''
@@ -2326,22 +2326,28 @@ class PCA_Result(object):
             try:
                 # retrieve results
                 P50, l_unc, u_unc, scale = self.param_cred_intvl(qty=qty)
+
+                # if ground-truth is available, list it
+                if self.truth is not None:
+                    qty_hdu.header['TRUTH'] = self.truth[qty]
+            except KeyboardInterrupt, SystemExit:
+                raise
+            except:
+                P50, l_unc, u_unc, scale = \
+                    np.full(self.map_shape, 0.), np.full(self.map_shape, -np.inf), 
+                    np.full(self.map_shape, np.inf), 'None'
+                goodparam = False
+            else:
+                goodparam = True
+            finally:
                 qty_hdu = fits.ImageHDU(np.stack([P50, l_unc, u_unc]))
+                qty_hdu.header['GOODPARAM'] = goodparam
                 qty_hdu.header['LOGSCALE'] = (scale == 'log')
                 qty_hdu.header['CHANNEL0'] = 'median'
                 qty_hdu.header['CHANNEL1'] = 'lower uncertainty'
                 qty_hdu.header['CHANNEL2'] = 'upper uncertainty'
                 qty_hdu.header['QTYNAME'] = qty
                 qty_hdu.header['EXTNAME'] = qty
-
-                # if ground-truth is available, list it
-                if self.truth is not None:
-                    qty_hdu.header['TRUTH'] = self.truth[qty]
-            except ValueError:
-                raise ValueError(
-                    'Something wrong with output {} (true value: {})'.format(
-                        qty, self.truth[qty]))
-            else:
                 hdulist.append(qty_hdu)
 
         # luminosity HDU

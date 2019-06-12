@@ -18,9 +18,12 @@ from astropy import wcs
 from astropy import coordinates as coord
 from astropy.wcs.utils import pixel_to_skycoord
 from astropy.utils.decorators import lazyproperty
+from astropy.utils.console import ProgressBar
 
 import os
 import sys
+from glob import glob
+from functools import partial
 
 # sklearn
 from sklearn.neighbors import KNeighborsRegressor
@@ -45,6 +48,8 @@ band_ix = dict(zip('FNugriz', range(len('FNugriz'))))
 
 sdss_bands = 'ugriz'
 nsa_bands = 'FNugriz'
+
+pca_system = read_results.PCASystem.fromfile(os.path.join(csp_basedir, 'pc_vecs.fits'))
 
 class Sigmoid(object):
     p0 = [70., .1, -5., 20.]
@@ -247,11 +252,6 @@ class StellarMass(object):
     def to_table(self):
         '''
         make table of stellar-mass results
-
-        [plateifu, [flux_ifusummed_band1, flux_ifusummed_band2], ...,
-         [flux_nsa_band1, flux_nsa_band2], ...,
-         [dflux_(nsa-ifu)_band1, dflux_(nsa-ifu)_band2], ...,
-         mass_in_ifu, logml_apercorr_ring, logml_apercorr_cmlr, logml_fluxwtd]
         '''
 
         tab = t.QTable()
@@ -259,10 +259,24 @@ class StellarMass(object):
 
         # tabulate mass in IFU
         tab['mass_in_ifu'] = self.mstar_in_ifu[None, ...][:, self.bands_ixs[self.mlband]]
-        tab['nsa_absmag'] = self.nsa_absmags_cosmocorr[None, ...]
+        nsa_absmag = self.nsa_absmags_cosmocorr
         #tab['nsa_absmag'].meta['bands'] = self.bands
-        tab['ifu_absmag'] = (self.ifu_flux_bands.to(u.ABmag) - self.distmod)[None, ...]
+        ifu_absmag = (self.ifu_flux_bands.to(u.ABmag) - self.distmod)
         #tab['ifu_absmag'].meta['bands'] = self.bands
+        missing_flux =  (
+            (nsa_absmag + self.distmod).to(m.Mgy) - 
+            (ifu_absmag + self.distmod).to(m.Mgy)).clip(a_min=0. * m.Mgy, a_max=np.inf * m.Mgy)
+
+        for i, b in enumerate(self.bands):
+            outer_flux = missing_flux[i]
+            if outer_flux <= 0. * m.Mgy:
+                tab['outer_absmag_{}'.format(b)] = np.inf * u.ABmag
+                tab['outer_lum_{}'.format(b)] = -np.inf * u.dex(m.bandpass_sol_l_unit)
+            else:
+                tab['outer_absmag_{}'.format(b)] = outer_flux.to(u.ABmag) - self.distmod
+                tab['outer_lum_{}'.format(b)] = tab['outer_absmag_{}'.format(b)].to(
+                    u.dex(m.bandpass_sol_l_unit),
+                    bandpass_flux_to_solarunits(StellarMass.absmag_sun[i]))
 
         tab['outer_ml_ring'] = self.ml_ring()
         #tab['outer_ml_ring'].meta['band'] = self.mlband
@@ -374,3 +388,104 @@ def nsa_absmag(drpall_row, band, kind='elpetro'):
     # kind is petro, elpetro, or sersic
     flux = drpall_row['nsa_{}_absmag'.format(kind)][band_ix[band]]
     return flux
+
+def mass_agg_onegal(res_fname, mlband):
+    res = read_results.PCAOutput.from_fname(res_fname)
+    plateifu = res[0].header['PLATEIFU']
+    plate, ifu = plateifu.split('-')
+    drp = res.get_drp_logcube(mpl_v)
+    dap = res.get_dap_maps(mpl_v, daptype)
+
+    stellarmass = StellarMass(
+        res, pca_system, drp, dap, drpall.loc[plateifu],
+        WMAP9, mlband=mlband)
+
+    with catch_warnings():
+        simplefilter('ignore')
+        mass_table_new_entry = stellarmass.to_table()
+
+    drp.close()
+    dap.close()
+    res.close()
+
+    return mass_table_new_entry
+
+
+def update_mass_table(res_fnames, mlband='i'):
+    '''
+    '''
+
+    # filter out whose that have not been done
+    if mass_table_old is None:
+        already_aggregated = [False for _ in range(len(res_fnames))]
+    else:
+        already_aggregated = [os.path.split(fn)[1].split('_')[0] in mass_table_old['plateifu']
+                              for fn in res_fnames]
+    res_fnames = [fn for done, fn in zip(already_aggregated, res_fnames)]
+
+    # aggregate individual galaxies, and stack them 
+    mass_tables_new = list(ProgressBar.map(
+        partial(mass_agg_onegal, mlband=mlband), res_fnames, multiprocess=False, step=5))
+    mass_table_new = t.vstack(mass_tables_new)
+
+    # if there was an old mass table, stack it with the new one
+    if mass_table_old is None:
+        mass_table = mass_table_new
+    else:
+        mass_table = t.vstack([mass_table_old, mass_table_new], join_type='inner')
+
+    cmlr = cmlr_kwargs
+    
+    cb1, cb2 = cmlr['cb1'], cmlr['cb2']
+    color_missing_flux = mass_table['outer_absmag_{}'.format(cb1)] - \
+                         mass_table['outer_absmag_{}'.format(cb2)]
+
+    mass_table['outer_ml_cmlr'] = np.polyval(
+        cmlr['cmlr_poly'], color_missing_flux.value) * u.dex(m.m_to_l_unit)
+
+    mass_table['outer_mass_ring'] = \
+        (mass_table['outer_lum_{}'.format(mlband)] + \
+         mass_table['outer_ml_ring']).to(u.Msun)
+    mass_table['outer_mass_cmlr'] = \
+        (mass_table['outer_lum_{}'.format(mlband)] + \
+         mass_table['outer_ml_cmlr']).to(u.Msun)
+
+    return mass_table['plateifu', 'mass_in_ifu', 'outer_mass_cmlr', 'outer_mass_ring']
+
+def chunks(l, nchunks):
+    """Yield n number of striped chunks from l."""
+    for i in range(0, nchunks):
+        yield l[i::nchunks]
+
+if __name__ == '__main__':
+    drpall = m.load_drpall(mpl_v, 'plateifu')
+    mlband = 'i'
+
+    mass_table_fname = os.path.join(csp_basedir, 'mass_table.fits')
+
+    # what galaxies are available to aggregate?
+    res_fnames = glob(os.path.join(csp_basedir, 'results/*-*/*-*_res.fits'))
+
+    mass_table = None
+    for i, rfn in enumerate(res_fnames): 
+        if mass_table is None:
+            mass_table = mass_agg_onegal(rfn, mlband)
+        else:
+            mass_table.add_row(mass_agg_onegal(rfn, mlband)[0])
+
+        print('{:^6} / {:^6} completed'.format(i + 1, len(res_fnames)), end='\r')
+
+    cmlr = cmlr_kwargs
+    
+    cb1, cb2 = cmlr['cb1'], cmlr['cb2']
+    color_missing_flux = mass_table['outer_absmag_{}'.format(cb1)] - \
+                         mass_table['outer_absmag_{}'.format(cb2)]
+    mass_table['outer_ml_cmlr'] = np.polyval(
+        cmlr['cmlr_poly'], color_missing_flux.value) * u.dex(m.m_to_l_unit)
+    mass_table['outer_mass_cmlr'] = (
+        mass_table['outer_lum_{}'.format(mlband)] + mass_table['outer_ml_cmlr']).to(u.Msun)
+    mass_table['outer_mass_ring'] = (
+        mass_table['outer_lum_{}'.format(mlband)] + mass_table['outer_ml_ring']).to(u.Msun)
+
+    mass_table['plateifu', 'mass_in_ifu', 'outer_mass_cmlr', 'outer_mass_ring'].write(
+            mass_table_fname, format='fits', overwrite=True)

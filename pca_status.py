@@ -30,3 +30,11 @@ def summary_remaining(drpall, group_col='ifudesignsize'):
     print('remaining galaxies by {}'.format(group_col)) 
     for k, g in zip(ifusize_grps.groups.keys, ifusize_grps.groups): 
         print(k[group_col], ':', len(g))
+
+if __name__ == '__main__':
+    import manga_tools as m
+
+    drpall = m.load_drpall(mpl_v)
+    drpall = drpall[(drpall['ifudesignsize'] > 0) * (drpall['nsa_z'] != -9999.)]
+    print(drpall)
+    summary_remaining(drpall)

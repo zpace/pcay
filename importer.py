@@ -1,4 +1,5 @@
 import os, sys, matplotlib
+import faulthandler; faulthandler.enable()
 
 mpl_v = 'MPL-8'
 daptype = 'SPX-MILESHC-MILESHC'

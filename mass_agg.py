@@ -83,13 +83,13 @@ def update_mass_table(drpall, mass_table_old=None, limit=None, mlband='i'):
     '''
     
     # what galaxies are available to aggregate?
-    res_fnames = glob(os.path.join(csp_basedir, 'results/*-*/*-*_res.fits'))[:limit]
+    res_fnames = glob(os.path.join(csp_basedir, 'results/*-*/*-*_zpres.fits'))[:limit]
 
     # filter out whose that have not been done
     if mass_table_old is None:
         already_aggregated = [False for _ in range(len(res_fnames))]
     else:
-        already_aggregated = [os.path.split(fn)[1].split('_')[0] in old_mass_table['plateifu']
+        already_aggregated = [os.path.split(fn)[1].split('_')[0] in mass_table_old['plateifu']
                               for fn in res_fnames]
     res_fnames = [fn for done, fn in zip(already_aggregated, res_fnames)]
 
@@ -687,8 +687,13 @@ def fit_dlogM_mw(tab, sfrsd_tab, mltype='ring', mlb='i'):
 if __name__ == '__main__':
     mlband = 'i'
 
-    mass_table = update_mass_table(drpall, mass_table_old=None, limit=None, mlband=mlband)
-    mass_table.write(os.path.join(csp_basedir, 'mass_table.fits'), format='fits')
+    mass_table_fname = os.path.join(csp_basedir, 'mass_table.tab')
+
+    mass_table = update_mass_table(
+        drpall, mass_table_old=None, limit=None, mlband=mlband)
+    mass_table['plateifu', 'mass_in_ifu', 'outer_mass_ring', 'outer_mass_cmlr'].write(
+        os.path.join(csp_basedir, 'mpl8_masses.fits'), format='fits', overwrite=True)
+
     drpall.keep_columns(['plateifu', 'mangaid', 'objra', 'objdec', 'ebvgal', 
                          'mngtarg1', 'mngtarg2', 'mngtarg3', 'nsa_iauname', 'ifudesignsize',
                          'nsa_z', 'nsa_zdist', 'nsa_nsaid', 'nsa_elpetro_ba', 'nsa_elpetro_mass'])
