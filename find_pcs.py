@@ -2738,20 +2738,18 @@ if __name__ == '__main__':
                     # write results for general consumption
                     pca_res.write_results(['MLi'])
                     # write results for me ("Kyle files")
-                    for qty in ['MLi', 'MWA', 'sigma', 'logzsol', 
-                               'tau_V mu',  'tau_V (1 - mu)',
-                               'F_1G', 'F_200M',
-                               'uv_slope']:
-                        pca_res.write_results(qtys=[qty], title=qty.replace(' ', ''))
+                    for i, qty in enumerate(['MLi'] * 10):
+                        pca_res.write_results(qtys=[qty], title='_'.join(
+                            qty.replace(' ', ''), str(i)))
 
-                    pca_res.write_results(
-                        qtys=['MLi', 'MWA', 'sigma', 'logzsol', 
-                              'tau_V mu',  'tau_V (1 - mu)',
-                              'Dn4000', 'Hdelta_A', 'Mg_b', 'Ca_HK',
-                              'F_1G', 'F_200M', 'F_100M',
-                              'logQHpersolmass', 'uv_slope',
-                              'tf', 'd1', 'tt'],
-                        title='zpres')
+                    #pca_res.write_results(
+                    #    qtys=['MLi', 'MWA', 'sigma', 'logzsol', 
+                    #          'tau_V mu',  'tau_V (1 - mu)',
+                    #          'Dn4000', 'Hdelta_A', 'Mg_b', 'Ca_HK',
+                    #          'F_1G', 'F_200M', 'F_100M',
+                    #          'logQHpersolmass', 'uv_slope',
+                    #          'tf', 'd1', 'tt'],
+                    #    title='zpres')
 
 
                 '''
