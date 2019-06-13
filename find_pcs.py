@@ -2741,8 +2741,7 @@ if __name__ == '__main__':
                     for qty in ['MLi', 'MWA', 'sigma', 'logzsol', 
                                'tau_V mu',  'tau_V (1 - mu)',
                                'F_1G', 'F_200M',
-                               'logQHpersolmass', 'uv_slope',
-                               'tf', 'd1']:
+                               'uv_slope']:
                         pca_res.write_results(qtys=[qty], title=qty.replace(' ', ''))
 
                     pca_res.write_results(
