@@ -2740,7 +2740,7 @@ if __name__ == '__main__':
                     # write results for me ("Kyle files")
                     for i, qty in enumerate(['MLi'] * 10):
                         pca_res.write_results(qtys=[qty], title='_'.join(
-                            qty.replace(' ', ''), str(i)))
+                            (qty.replace(' ', ''), str(i))))
 
                     #pca_res.write_results(
                     #    qtys=['MLi', 'MWA', 'sigma', 'logzsol', 
