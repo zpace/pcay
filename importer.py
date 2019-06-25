@@ -13,4 +13,5 @@ cosmo = WMAP9
 
 matplotlib.rcParams['font.family'] = 'serif'
 matplotlib.rcParams['text.usetex'] = True
-matplotlib.use('agg')
+if 'DISPLAY' not in os.environ:
+    matplotlib.use('agg')

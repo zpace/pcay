@@ -389,7 +389,7 @@ def nsa_absmag(drpall_row, band, kind='elpetro'):
     flux = drpall_row['nsa_{}_absmag'.format(kind)][band_ix[band]]
     return flux
 
-def mass_agg_onegal(res_fname, mlband):
+def mass_agg_onegal(res_fname, mlband, drpall):
     res = read_results.PCAOutput.from_fname(res_fname)
     plateifu = res[0].header['PLATEIFU']
     plate, ifu = plateifu.split('-')
@@ -469,9 +469,9 @@ if __name__ == '__main__':
     mass_table = None
     for i, rfn in enumerate(res_fnames): 
         if mass_table is None:
-            mass_table = mass_agg_onegal(rfn, mlband)
+            mass_table = mass_agg_onegal(rfn, mlband, drpall)
         else:
-            mass_table.add_row(mass_agg_onegal(rfn, mlband)[0])
+            mass_table.add_row(mass_agg_onegal(rfn, mlband, drpall)[0])
 
         print('{:^6} / {:^6} completed'.format(i + 1, len(res_fnames)), end='\r')
 

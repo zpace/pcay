@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 
 from matplotlib import colors as mcolors
 from matplotlib import gridspec
+from matplotlib.legend_handler import HandlerTuple
 
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from statsmodels.regression.linear_model import OLS
@@ -44,6 +45,47 @@ sfrsd_tab['plateifu'] = sfrsd_tab['names']
 del sfrsd_tab['names']
 sfrsd_tab.add_index('plateifu')
 
+def aggregate_one(res_fname, mlband):
+    with read_results.PCAOutput.from_fname(res_fname) as res:
+        with res.get_drp_logcube(mpl_v) as drp, res.get_dap_maps(mpl_v, daptype) as dap:
+        
+            plateifu = res[0].header['PLATEIFU']
+            plate, ifu = plateifu.split('-')
+
+            stellarmass = totalmass.StellarMass(
+                res, pca_system, drp, dap, drpall.loc[plateifu],
+                cosmo, mlband=mlband)
+
+            mstar_map = stellarmass.mstar[stellarmass.bands_ixs[mlband], ...]
+            tauVmu_med = res.param_dist_med('tau_V mu')
+            tauV1mmu_med = res.param_dist_med('tau_V (1 - mu)')
+            tauV_med = tauVmu_med + tauV1mmu_med
+
+            mean_atten_mwtd = np.average(
+                tauV_med, weights=(mstar_map * ~res.mask))
+            std_atten_mwtd = np.sqrt(np.average(
+                (tauV_med - mean_atten_mwtd)**2., weights=(mstar_map * ~res.mask)))
+
+            mass_in_ifu = stellarmass.mstar_in_ifu[stellarmass.bands_ixs[stellarmass.mlband]]
+            sollum_in_ifu = stellarmass.sollum_bands.to(m.bandpass_sol_l_unit).sum(axis=(1, 2))
+            sollum_nsa = stellarmass.nsa_absmags_cosmocorr.to(
+                m.bandpass_sol_l_unit,
+                totalmass.bandpass_flux_to_solarunits(stellarmass.absmag_sun))
+            ml_fluxwt = stellarmass.logml_fnuwt
+
+    data = [plateifu, mean_atten_mwtd, std_atten_mwtd,
+            mass_in_ifu, sollum_in_ifu, sollum_nsa, ml_fluxwt]
+    names = ['plateifu', 'mean_atten_mwtd' ,'std_atten_mwtd',
+             'mass_in_ifu', 'sollum_in_ifu', 'sollum_nsa', 'ml_fluxwt']
+    qt = t.QTable()
+    for d, n in zip(data, names):
+        qt[n] = np.array(d)[None, ...]
+
+    table_dest = os.path.join(csp_basedir, 'masstables', '{}.ecsv'.format(plateifu))
+
+    qt.write(table_dest, overwrite=True)
+
+
 def mass_agg_onegal(res_fname, mlband):
     res = read_results.PCAOutput.from_fname(res_fname)
     plateifu = res[0].header['PLATEIFU']
@@ -56,17 +98,18 @@ def mass_agg_onegal(res_fname, mlband):
         WMAP9, mlband=mlband)
 
     with catch_warnings():
-        simplefilter('error')
+        simplefilter('ignore')
         mass_table_new_entry = stellarmass.to_table()
 
     mstar_map = stellarmass.mstar[stellarmass.bands_ixs[mlband], ...]
+    tauVmu_med = res.param_dist_med('tau_V mu')
+    tauV1mmu_med = res.param_dist_med('tau_V (1 - mu)')
+    tauV_med = tauVmu_med + tauV1mmu_med
 
     mean_atten_mwtd = np.average(
-        res.param_dist_med('tau_V'),
-        weights=(mstar_map * ~res.mask))
+        tauV_med, weights=(mstar_map * ~res.mask))
     std_atten_mwtd = np.sqrt(np.average(
-        (res.param_dist_med('tau_V') - mean_atten_mwtd)**2.,
-        weights=(mstar_map * ~res.mask)))
+        (tauV_med - mean_atten_mwtd)**2., weights=(mstar_map * ~res.mask)))
 
     mass_table_new_entry['mean_atten_mwtd'] = [mean_atten_mwtd]
     mass_table_new_entry['std_atten_mwtd'] = [std_atten_mwtd]
@@ -179,6 +222,25 @@ def compare_outerml_ring_cmlr(tab, mlb='i', cb1='g', cb2='r'):
                      histtype='step', orientation='horizontal', linewidth=0.75)
 
     main_ax.legend(loc='best', prop={'size': 'xx-small'})
+
+    # make point size legend
+    legend_lumfracs = np.array([.05, .1, .2, .3])
+    sc_sec = [None, ] * len(legend_lumfracs)
+    sc_pri = [None, ] * len(legend_lumfracs)
+
+    for i, frac in enumerate(legend_lumfracs):
+        sc_pri[i], = main_ax.scatter(
+            [], [], c='r', marker='o', s=8. * frac, 
+            edgecolor='None', label='{:.0f}%'.format(frac * 100.))
+        sc_sec[i], = main_ax.scatter(
+            [], [], c='b', marker='D', s=8. * frac,
+            edgecolor='None', label='{:.0f}%'.format(frac * 100.))
+
+    lumfrac_legend = main_ax.legend(
+        list(zip(sc_pri, sc_sec)), ['{:.0f}%'.format(frac * 100.) for f in legend_lumfracs],
+        handler_map={tuple: HandlerTuple(ndivide=None)},
+        loc='best', prop={'size': 'xx-small'})
+
     main_ax.tick_params(labelsize='xx-small')
     main_ax.set_xlabel(r'${}-{}$'.format(cb1, cb2), size='x-small')
     main_ax.set_ylabel(r'$\log{\frac{\Upsilon^*_{\rm CMLR}}{\Upsilon^*_{\rm ring}}}$',
@@ -687,12 +749,8 @@ def fit_dlogM_mw(tab, sfrsd_tab, mltype='ring', mlb='i'):
 if __name__ == '__main__':
     mlband = 'i'
 
-    mass_table_fname = os.path.join(csp_basedir, 'mass_table.tab')
-
     mass_table = update_mass_table(
-        drpall, mass_table_old=None, limit=None, mlband=mlband)
-    mass_table['plateifu', 'mass_in_ifu', 'outer_mass_ring', 'outer_mass_cmlr'].write(
-        os.path.join(csp_basedir, 'mpl8_masses.fits'), format='fits', overwrite=True)
+        drpall, mass_table_old=None, limit=100, mlband=mlband)
 
     drpall.keep_columns(['plateifu', 'mangaid', 'objra', 'objdec', 'ebvgal', 
                          'mngtarg1', 'mngtarg2', 'mngtarg3', 'nsa_iauname', 'ifudesignsize',
