@@ -86,9 +86,7 @@ def aggregate_one(res_fname, mlband):
              'mass_in_ifu', *sollum_in_ifu_names, *sollum_nsa_names, 'ml_fluxwt']
     qt = t.QTable()
     for d, n in zip(data, names):
-        qt[n] = np.array(d)[None, ...]
-        if hasattr(d, 'unit'):
-            qt[n].unit = d.unit
+        qt[n] = d
 
     table_dest = os.path.join(csp_basedir, 'masstables', '{}.ecsv'.format(plateifu))
 
