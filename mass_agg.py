@@ -92,6 +92,8 @@ def aggregate_one(res_fname, mlband):
 
     qt.write(table_dest, overwrite=True)
 
+    return qt
+
 
 def mass_agg_onegal(res_fname, mlband):
     res = read_results.PCAOutput.from_fname(res_fname)
