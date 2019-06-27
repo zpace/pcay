@@ -87,8 +87,6 @@ def aggregate_one(res_fname, mlband):
     qt = t.QTable()
     for d, n in zip(data, names):
         qt[n] = np.atleast_1d(d)
-        else:
-            pass
 
     table_dest = os.path.join(csp_basedir, 'masstables', '{}.ecsv'.format(plateifu))
 
