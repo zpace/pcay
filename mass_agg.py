@@ -88,7 +88,7 @@ def aggregate_one(res_fname, mlband):
     for d, n in zip(data, names):
         qt[n] = np.atleast_1d(d)
 
-        if qt[n].unit, is not None:
+        if qt[n].unit is not None:
             qt[n].to(qt[n].unit._physical_unit)
         else:
             pass
