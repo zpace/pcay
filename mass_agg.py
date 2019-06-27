@@ -92,7 +92,10 @@ def aggregate_one(res_fname, mlband):
 
     table_dest = os.path.join(csp_basedir, 'masstables', '{}.ecsv'.format(plateifu))
 
-    qt.write(table_dest, overwrite=True)
+    try:
+        qt.write(table_dest, overwrite=True)
+    except as e:
+        print(e)
 
     return qt
 
