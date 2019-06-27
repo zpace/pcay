@@ -88,6 +88,11 @@ def aggregate_one(res_fname, mlband):
     for d, n in zip(data, names):
         qt[n] = np.atleast_1d(d)
 
+        if hasattr(qt[n], 'unit'):
+            qt[n].to(qt[n].unit._physical_unit)
+        else:
+            pass
+
     table_dest = os.path.join(csp_basedir, 'masstables', '{}.ecsv'.format(plateifu))
 
     try:
