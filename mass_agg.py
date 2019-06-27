@@ -73,10 +73,17 @@ def aggregate_one(res_fname, mlband):
                 totalmass.bandpass_flux_to_solarunits(stellarmass.absmag_sun))
             ml_fluxwt = stellarmass.logml_fnuwt
 
+            sollum_nsa_names = list(map(
+                lambda n: 'sollum_nsa_{}'.format(n),
+                stellarmass.bands))
+            sollum_in_ifu_names = list(map(
+                lambda n: 'sollum_in_ifu_{}'.format(n),
+                stellarmass.bands))
+
     data = [plateifu, mean_atten_mwtd, std_atten_mwtd,
-            mass_in_ifu, sollum_in_ifu, sollum_nsa, ml_fluxwt]
+            mass_in_ifu, *sollum_in_ifu, *sollum_nsa, ml_fluxwt]
     names = ['plateifu', 'mean_atten_mwtd' ,'std_atten_mwtd',
-             'mass_in_ifu', 'sollum_in_ifu', 'sollum_nsa', 'ml_fluxwt']
+             'mass_in_ifu', *sollum_in_ifu_names, *sollum_nsa_names, 'ml_fluxwt']
     qt = t.QTable()
     for d, n in zip(data, names):
         qt[n] = np.array(d)[None, ...]
