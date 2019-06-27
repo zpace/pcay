@@ -81,9 +81,12 @@ def aggregate_one(res_fname, mlband):
                 stellarmass.bands))
 
     data = [plateifu, mean_atten_mwtd, std_atten_mwtd,
-            mass_in_ifu, *sollum_in_ifu, *sollum_nsa, ml_fluxwt]
+            mass_in_ifu, *sollum_in_ifu, *sollum_nsa,
+            ml_fluxwt.to(m.m_to_l_unit)]
     names = ['plateifu', 'mean_atten_mwtd' ,'std_atten_mwtd',
-             'mass_in_ifu', *sollum_in_ifu_names, *sollum_nsa_names, 'ml_fluxwt']
+             'mass_in_ifu', *sollum_in_ifu_names, *sollum_nsa_names,
+             'ml_fluxwt']
+
     qt = t.QTable()
     for d, n in zip(data, names):
         qt[n] = np.atleast_1d(d)
