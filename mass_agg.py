@@ -94,7 +94,7 @@ def aggregate_one(res_fname, mlband):
 
     try:
         qt.write(table_dest, overwrite=True)
-    except as e:
+    except Exception as e:
         print(e)
 
     return qt
