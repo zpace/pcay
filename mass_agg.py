@@ -81,14 +81,15 @@ class MassAggregator(object):
         self.tab = self._update()
 
     def find_results(self, redo=False):
-        results_fnames = glob(os.path.join(cspbase, globstring))
+        results_fnames = glob(os.path.join(self.cspbase, self.globstring))
+
         if redo:
             pass
         else:
-            results_fnames = [fn if not os.path.isfile(
-                                  self.masstable_fname_base.format(
-                                      fits.getheader(fn, 0, 'plateifu')))
-                              for fn in results_fnames]
+            results_fnames = filter(
+                lambda fn: not os.path.isfile(
+                    self.masstable_fname_base.format(
+                        fits.getheader(fn, ext=0, keyword='PLATEIFU'))))
 
         return results_fnames
 
