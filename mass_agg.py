@@ -59,8 +59,8 @@ class MassAggregator(object):
         self.tab = tab
 
     @classmethod
-    def from_nothing(cls, redo):
-        results_fnames = self.find_results(redo)
+    def from_nothing(cls, redo, n=None):
+        results_fnames = self.find_results(redo)[:n]
         results_plateifus = list(map(partial(fits.getheader, ext=0, keyword='PLATEIFU'), results_fnames))
 
         self.aggregate_many_galaxies(results_fnames, results_plateifus)
