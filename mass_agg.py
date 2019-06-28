@@ -4,6 +4,8 @@ import os
 from glob import glob
 from warnings import warn, filterwarnings, catch_warnings, simplefilter
 from functools import partial
+import dataclasses
+import multiprocessing as mpc
 
 from importer import *
 import manga_tools as m
@@ -44,6 +46,76 @@ sfrsd_tab = t.Table.read('/usr/data/minhas/zpace/stellarmass_pca/sigma_sfr.fits'
 sfrsd_tab['plateifu'] = sfrsd_tab['names']
 del sfrsd_tab['names']
 sfrsd_tab.add_index('plateifu')
+
+@dataclasses.dataclass
+class MassAggregator(object):
+    cspbase: str = csp_basedir
+    globstring: str = '*/*-*_zpres.fits'
+    masstable_fname_base: str = 'masstables/{}.tab'
+    mlband: str = 'i'
+
+    def __init__(self, tab, *args, **kwargs):
+        super().__init__()
+        self.tab = tab
+
+    @classmethod
+    def from_nothing(cls, redo):
+        results_fnames = self.find_results(redo)
+        results_plateifus = list(map(partial(fits.getheader, ext=0, keyword='PLATEIFU'), results_fnames))
+
+        self.aggregate_many_galaxies(results_fnames, results_plateifus)
+
+        tab = self._update()
+
+        return cls(tab)
+
+    def _update(self):
+        results_fnames = self.find_results(redo=False)
+        results_plateifus = list(map(partial(fits.getheader, ext=0, keyword='PLATEIFU'), results_fnames))
+
+        results_tabs_fnames = glob(os.path.join(self.cspbase, self.masstable_fname_base.format('*')))
+        tab = t.vstack(list(map(t.QTable.read(), results_tabs_fnames)))
+        return tab
+
+    def update(self):
+        self.tab = self._update()
+
+    def find_results(self, redo=False):
+        results_fnames = glob(os.path.join(cspbase, globstring))
+        if redo:
+            pass
+        else:
+            results_fnames = [fn if not os.path.isfile(
+                                  self.masstable_fname_base.format(
+                                      fits.getheader(fn, 0, 'plateifu')))
+                              for fn in results_fnames]
+
+        return results_fnames
+
+    def aggregate_one_galaxy(self, res_fname, plateifu):
+        try:
+            qt = aggregate_one(res_fname, mlband=self.mlband)
+            table_dest = os.path.join(self.cspbase, self.masstable_fname_base.format(plateifu))
+            qt.write(table_dest, overwrite=True)
+        except (SystemExit, KeyboardInterrupt) as e:
+            raise e
+        except Exception:
+            pass
+            return False
+        else:
+            return True
+
+    def aggregate_many_galaxies(self, results_fnames, results_plateifus):
+        pool = mpc.Pool(processes=mpc.cpu_count() - 1)
+        pool.starmap_async(self.aggregate_one_galaxy, zip(results_fnames, results_plateifus))        
+        pool.wait()
+        pool.close()
+
+        return tab
+
+    def __repr__(self):
+        return self.tab.__repr__()
+
 
 def aggregate_one(res_fname, mlband):
     with read_results.PCAOutput.from_fname(res_fname) as res:
@@ -90,13 +162,6 @@ def aggregate_one(res_fname, mlband):
     qt = t.QTable()
     for d, n in zip(data, names):
         qt[n] = np.atleast_1d(d)
-
-    table_dest = os.path.join(csp_basedir, 'masstables', '{}.ecsv'.format(plateifu))
-
-    try:
-        qt.write(table_dest, overwrite=True)
-    except Exception as e:
-        print(e)
 
     return qt
 
@@ -764,6 +829,10 @@ def fit_dlogM_mw(tab, sfrsd_tab, mltype='ring', mlb='i'):
 if __name__ == '__main__':
     mlband = 'i'
 
+    res_fnames = glob(os.path.join(csp_basedir, '*/*_zpres.fits'))
+    tab_names = glob(os.path.join())
+
+    '''
     mass_table = update_mass_table(
         drpall, mass_table_old=None, limit=100, mlband=mlband)
 
@@ -800,3 +869,4 @@ if __name__ == '__main__':
 
     lwmass_olsfit = fit_dlogM_mw(full_table, sfrsd_tab)
     lwmass_olsfit.summary()
+    '''
