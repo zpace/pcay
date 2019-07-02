@@ -48,75 +48,101 @@ del sfrsd_tab['names']
 sfrsd_tab.add_index('plateifu')
 
 @dataclasses.dataclass
-class MassAggregator(object):
+class MassAggregationManager(object):
     cspbase: str = csp_basedir
     globstring: str = '*/*-*_zpres.fits'
-    masstable_fname_base: str = 'masstables/{}.tab'
+    masstable_fname_base: str = 'masstables/{}.ecsv'
     mlband: str = 'i'
 
-    def __init__(self, tab, *args, **kwargs):
-        super().__init__()
-        self.tab = tab
+    @staticmethod
+    def plateifu_from_fn(fn):
+        fn_base = os.path.basename(fn)
+        plateifu = fn_base.split('_')[0]
+        return plateifu
 
-    @classmethod
-    def from_nothing(cls, redo, n=None):
-        results_fnames = self.find_results(redo)[:n]
-        results_plateifus = list(map(partial(fits.getheader, ext=0, keyword='PLATEIFU'), results_fnames))
+    @staticmethod
+    def find_results(cspbase, res_globstr, masstable_fname_base, redo=False):
+        # search in results directory for results files
+        results_fnames = glob(os.path.join(cspbase, res_globstr), recursive=True)
 
-        self.aggregate_many_galaxies(results_fnames, results_plateifus)
-
-        tab = self._update()
-
-        return cls(tab)
-
-    def _update(self):
-        results_fnames = self.find_results(redo=False)
-        results_plateifus = list(map(partial(fits.getheader, ext=0, keyword='PLATEIFU'), results_fnames))
-
-        results_tabs_fnames = glob(os.path.join(self.cspbase, self.masstable_fname_base.format('*')))
-        tab = t.vstack(list(map(t.QTable.read(), results_tabs_fnames)))
-        return tab
-
-    def update(self):
-        self.tab = self._update()
-
-    def find_results(self, redo=False):
-        results_fnames = glob(os.path.join(self.cspbase, self.globstring))
-
+        # if redo option false, get only filenames that have no associated mass table
         if redo:
             pass
         else:
-            results_fnames = filter(
+            results_fnames = list(filter(
                 lambda fn: not os.path.isfile(
-                    self.masstable_fname_base.format(
-                        fits.getheader(fn, ext=0, keyword='PLATEIFU'))))
+                    masstable_fname_base.format(
+                        MassAggregationManager.plateifu_from_fn(fn))),
+                results_fnames))
 
-        return results_fnames
+        plateifus = list(map(MassAggregationManager.plateifu_from_fn, results_fnames))
 
-    def aggregate_one_galaxy(self, res_fname, plateifu):
-        try:
-            qt = aggregate_one(res_fname, mlband=self.mlband)
-            table_dest = os.path.join(self.cspbase, self.masstable_fname_base.format(plateifu))
-            qt.write(table_dest, overwrite=True)
-        except (SystemExit, KeyboardInterrupt) as e:
-            raise e
-        except Exception:
-            pass
-            return False
+        return results_fnames, plateifus
+
+    def find(self, redo=False):
+        return self.find_results(
+            cspbase=self.cspbase, res_globstr=self.globstring,
+            masstable_fname_base=self.masstable_fname_base, redo=redo)
+
+    def start_agg_into_tables(self, redo=False, processes=None, limit=None):
+        '''begin the asynchronous aggregation
+        '''
+
+        # start pool
+        with mpc.Pool(processes=processes) as pool:
+            # which file names and plateifus to loop over
+            results_fnames, results_plateifus = self.find_results(
+                cspbase=self.cspbase, res_globstr=self.globstring,
+                masstable_fname_base=self.masstable_fname_base, redo=redo)
+
+            # map table maker over lists of fnames and plateifus
+            self.current_async_result = pool.starmap_async(
+                aggregate_into_table_file, 
+                zip(results_fnames[:limit], results_plateifus[:limit]))
+
+    def agg_done(self):
+        '''is aggregation into tables done?
+        '''
+        if not hasattr(self, 'current_async_result'):
+            raise ValueError('no pool associated with this instance!')
         else:
-            return True
+            return self.current_async_result.ready()
 
-    def aggregate_many_galaxies(self, results_fnames, results_plateifus):
-        pool = mpc.Pool(processes=mpc.cpu_count() - 1)
-        pool.starmap_async(self.aggregate_one_galaxy, zip(results_fnames, results_plateifus))        
-        pool.wait()
-        pool.close()
+    def agg_tasks_remaining(self):
+        '''status of mass aggregation
+        '''
+        if not hasattr(self, 'current_async_result'):
+            raise ValueError('no pool associated with this instance!')
+        elif self.current_async_result.ready():
+            return 0
+        else:
+            return self.current_async_result._number_left
+            
 
-        return tab
+    def table(self):
+        if not self.agg_done():
+            raise UserWarning('aggregation not complete')
+        return t.vstack([t.QTable.read(fn, format='ascii.ecsv') for fn in
+                         glob(os.path.join(
+                            self.cspbase, self.masstable_fname_base.format('*')))])
 
-    def __repr__(self):
-        return self.tab.__repr__()
 
+def _aggregate_into_table_file(args):
+    return aggregate_into_table_file(*args)
+
+
+def aggregate_into_table_file(res_fname, mlband, cspbase, masstable_fname_base, plateifu):
+    try:
+        qt = aggregate_one(res_fname, mlband=mlband)
+        table_dest = os.path.join(cspbase, masstable_fname_base.format(plateifu))
+        qt.write(table_dest, overwrite=True, format='ascii.ecsv')
+    except (SystemExit, KeyboardInterrupt) as e:
+        raise e
+    except Exception as e:
+        print(e)
+        return False
+    else:
+        return True
 
 def aggregate_one(res_fname, mlband):
     with read_results.PCAOutput.from_fname(res_fname) as res:
