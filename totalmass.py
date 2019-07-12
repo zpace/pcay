@@ -127,7 +127,7 @@ cmlr_kwargs = {
     'cb1': 'g', 'cb2': 'r',
     'cmlr_poly': np.array([ 1.15614812, -0.48479653])}
 
-def cmlr_equivalency(slope, intecept):
+def cmlr_equivalency(slope, intercept):
     '''
     '''
     def color_to_logml(c):
