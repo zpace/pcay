@@ -2,7 +2,10 @@
 
 This library fits stellar-continuum observations with a basis set of `q` spectral vectors (generated from a library of synthetic star formation histories). The fit in this low-dimensional space makes various spectral-fitting degeneracies more tractable. Much of this library is a reimplimentation of [Chen et al. (2012)](http://adsabs.harvard.edu/abs/2012MNRAS.421..314C), but for [SDSS-IV/MaNGA IFS](https://www.sdss.org/surveys/manga/) data.
 
-We will release a SDSS-IV VAC (#0060) as part of DR16 in December 2019 (link soon). This library contains some simple data-access scripting utilities for reading the data in the VAC. 
+We will release a [SDSS-IV VAC (#0060)](https://www.sdss.org/dr16/data_access/value-added-catalogs/?vac_id=manga-pca-vac) as part of DR16 in December 2019. This library contains some simple data-access scripting utilities for reading the data in the VAC. 
+
+# Publication
+If you use the stellar M/L maps (from the SDSS VAC) or a portion of this software, please cite [Pace et al 2019a](https://ui.adsabs.harvard.edu/abs/2019ApJ...883...82P/abstract). If you use the resulting estimates of total galaxy stellar mass (also in the VAC), please cite [Pace et al 2019b](https://ui.adsabs.harvard.edu/abs/2019ApJ...883...83P/abstract).
 
 # Related Libraries
 * [`cspgen`](https://github.com/zpace/cspgen), which provides some code to help you generate synthetic stellar pops
